@@ -21,13 +21,13 @@ kind, fromMe, chatId, media{mimetype, filename?, data?, omitted?, sizeBytes?}, c
 pushName?}. Media over WEBHOOK_MEDIA_INLINE_MAX_BYTES (default 1 MiB) arrives as
 `media.omitted=true` with no data -> fetch via get-media.
 
-UNVERIFIED -- check against live instance:
-  * For group messages the sender is read from `data.author` (docs: "real sender of a group
-    message, where from holds the group id" is documented for stored messages; the webhook
-    field list does not list `author` explicitly). Falls back to `data.from`.
-  * Whether the envelope `sessionId` is the session id used in REST paths (assumed yes).
-  * Whether the media endpoint expects the bare message id or a `true_..._` serialized id
-    (assumed: the `data.id` value as delivered).
+Live check (OpenWA 0.24.0, read-only, history messages):
+  * CONFIRMED: for group messages the sender is `data.author`, falling back to `data.from`.
+    `author` is a privacy `@lid` id, not a phone number.
+  * CONFIRMED: message ids are serialized `false_<chat>_<id>_<participant@lid>`; the media
+    endpoint needs the id exactly as delivered (a bare id gives 404).
+  * UNVERIFIED until a real webhook delivery: whether the envelope `sessionId` is the session
+    id used in REST paths (assumed yes), and the delivery signature header as actually sent.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ SIGNATURE_HEADER = "X-OpenWA-Signature"
 SIGNATURE_PREFIX = "sha256="
 API_KEY_HEADER = "X-API-Key"
 EVENT_MESSAGE_RECEIVED = "message.received"
-# UNVERIFIED -- check against live instance
+# `author` confirmed on live history messages (a privacy @lid id); `from` is the fallback.
 SENDER_FIELD_CANDIDATES = ("author", "from")
 
 

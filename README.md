@@ -8,11 +8,13 @@ Named after the floating recording drones of Stargate Universe.
 
 This is the M1 milestone: the processing pipeline and a CLI. There is **no web UI yet**, and no review queue, clustering, backfill, retention cleanup, digest or burst propagation (their settings are accepted but have no effect). Matches that would not be auto-saved are recorded in the database only; there is nothing to review them with yet.
 
-The OpenWA integration was written from OpenWA's documentation and has **not been verified against a live OpenWA instance**. In particular these are unverified:
+The OpenWA integration was checked read-only against a live OpenWA 0.24.0 instance (its OpenAPI spec and stored messages): the webhook filter grammar, the sender field (`author`, a privacy `@lid` id, falling back to `from`), the serialized message id format and the media download endpoint match. No real webhook delivery has been received yet, so these remain **unverified**:
 
-- the webhook event filter grammar used by `kino openwa register-webhook`
-- the sender field in the message payload
-- the message id format
+- the real webhook delivery shape and its signature header
+- the envelope `sessionId` (assumed to equal the session id used in REST paths)
+- the `messageId` returned by send-image
+
+`kino openwa register-webhook` updates a webhook that has the same URL; if the instance already has other webhooks (for example from another integration), it creates an additional one and leaves the others alone.
 
 If your OpenWA differs, the first webhook delivery is where it will show up (see Troubleshooting).
 

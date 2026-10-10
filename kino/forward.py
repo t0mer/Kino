@@ -404,8 +404,8 @@ def deliver_forward(
         f = s.get(Forward, forward_id)
         if f is not None:
             f.status = "sent"
-            # Stored as returned. NOTE: the OpenWA send-image messageId format is UNVERIFIED
-            # against the live instance; the webhook echo guard normalises both forms.
+            # Stored as returned. The documented send-image messageId is the serialized
+            # `true_<chat>_<id>` form; the webhook echo guard normalises it and bare ids alike.
             f.openwa_message_id = message_id
             f.sent_at = now()
             f.next_attempt_at = None
