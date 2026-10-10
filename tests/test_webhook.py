@@ -469,12 +469,17 @@ def test_phash_helpers():
     assert hamming(a, compute_phash(jpeg("checker"))) > 4
 
 
-def test_huey_immediate_mode_runs_stub():
+def test_huey_immediate_mode_runs_stub(monkeypatch):
+    # Stub the pipeline: whatever DB a previous test left behind must not reach the real
+    # models (which would be downloaded).
+    ran: list[int] = []
+    monkeypatch.setattr(tasks, "run_pipeline", lambda i: ran.append(i) or "done")
     tasks.huey.immediate = True
     try:
         tasks.process_image(1)
     finally:
         tasks.huey.immediate = False
+    assert ran == [1]
 
 
 def test_forward_echo_ignored(client):
