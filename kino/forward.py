@@ -30,7 +30,7 @@ from kino.pipeline.save import to_local
 from kino.tasks import forward_huey
 
 DEFAULT_CAPTION = "📸 {kids} · {group} · {date}"
-MAX_CAPTION = 1000
+MAX_CAPTION = 1024  # OpenWA SendMediaMessageDto caption maxLength
 MAX_VALUE = 120
 
 K_ENABLED = "forward.enabled"
@@ -107,8 +107,20 @@ def render_caption(
         "date": f"{sent_at:%Y-%m-%d}",
         "time": f"{sent_at:%H:%M}",
     }
-    out = _PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), template)
-    return _clean(out, MAX_CAPTION)
+    out = _CONTROL_RE.sub(
+        "", _PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+    )
+    return _cap_utf16(out, MAX_CAPTION)
+
+
+def _cap_utf16(text: str, limit: int) -> str:
+    """Truncate to ``limit`` UTF-16 code units: OpenWA checks the JS string length."""
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > limit:
+            return text[:i]
+    return text
 
 
 def validate_destination(chat_id: str | None, session: Session) -> None:

@@ -101,8 +101,10 @@ def test_caption_rendering():
     assert fw.render_caption("{kids", ["a"], "g", "s", SENT) == "{kids"
     assert fw.render_caption("{}{{kids}}", ["a"], "g", "s", SENT) == "{}{a}"
     assert fw.render_caption("{kids}", ["a\x00b\x07"], "g", "s", SENT) == "ab"
-    assert len(fw.render_caption("{kids}", ["x" * 5000] * 50, "g", "s", SENT)) <= 1000
-    assert fw.render_caption("x" * 5000, [], "", "", SENT) == "x" * 1000
+    assert len(fw.render_caption("{kids}", ["x" * 5000] * 50, "g", "s", SENT)) <= 1024
+    # OpenWA SendMediaMessageDto caption maxLength is 1024
+    assert fw.render_caption("x" * 5000, [], "", "", SENT) == "x" * 1024
+    assert fw.render_caption("{kids}" * 30, ["y" * 120], "", "", SENT) == "y" * 1024
 
 
 def test_cancel_only_pending(s):
@@ -450,3 +452,8 @@ def test_caption_uses_configured_timezone(s, monkeypatch):
         assert f.caption == "2026-04-01 02:30"
     finally:
         get_settings.cache_clear()
+
+
+def test_caption_cap_counts_utf16_units():
+    out = fw.render_caption("📸" * 600, [], "", "", SENT)  # each emoji is 2 UTF-16 units
+    assert len(out.encode("utf-16-le")) // 2 <= 1024 and out == "📸" * 512
