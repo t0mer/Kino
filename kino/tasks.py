@@ -14,8 +14,10 @@ process, lazily on first use (or by the consumer's startup hook); tests swap the
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -169,8 +171,11 @@ class _Run:
 
     claimed_at: datetime
     stage: str = "claim"
+    # Unique per run, so crop files of concurrent/recovered runs of one image never collide.
+    token: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     crops: list[Path] = field(default_factory=list)
-    planned_photos: list[Path] = field(default_factory=list)
+    # Photo files this run created (did not exist before its save) -> (st_dev, st_ino).
+    created_photos: dict[Path, tuple[int, int]] = field(default_factory=dict)
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:
@@ -373,7 +378,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                 fq = face_quality(d, aligned)
                 tier = tier_for(fq.size_px)
                 emb = pipe.embedder.embed(aligned) if should_embed(tier) else None
-                crop_path = crop_dir / f"{image_id}_{n}.jpg"
+                crop_path = crop_dir / f"{image_id}_{run.token}_{n}.jpg"
                 crop_path.parent.mkdir(parents=True, exist_ok=True)
                 run.crops.append(crop_path)
                 crop_path.write_bytes(make_crop(img, d))
@@ -449,19 +454,28 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
             if group is None:
                 raise ValueError("image has no group")
             with run.step("save"):
-                run.planned_photos = [
+                planned = [
                     save_mod.build_dest_path(k, group, image, st.photos_dir, timezone=st.timezone)
                     for k in kids
                 ]
-                paths = save_mod.save_for_kids(
-                    raw,
-                    kids,
-                    group,
-                    image,
-                    st.photos_dir,
-                    strip_gps=st.strip_gps,
-                    timezone=st.timezone,
-                )
+                fresh = [p for p in planned if not p.exists()]
+                try:
+                    paths = save_mod.save_for_kids(
+                        raw,
+                        kids,
+                        group,
+                        image,
+                        st.photos_dir,
+                        strip_gps=st.strip_gps,
+                        timezone=st.timezone,
+                    )
+                finally:
+                    for p in fresh:
+                        try:
+                            ident = os.stat(p)
+                        except OSError:
+                            continue
+                        run.created_photos[p] = (ident.st_dev, ident.st_ino)
                 for kid_id, path in paths.items():
                     _upsert_saved(s, image_id, kid_id, path)
                 out.saved_any = True
@@ -537,20 +551,41 @@ def _requeue_transient(image_id: int, claimed_at: datetime, error: str, ms: int)
         return "queued"
 
 
-def _discard_files(run: _Run, photos_dir: Path) -> None:
+def _discard_files(run: _Run, image_id: int, photos_dir: Path) -> None:
+    """Remove only what THIS run created: its own (uniquely named) crops, and photo files it
+    newly created that are still the very file it wrote (same inode) and are not referenced
+    by a committed `saved_photos` row (checked in a fresh session). Files of a concurrent
+    valid run, pre-existing files and hardlinked siblings that are referenced survive."""
     for p in run.crops:
         p.unlink(missing_ok=True)
-    for p in run.planned_photos:
-        if p.exists():
-            try:
-                save_mod.remove_photo(p, photos_dir)
-            except (OSError, ValueError) as e:
-                logger.warning("could not remove partial photo: {}", type(e).__name__)
+    if not run.created_photos:
+        return
+    try:
+        with get_session() as s:
+            committed = {
+                str(Path(p).resolve())
+                for p in s.scalars(select(SavedPhoto.path).where(SavedPhoto.image_id == image_id))
+            }
+    except Exception as e:  # cannot tell what is committed: keep the files (safe side)
+        logger.warning("keeping photos of image {}: {}", image_id, type(e).__name__)
+        return
+    for p, ident in run.created_photos.items():
+        try:
+            st = os.stat(p)
+            if str(p.resolve()) in committed or (st.st_dev, st.st_ino) != ident:
+                continue
+            save_mod.remove_photo(p, photos_dir)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as e:
+            logger.warning("could not remove partial photo: {}", type(e).__name__)
 
 
 def run_pipeline(image_id: int) -> str:
-    """Process one image; returns the final status, or `not_claimed` if another run owns it
-    (or it is already terminal). Never raises for pipeline errors."""
+    """Process one image; returns the final status (`done`, `skipped`, `failed`, `queued`
+    after a transient error), `not_claimed` if another run owns it or it is terminal,
+    `superseded` if the row was recovered elsewhere mid-run, or `deferred` when the DB was
+    unavailable to record the outcome (the row is left for the sweeper). Never raises."""
     t0 = time.perf_counter()
     claimed_at = _claim(image_id)
     if claimed_at is None:
@@ -565,22 +600,24 @@ def run_pipeline(image_id: int) -> str:
             raise _PipelineInitError() from e
         outcome = _process(image_id, st, pipe, run, t0)
     except _Superseded:
-        _discard_files(run, st.photos_dir)
+        _discard_files(run, image_id, st.photos_dir)
         logger.warning(
             "image {}: run superseded (row recovered elsewhere); output discarded", image_id
         )
         return "superseded"
     except Exception as e:
         ms = int((time.perf_counter() - t0) * 1000)
-        _discard_files(run, st.photos_dir)
+        _discard_files(run, image_id, st.photos_dir)
         transient = isinstance(e, _PipelineInitError | OperationalError)
         cause = e.__cause__ if isinstance(e, _PipelineInitError) and e.__cause__ else e
         err = _sanitize(run.stage, cause)
         if transient:
             status = _requeue_transient(image_id, claimed_at, err, ms)
-            logger.warning("image {} hit an infrastructure error ({}): {}", image_id, status, err)
         else:
             status = _mark_failed(image_id, claimed_at, err, ms)
+        if transient:
+            logger.warning("image {} hit an infrastructure error ({}): {}", image_id, status, err)
+        else:
             logger.error("image {} failed: {}", image_id, err)
         if status == "failed":
             metrics.images.labels(status="failed").inc()

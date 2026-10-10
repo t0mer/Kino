@@ -851,3 +851,75 @@ def test_sweeper_failed_enqueue_not_marked(env):
 
     tasks.sweep_stale_images(now=now, enqueue=boom)
     assert get(Image, iid).last_enqueued_at is None
+
+
+# --- discard never touches another run's files -------------------------------------------
+
+
+def test_superseded_run_keeps_concurrent_valid_runs_files(world):
+    env, gid, noa, _ = world
+    b_enqueue = Enqueue()
+
+    class RacingDetector(FakeDetector):
+        def detect(self, img, det_size, max_upscale=1.0):
+            # sweeper recovers the row; worker B processes it to done while A is still running
+            with dbs.get_session() as s:
+                row = s.get(Image, self.image_id)
+                row.status, row.processing_started_at, row.stuck_count = "queued", None, 1
+            tasks.set_pipeline(
+                detector=FakeDetector([det(100, 80, 120)]),
+                embedder=FakeEmbedder([unit(0)]),
+                enqueue_forward=b_enqueue,
+            )
+            assert tasks.run_pipeline(self.image_id) == "done"
+            return [det(100, 80, 120)]
+
+    a = RacingDetector()
+    tasks.set_pipeline(detector=a, embedder=FakeEmbedder([unit(0)]), enqueue_forward=Enqueue())
+    iid, _ = seed_image(env, group_id=gid)
+    a.image_id = iid
+    assert tasks.run_pipeline(iid) == "superseded"
+    assert get(Image, iid).status == "done"
+    (sp,) = rows(SavedPhoto)
+    assert Path(sp.path).is_file()
+    (face,) = rows(Face)  # B's face only
+    assert Path(face.crop_path).is_file()
+    assert sorted(p for p in (env / "crops").rglob("*.jpg")) == [Path(face.crop_path)]
+    assert len(rows(Match)) == 1 and len(rows(Forward)) == 1 and len(b_enqueue.ids) == 1
+
+
+def test_crop_names_unique_per_run(world):
+    env, gid, *_ = world
+    pipeline([det(100, 80, 120)], [unit(5)])
+    a, _ = seed_image(env, group_id=gid)
+    run(a)
+    first = rows(Face)[0].crop_path
+    with dbs.get_session() as s:  # simulate a second run of the same image
+        s.query(Face).delete()
+        s.query(Match).delete()
+        s.get(Image, a).status = "queued"
+    run(a)
+    second = rows(Face)[0].crop_path
+    assert first != second and Path(first).name.startswith(f"{a}_")
+
+
+def test_failed_run_keeps_preexisting_and_committed_photos(world, monkeypatch):
+    env, gid, noa, itai = world
+    pipeline([det(20, 20, 100, 0.95), det(250, 60, 100, 0.9)], [unit(0), unit(1)])
+    iid, _ = seed_image(env, group_id=gid)
+    assert run(iid).status == "done"
+    saved = {s.kid_id: Path(s.path) for s in rows(SavedPhoto)}
+    assert os.stat(saved[noa]).st_ino == os.stat(saved[itai]).st_ino
+
+    # rerun the same image (e.g. after an operator reset) and fail after saving
+    with dbs.get_session() as s:
+        s.get(Image, iid).status = "queued"
+    from kino import forward as fwd
+
+    def boom(*a, **k):
+        raise RuntimeError("planner broke")
+
+    monkeypatch.setattr(fwd, "plan_forwards", boom)
+    assert run(iid).status == "failed"
+    # committed (and pre-existing) files, including the hardlinked sibling, survive
+    assert saved[noa].is_file() and saved[itai].is_file()
