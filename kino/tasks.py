@@ -194,7 +194,8 @@ class _Outcome:
     matches: list[tuple[str, str]] = field(default_factory=list)
 
 
-_DECISION = {"auto_save": "auto_saved", "review": "review", "drop": "rejected"}
+# System drops are `dropped`; `rejected` is reserved for the user's "N" action (M2 review).
+_DECISION = {"auto_save": "auto_saved", "review": "review", "drop": "dropped"}
 
 
 def _claim(image_id: int) -> bool:

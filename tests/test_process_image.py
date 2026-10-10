@@ -275,13 +275,13 @@ def test_zero_faces_done(world):
     assert rows(Face) == []
 
 
-def test_unknown_face_rejected_not_saved(world):
+def test_unknown_face_dropped_not_saved(world):
     env, gid, *_ = world
     pipeline([det(100, 80, 120)], [unit(5)])
     iid, _ = seed_image(env, group_id=gid)
     assert run(iid).status == "done"
     (m,) = rows(Match)
-    assert m.decision == "rejected"
+    assert (m.decision, m.decided_by) == ("dropped", "system")
     assert rows(SavedPhoto) == []
 
 
@@ -576,7 +576,7 @@ def test_matcher_reloaded_once_per_job_and_sees_new_refs(world):
     pipeline([det(100, 80, 120)], [unit(7)])
     iid, _ = seed_image(env, group_id=gid)
     run(iid)
-    assert rows(Match)[0].decision == "rejected"
+    assert rows(Match)[0].decision == "dropped"
     # teach: unit(7) is Noa; the gallery_version bump makes the worker matcher reload
     with dbs.get_session() as s:
         s.add(ReferenceFace(kid_id=noa, embedding=dbs.embedding_to_blob(unit(7)), source="upload"))
