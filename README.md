@@ -121,6 +121,7 @@ Precedence: environment variables (`KINO_*`) > `/data/config.yaml` (in `KINO_DAT
 | `KINO_CF_ACCESS_AUD` | unset | Cloudflare Access application AUD tag (reserved for the web UI) |
 | `KINO_CF_ACCESS_ALLOWED_EMAILS` | unset | Comma-separated allowed emails (reserved for the web UI) |
 | `KINO_METRICS_PUBLIC` | `false` | Serve `/metrics` without authentication |
+| `KINO_METRICS_DIR` | `<KINO_DATA_DIR>/metrics` | Shared directory where every Kino process (API, workers, forward worker) writes its Prometheus counters; `/metrics` merges them |
 | `KINO_EMBEDDER` | `auraface` | `auraface` or `buffalo_l` (see Model licensing) |
 | `KINO_DET_SIZE` | `1024` | Detector input size for the full-image pass; a multiple of 32, at least 32 |
 | `KINO_TILING` | `auto` | `off`, `auto` or `always` |
@@ -174,6 +175,8 @@ Run `kino --help` or `kino <command> --help` for all options. In the container t
 | `GET /healthz` | Liveness; returns status and version |
 | `GET /readyz` | Readiness |
 | `GET /metrics` | Prometheus metrics; blocked unless `KINO_METRICS_PUBLIC=true` |
+
+`/metrics` merges the counters written by all Kino processes (prometheus_client multiprocess mode, files in `KINO_METRICS_DIR`) and adds gauges read from the database at scrape time: `kino_queue_depth`, `kino_review_queue_size`, `kino_gallery_refs{kid,source}` and `kino_forward_queue_depth`. `kino_model_info` is set by each worker process once its models are loaded. Each process deletes the metric files of dead processes from its own container when it starts; after recreating containers you can clear stale files by deleting the directory while all Kino containers are stopped.
 
 ## Privacy and retention
 

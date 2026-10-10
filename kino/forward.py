@@ -17,7 +17,7 @@ from huey import crontab
 from huey.consumer import Consumer
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -299,7 +299,6 @@ def _recheck(forward_id: int, dest: str) -> str | None:
         f.next_attempt_at = None
         metrics.forwards.labels(status="cancelled").inc()
         s.flush()
-        _update_depth(s)
         return "cancelled"
 
 
@@ -324,11 +323,6 @@ def _default_client() -> OpenWAClient:
     return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
 
 
-def _update_depth(s: Session) -> None:
-    n = s.scalar(select(func.count()).select_from(Forward).where(Forward.status == "pending"))
-    metrics.forward_queue_depth.set(n or 0)
-
-
 def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None:
     """Record a failed attempt (attempts was already incremented by the claim)."""
     with get_session() as s:
@@ -343,7 +337,6 @@ def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None
         else:
             f.next_attempt_at = now + timedelta(seconds=BACKOFF_SECONDS[f.attempts - 1])
         s.flush()
-        _update_depth(s)
 
 
 def _claim(forward_id: int, now: datetime) -> bool:
@@ -419,7 +412,6 @@ def deliver_forward(
             f.last_error = None
             metrics.forwards.labels(status="sent").inc()
             s.flush()
-            _update_depth(s)
     return "sent"
 
 
@@ -442,7 +434,6 @@ def enqueue_due_forwards(now: datetime | None = None) -> list[int]:
             if is_due:
                 due.append(f.id)
         s.flush()
-        _update_depth(s)
     return due
 
 

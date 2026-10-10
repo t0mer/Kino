@@ -153,6 +153,11 @@ def _warm_pipeline() -> None:
         get_pipeline()
     except Exception as e:  # first job retries the load and fails that image cleanly
         logger.error("pipeline warm-up failed: {}", type(e).__name__)
+        return
+    from kino.pipeline.embed import MODEL_NAMES
+
+    for name in ("scrfd_10g", MODEL_NAMES[get_settings().embedder]):
+        metrics.set_model_info(name)
 
 
 # --- helpers -----------------------------------------------------------------------------

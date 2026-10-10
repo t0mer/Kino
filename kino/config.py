@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     cf_access_allowed_emails: str | None = None
     secret_key: SecretStr | None = None
     metrics_public: bool = False
+    # Shared directory for multiprocess Prometheus metrics; default <data_dir>/metrics.
+    metrics_dir: Path | None = None
     embedder: Literal["auraface", "buffalo_l"] = "auraface"
     det_size: int = 1024
     tiling: Literal["off", "auto", "always"] = "auto"
@@ -62,6 +64,10 @@ class Settings(BaseSettings):
     tile_overlap: float = Field(0.2, ge=0, lt=1)
     workers: int = Field(2, ge=1)
     ort_threads: int = Field(2, ge=1)
+
+    @property
+    def metrics_path(self) -> Path:
+        return self.metrics_dir or self.data_dir / "metrics"
 
     @field_validator("det_size")
     @classmethod

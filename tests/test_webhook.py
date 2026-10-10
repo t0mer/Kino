@@ -455,9 +455,12 @@ def test_metrics_public(env, monkeypatch, enqueued):
     get_settings.cache_clear()
     with TestClient(create_app()) as c:
         post(c, payload("text_group"))
+        watch()
+        post(c, with_media(payload(id="m1"), jpeg()))
         text = c.get("/metrics").text
-    assert "kino_webhook_requests_total" in text
-    assert "kino_images_total" in text and "kino_duplicates_total" in text
+    # multiprocess mode only exports label sets that were actually incremented
+    assert 'kino_webhook_requests_total{result="queued"} 1.0' in text
+    assert 'kino_images_total{status="queued"} 1.0' in text and "kino_duplicates_total" in text
 
 
 def test_phash_helpers():

@@ -145,8 +145,9 @@ def worker(
     n = workers or _settings().workers
     open_db()
     get_engine().dispose()  # no pooled connections may cross the fork into worker processes
-    from kino import tasks
+    from kino import metrics, tasks
 
+    metrics.setup(_settings().metrics_path)  # before the fork: workers inherit the mode
     logger.info("starting main queue consumer with {} process worker(s)", n)
     Consumer(tasks.huey, workers=n, worker_type="process").run()
 
@@ -157,8 +158,9 @@ def forward_worker() -> None:
     """Run the forwarding worker (forward queue only; one instance at a time)."""
     open_db()
     get_engine().dispose()
-    from kino import forward
+    from kino import forward, metrics
 
+    metrics.setup(_settings().metrics_path)
     forward.run_forward_consumer()
 
 
