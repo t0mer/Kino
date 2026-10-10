@@ -723,3 +723,16 @@ def test_bench_stats():
     assert stats([]) == (0.0, 0.0, 0.0)
     mean, p50, p95 = stats([1.0, 2.0, 3.0, 4.0, 100.0])
     assert (mean, p50, p95) == (22.0, 3.0, 100.0)
+
+
+def test_kids_set_offset_bounded(env):
+    seed_kid()
+    err = one_line_error(run("kids", "set-offset", "Noa", "--", "-0.5"))
+    assert "-0.10" in err and "+0.30" in err
+    assert run("kids", "set-offset", "Noa", "0.31").exit_code != 0
+    with dbs.get_session() as s:
+        assert s.scalar(select(Kid)).threshold_offset == pytest.approx(0.0)
+    assert run("kids", "set-offset", "Noa", "--", "-0.05").exit_code == 0
+    assert run("kids", "set-offset", "Noa", "0.2").exit_code == 0
+    with dbs.get_session() as s:
+        assert s.scalar(select(Kid)).threshold_offset == pytest.approx(0.2)

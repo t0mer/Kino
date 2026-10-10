@@ -156,7 +156,7 @@ Run `kino --help` or `kino <command> --help` for all options. In the container t
 | `kino groups unwatch <chat_id>` | Stop watching a group |
 | `kino kids list` | List kids |
 | `kino kids set-auto-save <kid> --on\|--off` | Enable or disable auto-save for a kid |
-| `kino kids set-offset <kid> <offset>` | Shift a kid's thresholds (positive is stricter; use `--` before negative values) |
+| `kino kids set-offset <kid> <offset>` | Shift a kid's thresholds (positive is stricter; allowed range -0.10 to +0.30; use `--` before negative values). Whatever the offset and group prior, the tier L/M auto-save threshold never goes below 0.30 |
 | `kino forward set <chat_id>` | Set the default forward destination and enable forwarding |
 | `kino forward show` | Show the forwarding configuration |
 | `kino forward disable` | Disable forwarding (destination kept) |

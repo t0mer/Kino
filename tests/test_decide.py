@@ -133,3 +133,41 @@ def test_invalid_overrides_fall_back(tmp_path, bad):
     assert (t.L_auto, t.L_review) == (0.45, 0.32)
     assert (t.M_auto, t.M_review) == (0.6, 0.4)  # valid tier still applied
     eng.dispose()
+
+
+def test_out_of_range_offset_is_clamped():
+    from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN, clamp_offset
+
+    assert (OFFSET_MIN, OFFSET_MAX) == (-0.1, 0.3)
+    assert clamp_offset(-0.5) == -0.1 and clamp_offset(0.9) == 0.3
+    assert clamp_offset(float("nan")) == 0.0 and clamp_offset(0.05) == 0.05
+    # -0.5 is clamped to -0.1: mapped L auto = 0.45 - 0.1 - 0.03 = 0.32
+    k = kid(offset=-0.5)
+    assert run(Tier.L, 0.33, k=k).action == "auto_save"
+    assert run(Tier.L, 0.31, k=k).action == "review"
+    assert run(Tier.L, 0.05, k=k).action == "drop"  # review 0.32 - 0.13 = 0.19
+
+
+def test_auto_threshold_floor():
+    from kino.pipeline.decide import AUTO_FLOOR
+
+    assert AUTO_FLOOR == 0.30
+    low = Thresholds(L_auto=0.1, L_review=0.05, M_auto=0.1, M_review=0.05, prior_bonus=0.2)
+    for tier in (Tier.L, Tier.M):
+        assert decide(tier, sc(0.29), kid(offset=-0.1), low, True).action == "review"
+        assert decide(tier, sc(0.30), kid(offset=-0.1), low, True).action == "auto_save"
+
+
+def test_matcher_clamps_loaded_offset(tmp_path):
+    from kino.pipeline.matcher import Matcher
+
+    eng = session.init_engine(f"sqlite:///{tmp_path / 'k.db'}")
+    models.Base.metadata.create_all(eng)
+    with session.get_session() as s:
+        k = models.Kid(display_name="Noa", slug="noa", threshold_offset=-0.9)
+        s.add(k)
+        s.flush()
+        kid_id = k.id
+        m = Matcher()
+        m.maybe_reload(s)
+        assert m.kid(kid_id).threshold_offset == -0.1

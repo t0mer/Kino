@@ -66,8 +66,10 @@ class Matcher:
 
     def _load_kids(self, session: Session) -> None:
         """Live kid settings + kid-group mappings; cheap, refreshed on every maybe_reload."""
+        from kino.pipeline.decide import clamp_offset  # decide imports this module
+
         self._kids = {
-            k.id: KidInfo(k.id, k.auto_save_enabled, k.threshold_offset)
+            k.id: KidInfo(k.id, k.auto_save_enabled, clamp_offset(k.threshold_offset))
             for k in session.scalars(select(models.Kid).where(models.Kid.active.is_(True)))
         }
         self._groups = {(kg.kid_id, kg.group_id) for kg in session.scalars(select(models.KidGroup))}

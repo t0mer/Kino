@@ -371,8 +371,12 @@ def kids_set_offset(
     offset: Annotated[float, typer.Argument(help="Threshold offset (use `--` before negatives).")],
 ) -> None:
     """Shift a kid's decision thresholds (positive = stricter)."""
+    from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN
+
     if not math.isfinite(offset):
         raise CliError("offset must be a finite number")
+    if not OFFSET_MIN <= offset <= OFFSET_MAX:
+        raise CliError(f"offset must be between {OFFSET_MIN:+.2f} and {OFFSET_MAX:+.2f}")
     with db_session() as s:
         kid = require_kid(s, name)
         kid.threshold_offset = offset
