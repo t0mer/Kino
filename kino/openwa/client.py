@@ -21,6 +21,8 @@ class OpenWAError(Exception):
         super().__init__(f"OpenWA {what} (status={status}, path={path})")
 
 
+PAGE_SIZE = 1000  # list endpoints are paged by limit/offset
+
 _ID_RE = re.compile(r"(\d{4})\d{2,}(\d{3})")
 
 
@@ -74,8 +76,21 @@ class OpenWAClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def _paged(self, what: str) -> list[dict[str, Any]]:
+        """GET a list endpoint page by page (`limit`/`offset`, per the live OpenAPI spec)."""
+        out: list[dict[str, Any]] = []
+        while True:
+            page = list(
+                await self._json(
+                    "GET", self._p(what), params={"limit": PAGE_SIZE, "offset": len(out)}
+                )
+            )
+            out.extend(page)
+            if len(page) < PAGE_SIZE:
+                return out
+
     async def list_groups(self) -> list[dict[str, Any]]:
-        return list(await self._json("GET", self._p("groups")))
+        return await self._paged("groups")
 
     async def get_group_name(self, chat_id: str) -> str | None:
         for g in await self.list_groups():
@@ -84,7 +99,7 @@ class OpenWAClient:
         return None
 
     async def list_chats(self, q: str | None = None) -> list[dict[str, Any]]:
-        chats = list(await self._json("GET", self._p("chats")))
+        chats = await self._paged("chats")
         if q:
             needle = q.casefold()
             chats = [c for c in chats if needle in str(c.get("name") or "").casefold()]

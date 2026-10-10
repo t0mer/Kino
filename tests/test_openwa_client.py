@@ -106,3 +106,22 @@ async def test_missing_message_id_label():
         await c.send_text("c@c.us", "x")
     assert "path=/api/sessions/sess/messages/send-text" in str(e.value)
     assert e.value.__context__ is None
+
+
+@pytest.mark.parametrize("what", ["groups", "chats"])
+async def test_lists_are_paged_by_offset(what):
+    calls = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        limit, offset = int(req.url.params["limit"]), int(req.url.params["offset"])
+        calls.append((limit, offset))
+        total = 1003
+        items = [
+            {"id": f"{i}@g.us", "name": f"n{i}"} for i in range(offset, min(total, offset + limit))
+        ]
+        return httpx.Response(200, json=items)
+
+    c = make(h)
+    items = await (c.list_groups() if what == "groups" else c.list_chats())
+    assert len(items) == 1003 and items[-1]["id"] == "1002@g.us"
+    assert calls == [(1000, 0), (1000, 1000)]
