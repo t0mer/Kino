@@ -273,6 +273,8 @@ def _import_groups(session: Session, found: list[dict[str, Any]]) -> int:
             new += 1
         elif name and group.name != name:
             group.name = name
+            if not group.slug:  # set once from the first real name; saved paths use it
+                group.slug = slugify(name, fallback="group")
     session.flush()
     return new
 

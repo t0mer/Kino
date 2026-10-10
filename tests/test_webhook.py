@@ -623,3 +623,30 @@ def test_inline_non_image_is_final(client):
     r = post(client, with_media(payload(), b"<html>not an image</html>"))
     assert r.status_code == 200 and r.json()["result"] == "not_an_image"
     assert images() == []
+
+
+def _group_row(chat_id=GROUP):
+    with dbs.get_session() as s:
+        return s.scalar(select(Group).where(Group.chat_id == chat_id))
+
+
+def test_group_slug_transliterates_hebrew_and_stays_stable(client):
+    from kino.api import webhook
+    from kino.slug import slugify
+
+    webhook._name_cache[GROUP] = (time.monotonic() + 3600, "גן שמש")
+    post(client, with_media(payload(id="1"), jpeg()))
+    g = _group_row()
+    assert g.name == "גן שמש" and g.slug == slugify("גן שמש", "group") == "gn-shmsh"
+    webhook._update_group_name(GROUP, "Renamed group")
+    g = _group_row()
+    assert g.name == "Renamed group" and g.slug == "gn-shmsh"  # saved paths keep their slug
+
+
+def test_group_without_name_gets_slug_from_first_real_name(client):
+    from kino.api import webhook
+
+    post(client, with_media(payload(id="1"), jpeg()))  # no OpenWA client: name unknown
+    assert _group_row().slug is None
+    webhook._update_group_name(GROUP, "גן שמש")
+    assert _group_row().slug == "gn-shmsh"

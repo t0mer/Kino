@@ -736,3 +736,19 @@ def test_kids_set_offset_bounded(env):
     assert run("kids", "set-offset", "Noa", "0.2").exit_code == 0
     with dbs.get_session() as s:
         assert s.scalar(select(Kid)).threshold_offset == pytest.approx(0.2)
+
+
+def test_import_groups_fills_missing_slug_only(env):
+    run("migrate")
+    with dbs.get_session() as s:
+        s.add_all(
+            [
+                Group(chat_id=GID, name="Group 1234567", slug=None),
+                Group(chat_id="2@g.us", name="Old", slug="old"),
+            ]
+        )
+        s.flush()
+        cli._import_groups(s, [{"id": GID, "name": "גן שמש"}, {"id": "2@g.us", "name": "New"}])
+        by_id = {g.chat_id: g for g in s.scalars(select(Group))}
+        assert by_id[GID].slug == "gn-shmsh"
+        assert (by_id["2@g.us"].name, by_id["2@g.us"].slug) == ("New", "old")

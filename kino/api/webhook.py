@@ -6,7 +6,6 @@ import asyncio
 import base64
 import binascii
 import json
-import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -34,6 +33,7 @@ from kino.openwa.schemas import (
     verify_signature,
 )
 from kino.pipeline.prefilter import ImageInfo, NotAnImage, compute_phash, hamming, sniff_image
+from kino.slug import slugify
 
 router = APIRouter()
 
@@ -56,11 +56,6 @@ def _reply(result: str, status: int = 200) -> Response:
     )
 
 
-def _slugify(name: str, chat_id: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return s or "group-" + re.sub(r"\D", "", chat_id)[-6:]
-
-
 def _fallback_name(chat_id: str) -> str:
     return "Group " + mask_path(chat_id).split("@")[0][-7:]
 
@@ -68,12 +63,19 @@ def _fallback_name(chat_id: str) -> str:
 _refresh_tasks: set[asyncio.Task[None]] = set()
 
 
+def _rename_group(g: Group, name: str) -> None:
+    """Update the display name. The slug is set once, from the first real name, and then
+    kept: saved photo paths contain it, so a later rename must not move new photos."""
+    g.name = name
+    if not g.slug:
+        g.slug = slugify(name, "group")
+
+
 def _update_group_name(chat_id: str, name: str) -> None:
     with get_session() as s:
         g = s.scalar(select(Group).where(Group.chat_id == chat_id))
-        if g is not None and g.name != name:
-            g.name = name
-            g.slug = _slugify(name, chat_id)
+        if g is not None and (g.name != name or not g.slug):
+            _rename_group(g, name)
 
 
 async def _refresh_group_name(client: Any, chat_id: str) -> None:
@@ -113,17 +115,19 @@ def _start_refresh(request: Request, chat_id: str) -> None:
 def _upsert_group(s: Session, chat_id: str, name: str | None, now: datetime) -> Group:
     g = s.scalar(select(Group).where(Group.chat_id == chat_id))
     if g is None:
-        shown = name or _fallback_name(chat_id)
+        # Without a known name the slug stays empty until the first real name arrives.
+        slug = slugify(name, "group") if name else None
         try:
             with s.begin_nested():
-                g = Group(chat_id=chat_id, name=shown, slug=_slugify(shown, chat_id), watched=False)
+                g = Group(
+                    chat_id=chat_id, name=name or _fallback_name(chat_id), slug=slug, watched=False
+                )
                 s.add(g)
         except IntegrityError:  # lost a race with a concurrent first message
             g = s.scalar(select(Group).where(Group.chat_id == chat_id))
             assert g is not None
-    elif name and g.name != name:
-        g.name = name
-        g.slug = _slugify(name, chat_id)
+    elif name and (g.name != name or not g.slug):
+        _rename_group(g, name)
     g.last_seen_at = now
     return g
 
