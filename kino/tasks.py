@@ -243,7 +243,7 @@ def _finish(s: Session, image_id: int, claimed_at: datetime, **values: Any) -> N
         raise _Superseded()
 
 
-def _bump_gallery_version(s: Session) -> None:
+def bump_gallery_version(s: Session) -> None:
     row = s.get(Setting, "gallery_version")
     cur = row.value if row is not None else None
     new = cur + 1 if isinstance(cur, int) and not isinstance(cur, bool) else 1
@@ -311,7 +311,7 @@ def _auto_enrich(s: Session, image: Image, by_kid: dict[int, _FaceWork], now: da
             old.status = "retired"
         changed = True
     if changed:
-        _bump_gallery_version(s)
+        bump_gallery_version(s)
     return changed
 
 

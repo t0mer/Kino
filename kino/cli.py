@@ -6,6 +6,7 @@ import functools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -16,11 +17,13 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from kino import __version__
+from kino.admin import AdminError
 from kino.config import Settings, get_settings
 from kino.db.session import get_engine, get_session, init_engine, run_migrations
 from kino.logging import setup_logging
 from kino.models.download import ModelError, ensure_model
 from kino.models.registry import MODELS
+from kino.openwa.client import mask_path
 
 app = typer.Typer(help="Kino: find your kids in WhatsApp group photos.", no_args_is_help=True)
 models_app = typer.Typer(help="Model files.", no_args_is_help=True)
@@ -29,6 +32,10 @@ app.add_typer(models_app, name="models")
 
 class CliError(Exception):
     """A user-facing failure: printed as one `error: ...` line, exit status 1."""
+
+
+def mask_chat_id(chat_id: str) -> str:
+    return mask_path(chat_id)
 
 
 def _one_line(text: str) -> str:
@@ -60,7 +67,7 @@ def command[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         try:
             setup_logging(_settings())
             return fn(*args, **kwargs)
-        except (CliError, ModelError, ForwardError, OpenWAError, RuntimeError) as e:
+        except (CliError, AdminError, ModelError, ForwardError, OpenWAError, RuntimeError) as e:
             raise _fail(str(e)) from None
 
     return wrapper
@@ -167,3 +174,47 @@ def models_download(
             f"{name}  {_fmt_size(path.stat().st_size)}  {path}  "
             f"checksum OK (sha256 {spec.sha256[:12]})"
         )
+
+
+@app.command()
+@command
+def enroll(
+    kid_name: Annotated[str, typer.Argument(help="Kid's display name (created if missing).")],
+    directory: Annotated[Path, typer.Argument(help="Folder of photos of this kid.")],
+    slug: Annotated[str | None, typer.Option(help="Folder slug for a new kid.")] = None,
+    birth_year: Annotated[int | None, typer.Option(help="Birth year for a new kid.")] = None,
+    group: Annotated[
+        list[str] | None, typer.Option("--group", help="Map the kid to this group chat id.")
+    ] = None,
+) -> None:
+    """Enroll reference faces for a kid from a directory of photos."""
+    from kino import enroll as enroll_mod
+    from kino import tasks
+    from kino.admin import find_group, get_or_create_kid, map_kids_to_group
+
+    if not directory.is_dir():
+        raise CliError(f"{directory} is not a directory")
+    if not enroll_mod.list_images(directory):
+        raise CliError(f"no jpg/jpeg/png/webp/heic photos in {directory}")
+    st = _settings()
+    with db_session() as s:
+        for chat_id in group or []:
+            if find_group(s, chat_id) is None:
+                raise CliError(f"unknown group {mask_chat_id(chat_id)}; see `kino groups list`")
+        pipe = tasks.get_pipeline()
+        kid, created = get_or_create_kid(s, kid_name, slug, birth_year)
+        typer.echo(f"{'created' if created else 'using'} kid {kid.display_name} ({kid.slug})")
+        results = enroll_mod.enroll_directory(s, kid, directory, pipe.detector, pipe.embedder, st)
+        for chat_id in group or []:
+            g = find_group(s, chat_id)
+            assert g is not None
+            map_kids_to_group(s, g, [kid], replace=False)
+        total = enroll_mod.coverage(s, kid)
+    width = max(len(r.name) for r in results)
+    for r in results:
+        typer.echo(f"{r.name:<{width}}  {r.status:<9}  {r.detail}")
+    added = sum(r.status == "enrolled" for r in results)
+    typer.echo(
+        f"{added} added, {total} active reference(s); "
+        f"recommended minimum is {enroll_mod.RECOMMENDED_REFS}"
+    )
