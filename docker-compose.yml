@@ -16,15 +16,22 @@ services:
     image: ghcr.io/rmyndharis/openwa:latest
     volumes:
       - openwa-data:/app/data
+    # Loopback only: the OpenWA API holds your WhatsApp session. Kino reaches it over
+    # the internal Docker network (http://openwa:2785) and needs no published port.
     ports:
-      - "2785:2785"
+      - "127.0.0.1:2785:2785"
     restart: unless-stopped
 
   kino-api:
     <<: *kino
     command: ["api"]
+    # Loopback only by default. M1 has no UI login: the webhook is HMAC-protected and
+    # /metrics answers 403 unless KINO_METRICS_PUBLIC=true, but nothing else is meant
+    # to be reachable from the network. To expose Kino, put a Cloudflare Tunnel or a
+    # reverse proxy in front of it (and keep /api/webhook/openwa unrouted there), or
+    # change this to "8080:8080" on a trusted LAN only.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       - openwa
     # HEALTHCHECK (GET /healthz) comes from the image.

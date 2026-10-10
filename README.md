@@ -64,6 +64,8 @@ mkdir -p photos && sudo chown 1000:1000 photos   # the container runs as uid 100
 docker compose up -d
 ```
 
+The example compose file publishes the API (8080) and OpenWA (2785) on `127.0.0.1` only. OpenWA is reached by Kino over the internal Docker network and should stay private. To reach Kino from elsewhere, put a Cloudflare Tunnel or a reverse proxy in front of it (do not route `/api/webhook/openwa` there), or change the mapping to `8080:8080` on a trusted LAN only; M1 has no UI login.
+
 `/data` is a named volume (`kino-data`) holding the database, queues, raw images, crops and models. The `./photos` bind mount must be writable by uid 1000. Run the forward worker as exactly one instance; do not scale it.
 
 Then, using the CLI inside the running container (`docker compose exec kino-api kino ...`):
@@ -187,6 +189,7 @@ Run `kino --help` or `kino <command> --help` for all options. In the container t
 - `/metrics` is not public by default.
 - Keep `.env` out of version control; secrets are never baked into the image and no model files are included.
 - The webhook is meant to be reached by OpenWA over the internal Docker network only; do not expose it publicly.
+- The example `docker-compose.yml` binds the Kino API and OpenWA to `127.0.0.1`. Expose Kino only through a tunnel or reverse proxy (M1 has no UI authentication), and never expose OpenWA.
 - Never choose a watched group as the forward destination (Kino would ingest its own photos).
 
 ## Model licensing
