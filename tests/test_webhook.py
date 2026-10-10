@@ -470,3 +470,18 @@ def test_huey_immediate_mode_runs_stub():
         tasks.process_image(1)
     finally:
         tasks.huey.immediate = False
+
+
+def test_forward_echo_ignored(client):
+    from kino.db.models import Forward
+
+    watch()
+    with dbs.get_session() as s:
+        img = ImageRow(message_id="orig", status="done")
+        s.add(img)
+        s.flush()
+        s.add(Forward(image_id=img.id, dest_chat_id="d@c.us", openwa_message_id="3EB0ABC123"))
+    assert post(client, with_media(payload(), jpeg())).json() == {"result": "ignored"}
+    assert [i.message_id for i in images()] == ["orig"]
+    # a different message id is still processed
+    assert post(client, with_media(payload(id="OTHER"), jpeg())).json()["result"] == "queued"

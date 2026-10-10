@@ -67,7 +67,7 @@ python_version = "3.12"
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["kino.pipeline.*", "kino.api.*"]
+module = ["kino.pipeline.*", "kino.api.*", "kino.forward"]
 strict = true
 
 [tool.ruff.lint.per-file-ignores]

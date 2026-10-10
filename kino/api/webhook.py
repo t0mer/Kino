@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from kino import metrics, tasks
 from kino.config import Settings
-from kino.db.models import Group, Image
+from kino.db.models import Forward, Group, Image
 from kino.db.session import get_session
 from kino.openwa.client import OpenWAError, mask_path
 from kino.openwa.schemas import (
@@ -163,6 +163,14 @@ def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, int | None]
     return watched, queued_id
 
 
+def _is_forward_echo(message_id: str) -> bool:
+    """True when the message is one Kino itself sent as a forward (loop guard)."""
+    with get_session() as s:
+        return (
+            s.scalar(select(Forward.id).where(Forward.openwa_message_id == message_id)) is not None
+        )
+
+
 def _message_known(ev: WebhookEvent) -> bool:
     with get_session() as s:
         return s.scalar(select(Image.id).where(Image.message_id == ev.message_id)) is not None
@@ -255,6 +263,8 @@ async def openwa_webhook(request: Request) -> Response:
     if not settings.openwa_session_id or ev.session_id != settings.openwa_session_id:
         return _reply("bad_session", 403)
     if ev.media_type != "image" or not ev.is_group or ev.from_me:
+        return _reply("ignored")
+    if await run_in_threadpool(_is_forward_echo, ev.message_id):
         return _reply("ignored")
 
     name, refresh = _cached_group_name(request, ev.chat_id)
