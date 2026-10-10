@@ -314,6 +314,7 @@ async def openwa_webhook(request: Request) -> Response:
         return _reply("duplicate_message")
 
     data: bytes
+    fetched = not ev.media_b64
     if ev.media_b64:
         try:
             data = base64.b64decode("".join(ev.media_b64.split()), validate=True)
@@ -324,6 +325,8 @@ async def openwa_webhook(request: Request) -> Response:
         if client is None:
             return _reply("media_unavailable", 503)
         try:
+            # The id goes to OpenWA exactly as delivered: the live media endpoint needs the
+            # serialized `false_<chat>_<id>_<participant>` form (a bare id gives 404).
             data = await client.get_media(ev.chat_id, ev.message_id)
         except OpenWAError as e:
             logger.warning("media fetch failed: {}", e)
@@ -334,6 +337,15 @@ async def openwa_webhook(request: Request) -> Response:
     try:
         info = await run_in_threadpool(sniff_image, data)
     except NotAnImage as e:
+        if fetched:
+            # A missing/failed download (empty body, error page) must not be final: 503 makes
+            # OpenWA redeliver, and the next attempt fetches the media again.
+            logger.warning(
+                "fetched media for {} is not an image ({}); asking OpenWA to retry",
+                mask_path(ev.chat_id),
+                e,
+            )
+            return _reply("media_unavailable", 503)
         logger.info("ignoring non-image media in {}: {}", mask_path(ev.chat_id), e)
         return _reply("not_an_image")
 

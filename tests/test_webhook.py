@@ -591,3 +591,35 @@ async def test_body_within_cap_still_verified(env, enqueued, monkeypatch):
     app = create_app()
     code, _ = await _asgi_post(app, {}, [b'{"event":', b'"x"}'])
     assert code == 401  # read fully, then HMAC checked over the raw bytes
+
+
+SERIALIZED_ID = "false_120363021234567890@g.us_3EB0ABC123_123456789012345@lid"
+
+
+@pytest.mark.parametrize("fetched", [b"<html>error page</html>", b""])
+def test_fetched_non_image_media_asks_openwa_to_retry(client, fetched):
+    watch()
+    seen = []
+
+    class Fake:
+        async def get_group_name(self, chat_id):
+            return "Class 3B"
+
+        async def get_media(self, chat_id, message_id):
+            seen.append(message_id)
+            return fetched
+
+    client.app.state.openwa = Fake()
+    p = payload(id=SERIALIZED_ID)
+    p["data"]["media"] = {"mimetype": "image/jpeg", "omitted": True}
+    r = post(client, p)
+    assert r.status_code == 503 and r.json()["result"] == "media_unavailable"
+    assert seen == [SERIALIZED_ID]  # the serialized id is passed exactly as delivered
+    assert images() == []
+
+
+def test_inline_non_image_is_final(client):
+    watch()
+    r = post(client, with_media(payload(), b"<html>not an image</html>"))
+    assert r.status_code == 200 and r.json()["result"] == "not_an_image"
+    assert images() == []
