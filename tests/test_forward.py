@@ -109,11 +109,9 @@ def test_cancel_only_pending(s):
     g, k1, _, img = seed(s)
     cfg(s, enabled=True, default_chat_id="d@c.us")
     (f,) = fw.plan_forwards(s, img, [k1], {}, g)
-    assert fw.forward_blocks_raw_cleanup(s, img.id)
     assert fw.cancel_forwards(s, img.id, k1.id + 99) == 0
     assert fw.cancel_forwards(s, img.id, k1.id) == 1
     assert f.status == "cancelled"
-    assert not fw.forward_blocks_raw_cleanup(s, img.id)
     f.status = "sent"
     assert fw.cancel_forwards(s, img.id, k1.id) == 0
     assert f.status == "sent"

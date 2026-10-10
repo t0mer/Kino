@@ -242,8 +242,8 @@ def test_enrolled_kid_saved_and_forwarded(world):
     assert Path(fw.file_path) == expected
     # enqueued after commit: a fresh session saw the row at enqueue time
     assert q.ids == [fw.id] and q.visible == ["pending"]
-    # forward pending -> raw kept
-    assert raw.exists() and img.raw_path == str(raw)
+    # forwards send the SAVED file, so a pending forward does not keep the raw file
+    assert not raw.exists() and img.raw_path is None
 
 
 def test_timezone_passed_to_save(world, monkeypatch):

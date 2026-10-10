@@ -213,16 +213,6 @@ def cancel_forwards(session: Session, image_id: int, kid_id: int) -> int:
     return n
 
 
-def forward_blocks_raw_cleanup(session: Session, image_id: int) -> bool:
-    """True while any forward for the image is still pending (raw file must be kept)."""
-    return (
-        session.scalar(
-            select(Forward.id).where(Forward.image_id == image_id, Forward.status == "pending")
-        )
-        is not None
-    )
-
-
 # --- sender -----------------------------------------------------------------------------
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)  # retries 1..4 after a failure

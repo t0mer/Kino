@@ -498,13 +498,12 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
 
 
 def _cleanup_raw(image_id: int) -> None:
-    """Delete the raw file once every matched kid is saved, nothing is pending review and
-    no forward still needs it. Called only after a successful commit."""
-    from kino.forward import forward_blocks_raw_cleanup
-
+    """Delete the raw file once every matched kid is saved and nothing is pending review.
+    Called only after a successful commit. Pending forwards do not keep it: they send the
+    saved (EXIF-rewritten, GPS-stripped) file, never the raw one."""
     path: str | None = None
     with get_session() as s:
-        if forward_blocks_raw_cleanup(s, image_id) or _review_pending(s, image_id):
+        if _review_pending(s, image_id):
             return
         image = s.get(Image, image_id)
         if image is None or image.status != "done":
