@@ -26,6 +26,7 @@ from kino.config import get_settings
 from kino.db.models import Forward, Group, Image, Kid, Setting
 from kino.db.session import get_session
 from kino.openwa.client import OpenWAClient, mask_path
+from kino.pipeline.save import to_local
 from kino.tasks import forward_huey
 
 DEFAULT_CAPTION = "📸 {kids} · {group} · {date}"
@@ -96,7 +97,9 @@ def _clean(text: str | None, limit: int = MAX_VALUE) -> str:
 def render_caption(
     template: str, kids: list[str], group: str, sender: str, sent_at: datetime
 ) -> str:
-    """Fill {kids} {group} {sender} {date} {time}; unknown placeholders stay literal."""
+    """Fill {kids} {group} {sender} {date} {time}; unknown placeholders stay literal.
+
+    ``sent_at`` is rendered as given: callers pass it already in local time (KINO_TIMEZONE)."""
     values = {
         "kids": ", ".join(_clean(k) for k in kids),
         "group": _clean(group),
@@ -178,7 +181,7 @@ def plan_forwards(
             [k.display_name for k in kids],
             group.name or "",
             image.sender_name or "",
-            image.sent_at or datetime(1970, 1, 1),
+            to_local(image.sent_at or datetime(1970, 1, 1), get_settings().timezone),
         )
         row = Forward(
             image_id=image.id,

@@ -84,7 +84,7 @@ class _ImageLike(Protocol):
     def sender_name(self) -> str | None: ...
 
 
-def _local(dt: datetime | None, timezone: str) -> datetime:
+def to_local(dt: datetime | None, timezone: str) -> datetime:
     """``sent_at`` (naive = UTC) as an aware datetime in ``timezone``."""
     if dt is None:
         raise ValueError("sent_at missing")
@@ -123,7 +123,7 @@ def build_dest_path(
     kid: _KidLike, group: _GroupLike, image: _ImageLike, dest_root: Path, *, timezone: str
 ) -> Path:
     """Compute (and validate) the destination path for one kid (local time of ``timezone``)."""
-    ts = _local(image.sent_at, timezone)
+    ts = to_local(image.sent_at, timezone)
     group_slug = group.slug or slugify(group.name or "", "group")
     name = f"{ts:%Y-%m-%d_%H%M%S}_{_component(group_slug, 'group')}_{image.id:08d}.jpg"
     path = dest_root / _component(kid.slug, "kid") / f"{ts:%Y}" / f"{ts:%m}" / name
@@ -163,7 +163,7 @@ def _build_exif(
             exif = piexif.load(existing)
     exif["thumbnail"] = None
     exif["1st"] = {}
-    ts = _local(image.sent_at, timezone)
+    ts = to_local(image.sent_at, timezone)
     stamp = ts.strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
     offset = _offset(ts)
     for tag in _STALE_EXIF_TAGS:

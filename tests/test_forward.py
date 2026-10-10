@@ -435,3 +435,18 @@ def test_destination_still_configured_as_per_kid_override_sends(pending):
 
     c = FakeClient()
     assert deliver(fid, c, primed_limiter(move_default_keep_override)) == "sent"
+
+
+def test_caption_uses_configured_timezone(s, monkeypatch):
+    from kino.config import get_settings
+
+    monkeypatch.setenv("KINO_TIMEZONE", "Asia/Jerusalem")
+    get_settings.cache_clear()
+    try:
+        g, k1, _, img = seed(s)
+        img.sent_at = datetime(2026, 3, 31, 23, 30)  # naive UTC -> 02:30 on 1 April (IDT)
+        cfg(s, enabled=True, default_chat_id="d@c.us", caption_template="{date} {time}")
+        (f,) = fw.plan_forwards(s, img, [k1], {}, g)
+        assert f.caption == "2026-04-01 02:30"
+    finally:
+        get_settings.cache_clear()
