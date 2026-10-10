@@ -631,18 +631,26 @@ def sweep_stale_images(
 ) -> dict[str, list[int]]:
     """Re-enqueue `queued` rows older than 5 minutes (a lost enqueue) and recover rows stuck
     in `processing` for over 30 minutes (a crashed worker): back to `queued` the first time,
-    `failed` with error `stuck` the second time. Duplicate enqueues are harmless because
-    `process_image` claims rows atomically."""
+    `failed` with error `stuck` the second time. A row the sweeper enqueued within the last
+    5 minutes is not enqueued again (`last_enqueued_at`), so a backlog does not pile up
+    duplicate queue entries; any that remain are harmless because claims are atomic."""
     now = now or _utcnow()
     result: dict[str, list[int]] = {"requeued": [], "recovered": [], "failed": []}
     to_enqueue: list[tuple[str, int]] = []
     with get_session() as s:
         for iid in s.scalars(
-            select(Image.id).where(Image.status == "queued", Image.received_at < now - STALE_QUEUED)
+            select(Image.id).where(
+                Image.status == "queued",
+                Image.received_at < now - STALE_QUEUED,
+                or_(
+                    Image.last_enqueued_at.is_(None),
+                    Image.last_enqueued_at < now - STALE_QUEUED,
+                ),
+            )
         ):
             to_enqueue.append(("requeued", iid))
         stuck = s.execute(
-            select(Image.id, Image.stuck_count).where(
+            select(Image.id, Image.stuck_count, Image.processing_started_at).where(
                 Image.status == "processing",
                 or_(
                     Image.processing_started_at.is_(None),
@@ -650,8 +658,14 @@ def sweep_stale_images(
                 ),
             )
         ).all()
-        for iid, count in stuck:
-            guard = (Image.id == iid, Image.status == "processing")
+        for iid, count, started in stuck:
+            guard = (
+                Image.id == iid,
+                Image.status == "processing",
+                Image.processing_started_at.is_(None)
+                if started is None
+                else Image.processing_started_at == started,
+            )
             if count >= 1:
                 s.execute(update(Image).where(*guard).values(status="failed", error="stuck"))
                 result["failed"].append(iid)
@@ -670,6 +684,10 @@ def sweep_stale_images(
             logger.error("sweeper enqueue of image {} failed: {}", iid, type(e).__name__)
             continue
         result[kind].append(iid)
+    enqueued = result["requeued"] + result["recovered"]
+    if enqueued:
+        with get_session() as s:
+            s.execute(update(Image).where(Image.id.in_(enqueued)).values(last_enqueued_at=now))
     if any(result.values()):
         logger.info("image sweeper: {}", {k: len(v) for k, v in result.items()})
     return result

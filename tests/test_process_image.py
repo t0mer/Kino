@@ -826,3 +826,28 @@ def test_error_stage_labels_not_doubled(world):
     assert img.error.count("load:") == 1
     assert not any("claim" in m or "load: load:" in m for m in messages)
     assert any(f"image {iid} failed: load: " in m for m in messages)
+
+
+def test_sweeper_does_not_requeue_recently_enqueued(env):
+    gid = seed_group()
+    now = datetime(2026, 3, 7, 12, 0)
+    iid, _ = seed_image(env, group_id=gid, received_at=now - timedelta(minutes=30))
+    calls: list[int] = []
+    tasks.sweep_stale_images(now=now, enqueue=calls.append)
+    assert get(Image, iid).last_enqueued_at == now
+    tasks.sweep_stale_images(now=now + timedelta(minutes=4), enqueue=calls.append)
+    assert calls == [iid]
+    tasks.sweep_stale_images(now=now + timedelta(minutes=6), enqueue=calls.append)
+    assert calls == [iid, iid]
+
+
+def test_sweeper_failed_enqueue_not_marked(env):
+    gid = seed_group()
+    now = datetime(2026, 3, 7, 12, 0)
+    iid, _ = seed_image(env, group_id=gid, received_at=now - timedelta(minutes=30))
+
+    def boom(_):
+        raise RuntimeError("down")
+
+    tasks.sweep_stale_images(now=now, enqueue=boom)
+    assert get(Image, iid).last_enqueued_at is None

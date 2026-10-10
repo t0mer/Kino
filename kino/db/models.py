@@ -108,6 +108,8 @@ class Image(Base):
     transient_count: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # When the sweeper last re-enqueued the row (avoids piling up duplicate queue entries).
+    last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class Cluster(Base):
