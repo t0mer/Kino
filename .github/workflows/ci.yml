@@ -42,20 +42,51 @@ jobs:
         run: |
           uv venv
           uv pip install .
-          uv pip install pip-licenses==5.0.0
-      - name: Fail on AGPL licenses or ultralytics
+      - name: Fail on AGPL, ultralytics or unknown licenses
+        env:
+          # Packages whose installed metadata carries no license at all, checked by hand.
+          # Keep this list minimal; every entry needs a reason:
+          #   huey: MIT (LICENSE file in coleifer/huey), but its metadata declares none.
+          LICENSE_UNKNOWN_ALLOW: huey
+        # pip-licenses 5.0 ignores PEP 639 `License-Expression` and reports most modern
+        # packages as UNKNOWN, so the license is read from the metadata directly:
+        # License-Expression, then License, then the `License ::` classifiers.
         run: |
-          set -euo pipefail
-          .venv/bin/pip-licenses --format=csv --with-system > licenses.csv
-          cat licenses.csv
-          if grep -iE 'agpl|affero' licenses.csv; then
-            echo "::error::AGPL-licensed dependency found"
-            exit 1
-          fi
-          if uv pip freeze | grep -iq '^ultralytics'; then
-            echo "::error::ultralytics (AGPL) must not be installed"
-            exit 1
-          fi
+          .venv/bin/python -I - <<'PY'
+          import importlib.metadata as md
+          import os
+          import re
+          import sys
+
+          allow = {
+              n.strip().lower()
+              for n in os.environ.get("LICENSE_UNKNOWN_ALLOW", "").split(",")
+              if n.strip()
+          }
+          bad, unknown = [], []
+          for d in sorted(md.distributions(), key=lambda d: (d.metadata["Name"] or "").lower()):
+              name, meta = (d.metadata["Name"] or "").lower(), d.metadata
+              parts = [meta.get("License-Expression") or ""]
+              lic = (meta.get("License") or "").strip()
+              if lic and len(lic) < 200:  # skip full license texts pasted into the field
+                  parts.append(lic)
+              parts += [
+                  c.split("::")[-1].strip()
+                  for c in meta.get_all("Classifier") or []
+                  if c.startswith("License ::")
+              ]
+              text = " | ".join(p for p in parts if p and p.upper() != "UNKNOWN")
+              print(f"{name} {d.version}: {text or 'UNKNOWN'}")
+              if re.search(r"agpl|affero", text, re.I) or name == "ultralytics":
+                  bad.append(name)
+              elif not text and name not in allow:
+                  unknown.append(name)
+          if bad:
+              print("::error::AGPL-licensed or forbidden dependency:", ", ".join(bad))
+          if unknown:
+              print("::error::dependency without a license:", ", ".join(unknown))
+          sys.exit(1 if bad or unknown else 0)
+          PY
 
   trivy:
     runs-on: ubuntu-latest
