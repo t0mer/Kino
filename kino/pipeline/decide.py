@@ -5,9 +5,11 @@ gets ``-prior_bonus`` on both thresholds, an unmapped kid ``+unmapped_penalty``.
 ``Matcher.score`` returns raw scores; callers must not adjust them for the group.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from kino.db import models
@@ -15,14 +17,27 @@ from kino.pipeline.matcher import KidScore
 from kino.pipeline.quality import Tier
 
 Action = Literal["auto_save", "review", "drop"]
-_EPS = 1e-9
+# Scores come from float32 dot products (error ~1e-7), so a score that is exactly on a
+# threshold in exact arithmetic must still pass; 1e-6 absorbs that rounding.
+_EPS = 1e-6
 
 
 class KidLike(Protocol):
     @property
+    def id(self) -> int: ...
+    @property
     def auto_save_enabled(self) -> bool: ...
     @property
     def threshold_offset(self) -> float: ...
+
+
+def _num(v: Any) -> float:
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        raise TypeError(f"not a number: {type(v).__name__}")
+    f = float(v)
+    if not math.isfinite(f) or not -1.0 <= f <= 1.0:
+        raise ValueError(f"out of range: {f}")
+    return f
 
 
 @dataclass
@@ -47,13 +62,29 @@ class Thresholds:
             return t
         for tier in ("L", "M", "S"):
             sub = data.get(tier)
-            if isinstance(sub, dict):
-                for key in ("auto", "review"):
-                    if key in sub and hasattr(t, f"{tier}_{key}"):
-                        setattr(t, f"{tier}_{key}", float(sub[key]))
+            if sub is None:
+                continue
+            keys = ("auto", "review") if tier != "S" else ("review",)
+            try:
+                vals = {k: _num(sub[k]) for k in keys if k in sub}
+                if "auto" in vals and vals["auto"] < vals.get(
+                    "review", getattr(t, f"{tier}_review")
+                ):
+                    raise ValueError("auto below review")
+                if "review" in vals and tier != "S" and "auto" not in vals:
+                    if getattr(t, f"{tier}_auto") < vals["review"]:
+                        raise ValueError("auto below review")
+            except (ValueError, TypeError, KeyError) as exc:
+                logger.warning("ignoring invalid thresholds for tier {}: {}", tier, exc)
+                continue
+            for k, v in vals.items():
+                setattr(t, f"{tier}_{k}", v)
         for key in ("prior_bonus", "unmapped_penalty", "margin_min"):
             if key in data:
-                setattr(t, key, float(data[key]))
+                try:
+                    setattr(t, key, _num(data[key]))
+                except (ValueError, TypeError) as exc:
+                    logger.warning("ignoring invalid threshold {}: {}", key, exc)
         return t
 
     def for_tier(self, tier: Tier) -> tuple[float | None, float | None]:
@@ -82,11 +113,13 @@ def decide(
     thresholds: Thresholds,
     group_mapped: bool,
 ) -> Decision:
-    """``scores`` is best-first and ``kid`` is the best kid's info; the face goes to
-    the best kid only (one kid per face)."""
+    """``scores`` is best-first; ``kid`` must be the best kid's info (ValueError
+    otherwise). The face goes to the best kid only (one kid per face)."""
     if not scores:
         return Decision(None, "drop", 0.0, 0.0, "no candidate kids")
     best = scores[0]
+    if kid.id != best.kid_id:
+        raise ValueError(f"kid {kid.id} does not match best-scoring kid {best.kid_id}")
 
     def result(action: Action, reason: str) -> Decision:
         return Decision(best.kid_id, action, best.score, best.margin, reason)

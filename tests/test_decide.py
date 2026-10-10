@@ -100,3 +100,36 @@ def test_from_settings_default_and_override(tmp_path):
     assert t.L_auto == pytest.approx(0.6) and t.L_review == pytest.approx(0.4)
     assert t.M_auto == 0.50 and t.prior_bonus == 0.05
     eng.dispose()
+
+
+def test_float32_score_on_threshold_auto_saves():
+    import numpy as np
+
+    score = float(np.float32(0.42))  # 0.41999999..., mapped L auto threshold is 0.42
+    assert run(Tier.L, score).action == "auto_save"
+
+
+def test_kid_mismatch_raises():
+    with pytest.raises(ValueError):
+        decide(Tier.L, sc(0.9), KidInfo(2, True, 0.0), TH, True)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"L": {"auto": float("nan"), "review": 0.4}},
+        {"L": {"auto": "0.6", "review": 0.4}},
+        {"L": {"auto": 0.3, "review": 0.4}},
+        {"L": {"auto": 5, "review": 0.4}},
+    ],
+)
+def test_invalid_overrides_fall_back(tmp_path, bad):
+    eng = session.init_engine(f"sqlite:///{tmp_path / 'k.db'}")
+    models.Base.metadata.create_all(eng)
+    with session.get_session() as s:
+        s.add(models.Setting(key="thresholds", value={**bad, "M": {"auto": 0.6, "review": 0.4}}))
+        s.flush()
+        t = Thresholds.from_settings(s)
+    assert (t.L_auto, t.L_review) == (0.45, 0.32)
+    assert (t.M_auto, t.M_review) == (0.6, 0.4)  # valid tier still applied
+    eng.dispose()

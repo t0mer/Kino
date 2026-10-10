@@ -165,8 +165,8 @@ def test_maybe_reload_only_on_version_change(db):
         add_ref(s, k, unit(0))
         m = Matcher(now=lambda: NOW)
         calls = []
-        orig = m.reload
-        m.reload = lambda sess: (calls.append(1), orig(sess))[1]  # type: ignore[method-assign]
+        orig = m._load_embeddings
+        m._load_embeddings = lambda sess: (calls.append(1), orig(sess))[1]  # type: ignore[method-assign]
         assert m.maybe_reload(s) is True  # first load
         assert m.maybe_reload(s) is False
         assert len(calls) == 1
@@ -181,6 +181,48 @@ def test_maybe_reload_only_on_version_change(db):
         assert m.maybe_reload(s) is True
         assert len(calls) == 3
     assert len(m.score(unit(1), None)) == 1
+
+
+def test_kid_settings_live_without_version_bump(db):
+    with session.get_session() as s:
+        k = add_kid(s, auto_save_enabled=True)
+        g = models.Group(chat_id="g@g.us")
+        s.add(g)
+        s.flush()
+        add_ref(s, k, unit(0))
+        m = Matcher(now=lambda: NOW)
+        calls = []
+        orig = m._load_embeddings
+        m._load_embeddings = lambda sess: (calls.append(1), orig(sess))[1]  # type: ignore[method-assign]
+        m.maybe_reload(s)
+        assert m.kid(k.id).auto_save_enabled and not m.group_mapped(k.id, g.id)
+        k.auto_save_enabled = False
+        k.threshold_offset = 0.07
+        s.add(models.KidGroup(kid_id=k.id, group_id=g.id))
+        s.flush()
+        assert m.maybe_reload(s) is False  # embeddings not rebuilt
+        assert len(calls) == 1
+        assert m.kid(k.id).auto_save_enabled is False
+        assert m.kid(k.id).threshold_offset == 0.07
+        assert m.group_mapped(k.id, g.id)
+
+
+def test_inactive_kid_not_scored(db):
+    with session.get_session() as s:
+        a = add_kid(s, "a")
+        b = add_kid(s, "b", active=False)
+        add_ref(s, a, unit(0))
+        add_ref(s, b, unit(0))
+        m = make(s)
+        assert [x.kid_id for x in m.score(unit(0), None)] == [a.id]
+        a.active = False
+        s.flush()
+        m.maybe_reload(s)
+        assert m.score(unit(0), None) == []
+
+
+def test_default_now_is_naive_utc():
+    assert Matcher()._now().tzinfo is None
 
 
 def test_kid_info_and_mapping(db):

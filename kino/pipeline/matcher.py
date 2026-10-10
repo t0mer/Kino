@@ -8,7 +8,7 @@ margin) and never applies the +/- group threshold adjustments.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,6 +26,11 @@ NEGATIVE_PENALTY = 0.1
 Vec = NDArray[np.float32]
 
 
+def _utcnow() -> datetime:
+    """Naive UTC, consistent with models._now."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 @dataclass
 class KidScore:
     kid_id: int
@@ -35,7 +40,7 @@ class KidScore:
 
 @dataclass(frozen=True)
 class KidInfo:
-    kid_id: int
+    id: int
     auto_save_enabled: bool
     threshold_offset: float
 
@@ -48,7 +53,7 @@ class _Gallery:
 
 
 class Matcher:
-    def __init__(self, now: Callable[[], datetime] = datetime.now) -> None:
+    def __init__(self, now: Callable[[], datetime] = _utcnow) -> None:
         self._now = now
         self._galleries: dict[int, _Gallery] = {}
         self._kids: dict[int, KidInfo] = {}
@@ -59,27 +64,29 @@ class Matcher:
         row = session.get(models.Setting, "gallery_version")
         return None if row is None else row.value
 
-    def reload(self, session: Session) -> None:
-        now = self._now()
-        kids = {
+    def _load_kids(self, session: Session) -> None:
+        """Live kid settings + kid-group mappings; cheap, refreshed on every maybe_reload."""
+        self._kids = {
             k.id: KidInfo(k.id, k.auto_save_enabled, k.threshold_offset)
-            for k in session.scalars(select(models.Kid))
+            for k in session.scalars(select(models.Kid).where(models.Kid.active.is_(True)))
         }
+        self._groups = {(kg.kid_id, kg.group_id) for kg in session.scalars(select(models.KidGroup))}
+
+    def _load_embeddings(self, session: Session) -> None:
+        """Heavy part (reference/negative matrices), cached by gallery_version."""
+        now = self._now()
         refs: dict[int, list[tuple[Vec, float]]] = {}
         for r in session.scalars(
             select(models.ReferenceFace).where(models.ReferenceFace.status == "active")
         ):
-            if r.kid_id not in kids:
-                continue
             if r.photo_date is None:
                 recency = 1.0
             else:
                 age = max((now - r.photo_date).total_seconds() / 86400.0, 0.0)
                 recency = max(0.5 ** (age / RECENCY_HALF_LIFE_DAYS), RECENCY_FLOOR)
             quality = 1.0 if r.quality is None else r.quality
-            refs.setdefault(r.kid_id, []).append(
-                (blob_to_embedding(r.embedding), quality * recency)
-            )
+            emb = blob_to_embedding(r.embedding)
+            refs.setdefault(r.kid_id, []).append((emb, quality * recency))
         negs: dict[int, list[Vec]] = {}
         for n in session.scalars(select(models.NegativeFace)):
             negs.setdefault(n.kid_id, []).append(blob_to_embedding(n.embedding))
@@ -92,15 +99,19 @@ class Matcher:
                 np.stack(neg).astype(np.float32) if neg else None,
             )
         self._galleries = galleries
-        self._kids = kids
-        self._groups = {(kg.kid_id, kg.group_id) for kg in session.scalars(select(models.KidGroup))}
         self._version = self._read_version(session)
 
+    def reload(self, session: Session) -> None:
+        self._load_kids(session)
+        self._load_embeddings(session)
+
     def maybe_reload(self, session: Session) -> bool:
-        """Reload only if settings.gallery_version changed; returns whether it did."""
+        """Always refresh kid settings/mappings; rebuild embeddings only if
+        settings.gallery_version changed. Returns whether embeddings were rebuilt."""
+        self._load_kids(session)
         if self._read_version(session) == self._version:
             return False
-        self.reload(session)
+        self._load_embeddings(session)
         return True
 
     def kid(self, kid_id: int) -> KidInfo:
@@ -116,6 +127,8 @@ class Matcher:
         face = np.asarray(face_emb, dtype=np.float32)
         raw: list[tuple[int, float]] = []
         for kid_id, g in self._galleries.items():
+            if kid_id not in self._kids:  # inactive or deleted kid
+                continue
             sims = g.refs @ face
             k = min(TOP_K, len(sims))
             idx = np.argsort(-sims, kind="stable")[:k]
