@@ -15,7 +15,7 @@ from kino.pipeline.detect import Detection
 from kino.pipeline.quality import Tier
 
 EMBED_DIM = 512
-_MODEL_NAMES = {"auraface": "auraface_glintr100", "buffalo_l": "buffalo_l_r50"}
+MODEL_NAMES = {"auraface": "auraface_glintr100", "buffalo_l": "buffalo_l_r50"}
 
 
 class Embedder(Protocol):
@@ -45,7 +45,7 @@ class OnnxEmbedder:
 
 
 def get_embedder(settings: Settings) -> Embedder:
-    path = ensure_model(_MODEL_NAMES[settings.embedder], settings.data_dir)
+    path = ensure_model(MODEL_NAMES[settings.embedder], settings.data_dir)
     return OnnxEmbedder(path, settings.ort_threads)
 
 
