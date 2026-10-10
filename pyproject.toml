@@ -22,6 +22,8 @@ dependencies = [
     "numpy==2.5.4",
     "filelock==4.1.0",
     "prometheus-client==0.26.0",
+    "imagehash==4.3.2",
+    "pillow==12.3.0",
 ]
 
 [project.optional-dependencies]
@@ -64,3 +66,7 @@ strict = true
 
 [tool.ruff.lint.per-file-ignores]
 "kino/db/alembic/versions/*" = ["E501", "I", "UP"]
+
+[[tool.mypy.overrides]]
+module = ["imagehash", "huey", "huey.*"]
+ignore_missing_imports = true
