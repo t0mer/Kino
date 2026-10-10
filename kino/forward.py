@@ -126,6 +126,18 @@ def set_default_destination(session: Session, chat_id: str) -> None:
     _put(session, K_ENABLED, True)
 
 
+def ensure_not_destination(session: Session, chat_id: str) -> None:
+    """Reject watching a chat that forwards go to (its own photos would be re-ingested)."""
+    cfg = get_forward_config(session)
+    destinations = {cfg.default_chat_id, *cfg.per_kid.values()} - {None}
+    if chat_id.strip() in destinations:
+        raise ForwardError("this group is a forward destination; it cannot also be watched")
+
+
+def disable_forwarding(session: Session) -> None:
+    _put(session, K_ENABLED, False)
+
+
 def plan_forwards(
     session: Session,
     image: Image,

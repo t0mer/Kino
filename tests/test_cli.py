@@ -11,6 +11,7 @@ from kino import cli
 from kino.config import Settings
 from kino.db import session as dbs
 from kino.models.download import ModelError
+from kino.openwa.client import OpenWAClient
 
 runner = CliRunner()
 
@@ -54,6 +55,20 @@ COMMANDS = [
     ["models"],
     ["models", "download"],
     ["enroll"],
+    ["groups"],
+    ["groups", "list"],
+    ["groups", "watch"],
+    ["groups", "unwatch"],
+    ["kids"],
+    ["kids", "list"],
+    ["kids", "set-auto-save"],
+    ["kids", "set-offset"],
+    ["forward"],
+    ["forward", "set"],
+    ["forward", "show"],
+    ["forward", "disable"],
+    ["forward", "retry"],
+    ["forward", "list"],
 ]
 
 
@@ -390,3 +405,179 @@ def test_enroll_slug_collision(env, photos, pipeline):
     pipeline({400: [det(100, 100, 120)]}, [0, 1])
     assert run("enroll", "Noa", str(photos)).exit_code == 0
     assert "--slug" in one_line_error(run("enroll", "NOA!", str(photos)))
+
+
+# --- groups / kids / forward ----------------------------------------------------------------------
+
+import httpx  # noqa: E402
+
+from kino.db.models import Forward, Image  # noqa: E402
+
+GID = "120363000111222333@g.us"
+DEST = "972500000001@c.us"
+
+
+def seed_group(chat_id=GID, name="Class", watched=False):
+    run("migrate")
+    with dbs.get_session() as s:
+        g = Group(chat_id=chat_id, name=name, slug="class", watched=watched)
+        s.add(g)
+        s.flush()
+        return g.id
+
+
+def seed_kid(name="Noa", slug="noa"):
+    run("migrate")
+    with dbs.get_session() as s:
+        k = Kid(display_name=name, slug=slug)
+        s.add(k)
+        s.flush()
+        return k.id
+
+
+def test_groups_watch_sets_watched_and_replaces_mapping(env):
+    seed_group()
+    seed_kid("Noa", "noa")
+    seed_kid("Itai", "itai")
+    r = run("groups", "watch", GID, "--kid", "Noa", "--kid", "itai")
+    assert r.exit_code == 0, r.output
+    assert GID not in r.output  # chat ids are masked
+    with dbs.get_session() as s:
+        assert s.scalar(select(Group)).watched is True
+        assert len(s.scalars(select(KidGroup)).all()) == 2
+    assert run("groups", "watch", GID, "--kid", "Noa").exit_code == 0
+    with dbs.get_session() as s:
+        assert len(s.scalars(select(KidGroup)).all()) == 1
+    assert run("groups", "watch", GID).exit_code == 0  # no --kid keeps the mapping
+    with dbs.get_session() as s:
+        assert len(s.scalars(select(KidGroup)).all()) == 1
+
+
+def test_groups_watch_unknown_group_and_kid(env):
+    seed_group()
+    assert "unknown group" in one_line_error(run("groups", "watch", "999@g.us"))
+    assert "no kid named" in one_line_error(run("groups", "watch", GID, "--kid", "Nobody"))
+    with dbs.get_session() as s:
+        assert s.scalar(select(Group)).watched is False
+
+
+def test_groups_watch_rejects_forward_destination(env):
+    seed_group()
+    assert run("forward", "set", GID).exit_code == 0
+    assert "forward destination" in one_line_error(run("groups", "watch", GID))
+    with dbs.get_session() as s:
+        assert s.scalar(select(Group)).watched is False
+
+
+def test_groups_unwatch_and_list(env):
+    seed_group(watched=True)
+    r = run("groups", "list")
+    assert "watched" in r.output and "Class" in r.output
+    assert GID not in r.output and "1203****333@g.us" in r.output
+    assert run("groups", "unwatch", GID).exit_code == 0
+    assert "unwatched" in run("groups", "list").output
+
+
+def test_groups_watch_fetch_imports_from_openwa(env, monkeypatch):
+    def handler(request):
+        assert request.url.path.endswith("/groups")
+        return httpx.Response(
+            200, json=[{"id": GID, "name": "Class 3B"}, {"id": "x@c.us", "name": "skip"}]
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "OpenWAClient",
+        lambda url, key, sid: OpenWAClient(url, key, sid, transport=httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(
+            data_dir=env.data_dir,
+            openwa_url="http://openwa",
+            openwa_api_key="k",  # type: ignore[arg-type]
+            openwa_session_id="sess",
+        ),
+    )
+    r = run("groups", "watch", GID, "--fetch")
+    assert r.exit_code == 0, r.output
+    assert "imported 1 new" in r.output
+    with dbs.get_session() as s:
+        g = s.scalar(select(Group))
+        assert (g.name, g.slug, g.watched) == ("Class 3B", "class-3b", True)
+        assert len(s.scalars(select(Group)).all()) == 1
+
+
+def test_groups_fetch_requires_openwa_config(env):
+    seed_group()
+    assert "KINO_OPENWA_URL" in one_line_error(run("groups", "watch", GID, "--fetch"))
+
+
+def test_kids_set_auto_save_and_offset(env):
+    seed_kid()
+    assert run("kids", "set-auto-save", "noa", "--on").exit_code == 0
+    with dbs.get_session() as s:
+        assert s.scalar(select(Kid)).auto_save_enabled is True
+    assert run("kids", "set-auto-save", "Noa", "--off").exit_code == 0
+    with dbs.get_session() as s:
+        assert s.scalar(select(Kid)).auto_save_enabled is False
+    assert run("kids", "set-offset", "Noa", "0.05").exit_code == 0
+    with dbs.get_session() as s:
+        assert s.scalar(select(Kid)).threshold_offset == pytest.approx(0.05)
+    assert run("kids", "set-offset", "Noa", "--", "-0.02").exit_code == 0
+    assert "off" in run("kids", "list").output
+    assert "-0.02" in run("kids", "list").output
+
+
+def test_kids_errors(env):
+    seed_kid()
+    assert "no kid named" in one_line_error(run("kids", "set-auto-save", "Ghost", "--on"))
+    assert run("kids", "set-auto-save", "Noa").exit_code != 0  # --on/--off is required
+    assert "finite" in one_line_error(run("kids", "set-offset", "Noa", "nan"))
+
+
+def test_forward_set_show_disable(env):
+    run("migrate")
+    r = run("forward", "set", DEST)
+    assert r.exit_code == 0, r.output
+    assert DEST not in r.output
+    shown = run("forward", "show").output
+    assert "enabled: yes" in shown and "9725****001@c.us" in shown
+    assert run("forward", "disable").exit_code == 0
+    assert "enabled: no" in run("forward", "show").output
+
+
+def test_forward_set_rejects_watched_group(env):
+    seed_group(watched=True)
+    assert "watched group" in one_line_error(run("forward", "set", GID))
+    assert run("forward", "set", DEST).exit_code == 0
+
+
+def test_forward_list_and_retry(env, monkeypatch):
+    from kino import forward
+
+    run("migrate")
+    with dbs.get_session() as s:
+        img = Image(message_id="m1", status="done")
+        s.add(img)
+        s.flush()
+        s.add(
+            Forward(
+                image_id=img.id, dest_chat_id=DEST, status="failed", attempts=4, last_error="boom"
+            )
+        )
+        s.add(Forward(image_id=img.id, dest_chat_id="other@c.us", status="sent"))
+    out = run("forward", "list", "--status", "failed").output
+    assert "failed" in out and "boom" in out and "sent" not in out
+    assert "status must be" in one_line_error(run("forward", "list", "--status", "bogus"))
+    sent = []
+    monkeypatch.setattr(forward, "send_forward", lambda fid: sent.append(fid))
+    r = run("forward", "retry", "1")
+    assert r.exit_code == 0, r.output
+    assert sent == [1]
+    with dbs.get_session() as s:
+        f = s.get(Forward, 1)
+        assert (f.status, f.attempts) == ("pending", 0)
+    assert "does not exist or has not failed" in one_line_error(run("forward", "retry", "2"))
+    assert sent == [1]

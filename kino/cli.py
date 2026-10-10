@@ -2,32 +2,50 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 import uvicorn
 from huey.consumer import Consumer
 from loguru import logger
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kino import __version__
-from kino.admin import AdminError
+from kino.admin import (
+    AdminError,
+    find_group,
+    group_kid_names,
+    map_kids_to_group,
+    require_group,
+    require_kid,
+)
 from kino.config import Settings, get_settings
+from kino.db.models import FORWARD_STATUS, Forward, Group, Kid, ReferenceFace
 from kino.db.session import get_engine, get_session, init_engine, run_migrations
 from kino.logging import setup_logging
 from kino.models.download import ModelError, ensure_model
 from kino.models.registry import MODELS
-from kino.openwa.client import mask_path
+from kino.openwa.client import OpenWAClient, mask_path
+from kino.slug import slugify
 
 app = typer.Typer(help="Kino: find your kids in WhatsApp group photos.", no_args_is_help=True)
 models_app = typer.Typer(help="Model files.", no_args_is_help=True)
 app.add_typer(models_app, name="models")
+groups_app = typer.Typer(help="Discovered WhatsApp groups.", no_args_is_help=True)
+app.add_typer(groups_app, name="groups")
+kids_app = typer.Typer(help="Kids and their save settings.", no_args_is_help=True)
+app.add_typer(kids_app, name="kids")
+forward_app = typer.Typer(help="Forwarding of saved photos.", no_args_is_help=True)
+app.add_typer(forward_app, name="forward")
 
 
 class CliError(Exception):
@@ -190,7 +208,7 @@ def enroll(
     """Enroll reference faces for a kid from a directory of photos."""
     from kino import enroll as enroll_mod
     from kino import tasks
-    from kino.admin import find_group, get_or_create_kid, map_kids_to_group
+    from kino.admin import get_or_create_kid
 
     if not directory.is_dir():
         raise CliError(f"{directory} is not a directory")
@@ -218,3 +236,220 @@ def enroll(
         f"{added} added, {total} active reference(s); "
         f"recommended minimum is {enroll_mod.RECOMMENDED_REFS}"
     )
+
+
+def _openwa_client() -> OpenWAClient:
+    st = _settings()
+    if not (st.openwa_url and st.openwa_api_key and st.openwa_session_id):
+        raise CliError("set KINO_OPENWA_URL, KINO_OPENWA_API_KEY and KINO_OPENWA_SESSION_ID")
+    return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
+
+
+def _fetch_groups() -> list[dict[str, Any]]:
+    async def go() -> list[dict[str, Any]]:
+        client = _openwa_client()
+        try:
+            return await client.list_groups()
+        finally:
+            await client.aclose()
+
+    return asyncio.run(go())
+
+
+def _import_groups(session: Session, found: list[dict[str, Any]]) -> int:
+    """Upsert groups from OpenWA (unwatched when new); returns how many were new."""
+    new = 0
+    for item in found:
+        chat_id, name = str(item.get("id") or ""), item.get("name")
+        if not chat_id.endswith("@g.us"):
+            continue
+        group = find_group(session, chat_id)
+        if group is None:
+            session.add(
+                Group(chat_id=chat_id, name=name, slug=slugify(name or "", fallback="group"))
+            )
+            new += 1
+        elif name and group.name != name:
+            group.name = name
+    session.flush()
+    return new
+
+
+@groups_app.command("list")
+@command
+def groups_list() -> None:
+    """List discovered groups."""
+    with db_session() as s:
+        rows = list(s.scalars(select(Group).order_by(Group.id)))
+        if not rows:
+            typer.echo("no groups yet; they appear with their first message or via --fetch")
+        for g in rows:
+            kids = ", ".join(group_kid_names(s, g.id)) or "-"
+            typer.echo(
+                f"{mask_chat_id(g.chat_id)}  {'watched' if g.watched else 'unwatched':<9}  "
+                f"{g.name or '-'}  kids: {kids}"
+            )
+
+
+@groups_app.command("watch")
+@command
+def groups_watch(
+    chat_id: Annotated[str, typer.Argument(help="Group chat id, e.g. 1203...@g.us.")],
+    kid: Annotated[
+        list[str] | None, typer.Option("--kid", help="Kid expected in this group (repeatable).")
+    ] = None,
+    fetch: Annotated[
+        bool, typer.Option("--fetch", help="Import group names from OpenWA first.")
+    ] = False,
+) -> None:
+    """Start watching a group; --kid replaces its kid mapping."""
+    from kino.forward import ensure_not_destination
+
+    found = _fetch_groups() if fetch else []
+    with db_session() as s:
+        if fetch:
+            typer.echo(f"imported {_import_groups(s, found)} new group(s) from OpenWA")
+        group = require_group(s, chat_id)
+        ensure_not_destination(s, group.chat_id)
+        kids = [require_kid(s, name) for name in kid or []]
+        group.watched = True
+        if kid:
+            map_kids_to_group(s, group, kids, replace=True)
+        mapped = ", ".join(group_kid_names(s, group.id)) or "none"
+        typer.echo(f"watching {mask_chat_id(group.chat_id)} ({group.name or '-'}); kids: {mapped}")
+
+
+@groups_app.command("unwatch")
+@command
+def groups_unwatch(chat_id: Annotated[str, typer.Argument(help="Group chat id.")]) -> None:
+    """Stop watching a group."""
+    with db_session() as s:
+        group = require_group(s, chat_id)
+        group.watched = False
+        typer.echo(f"no longer watching {mask_chat_id(group.chat_id)}")
+
+
+@kids_app.command("list")
+@command
+def kids_list() -> None:
+    """List kids."""
+    with db_session() as s:
+        rows = list(s.scalars(select(Kid).order_by(Kid.id)))
+        if not rows:
+            typer.echo("no kids yet; run `kino enroll <name> <dir>`")
+        for k in rows:
+            refs = s.scalar(
+                select(func.count(ReferenceFace.id)).where(
+                    ReferenceFace.kid_id == k.id, ReferenceFace.status == "active"
+                )
+            )
+            typer.echo(
+                f"{k.display_name} ({k.slug})  auto-save {'on' if k.auto_save_enabled else 'off'}"
+                f"  offset {k.threshold_offset:+.2f}  references {refs}"
+            )
+
+
+@kids_app.command("set-auto-save")
+@command
+def kids_set_auto_save(
+    name: Annotated[str, typer.Argument(help="Kid name or slug.")],
+    on: Annotated[bool, typer.Option("--on/--off", help="Enable or disable auto-save.")],
+) -> None:
+    """Turn auto-save on or off for a kid (off sends every match to review)."""
+    with db_session() as s:
+        kid = require_kid(s, name)
+        kid.auto_save_enabled = on
+        typer.echo(f"{kid.display_name}: auto-save {'on' if on else 'off'}")
+
+
+@kids_app.command("set-offset")
+@command
+def kids_set_offset(
+    name: Annotated[str, typer.Argument(help="Kid name or slug.")],
+    offset: Annotated[float, typer.Argument(help="Threshold offset (use `--` before negatives).")],
+) -> None:
+    """Shift a kid's decision thresholds (positive = stricter)."""
+    if not math.isfinite(offset):
+        raise CliError("offset must be a finite number")
+    with db_session() as s:
+        kid = require_kid(s, name)
+        kid.threshold_offset = offset
+        typer.echo(f"{kid.display_name}: threshold offset {offset:+.2f}")
+
+
+@forward_app.command("set")
+@command
+def forward_set(
+    chat_id: Annotated[str, typer.Argument(help="Destination chat id (contact or group).")],
+) -> None:
+    """Set the default forward destination and enable forwarding."""
+    from kino.forward import set_default_destination
+
+    with db_session() as s:
+        set_default_destination(s, chat_id)
+    typer.echo(f"forwarding enabled to {mask_chat_id(chat_id.strip())}")
+
+
+@forward_app.command("show")
+@command
+def forward_show() -> None:
+    """Show the forwarding configuration."""
+    from kino.forward import get_forward_config
+
+    with db_session() as s:
+        cfg = get_forward_config(s)
+        names = {k.id: k.display_name for k in s.scalars(select(Kid))}
+    typer.echo(f"enabled: {'yes' if cfg.enabled else 'no'}")
+    typer.echo(f"default destination: {mask_chat_id(cfg.default_chat_id or '-')}")
+    for kid_id, dest in sorted(cfg.per_kid.items()):
+        typer.echo(f"  {names.get(kid_id, kid_id)} -> {mask_chat_id(dest)}")
+    typer.echo(f"caption: {cfg.caption_template}")
+    typer.echo(f"include review-confirmed: {'yes' if cfg.include_review_confirmed else 'no'}")
+
+
+@forward_app.command("disable")
+@command
+def forward_disable() -> None:
+    """Disable forwarding (the destination is kept)."""
+    from kino.forward import disable_forwarding
+
+    with db_session() as s:
+        disable_forwarding(s)
+    typer.echo("forwarding disabled")
+
+
+@forward_app.command("retry")
+@command
+def forward_retry(forward_id: Annotated[int, typer.Argument(help="Failed forward id.")]) -> None:
+    """Retry a failed forward."""
+    from kino.forward import retry_forward, send_forward
+
+    with db_session() as s:
+        if not retry_forward(s, forward_id):
+            raise CliError(f"forward {forward_id} does not exist or has not failed")
+    send_forward(forward_id)
+    typer.echo(f"forward {forward_id} queued for retry")
+
+
+@forward_app.command("list")
+@command
+def forward_list(
+    status: Annotated[str | None, typer.Option(help="pending, sent, failed or cancelled.")] = None,
+    limit: Annotated[int, typer.Option(min=1, help="Most recent N.")] = 50,
+) -> None:
+    """List forwards, newest first."""
+    if status is not None and status not in FORWARD_STATUS:
+        raise CliError(f"status must be one of {', '.join(FORWARD_STATUS)}")
+    with db_session() as s:
+        q = select(Forward).order_by(Forward.id.desc()).limit(limit)
+        if status:
+            q = q.where(Forward.status == status)
+        rows = list(s.scalars(q))
+        if not rows:
+            typer.echo("no forwards")
+        for f in rows:
+            err = f"  {f.last_error[:80]}" if f.last_error else ""
+            typer.echo(
+                f"{f.id}  {f.status:<9} -> {mask_chat_id(f.dest_chat_id)}  "
+                f"attempts {f.attempts}{err}"
+            )
