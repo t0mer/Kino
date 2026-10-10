@@ -167,6 +167,7 @@ def _sanitize(stage: str, e: BaseException) -> str:
 class _Run:
     """Per-job state used for metrics, error messages and cleanup on failure."""
 
+    claimed_at: datetime
     stage: str = "claim"
     crops: list[Path] = field(default_factory=list)
     planned_photos: list[Path] = field(default_factory=list)
@@ -202,14 +203,39 @@ class _Outcome:
 _DECISION = {"auto_save": "auto_saved", "review": "review", "drop": "dropped"}
 
 
-def _claim(image_id: int) -> bool:
+def _claim(image_id: int) -> datetime | None:
+    """Atomically take a `queued` row; returns the claim stamp (the run's identity) or None."""
+    stamp = _utcnow()
     with get_session() as s:
         res = s.execute(
             update(Image)
             .where(Image.id == image_id, Image.status == "queued")
-            .values(status="processing", error=None, processing_started_at=_utcnow())
+            .values(status="processing", error=None, processing_started_at=stamp)
         )
-        return bool(res.rowcount == 1)  # type: ignore[attr-defined]
+        return stamp if res.rowcount == 1 else None  # type: ignore[attr-defined]
+
+
+class _Superseded(Exception):
+    """The row is no longer owned by this run (e.g. the sweeper recovered it)."""
+
+
+def _owned(image_id: int, claimed_at: datetime) -> tuple[Any, ...]:
+    return (
+        Image.id == image_id,
+        Image.status == "processing",
+        Image.processing_started_at == claimed_at,
+    )
+
+
+def _finish(s: Session, image_id: int, claimed_at: datetime, **values: Any) -> None:
+    """Final status write, only if this run still owns the row; otherwise the caller's
+    transaction is rolled back and this run's output discarded."""
+    res = s.execute(
+        update(Image).where(*_owned(image_id, claimed_at)).values(**values),
+        execution_options={"synchronize_session": False},
+    )
+    if res.rowcount != 1:  # type: ignore[attr-defined]
+        raise _Superseded()
 
 
 def _bump_gallery_version(s: Session) -> None:
@@ -323,9 +349,14 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
         with run.step("load"):
             loaded = load_for_pipeline(raw)
         if loaded.bgr is None:
-            image.status = "skipped"
-            image.skip_reason = loaded.skip_reason
-            image.processing_ms = int((time.perf_counter() - t0) * 1000)
+            _finish(
+                s,
+                image_id,
+                run.claimed_at,
+                status="skipped",
+                skip_reason=loaded.skip_reason,
+                processing_ms=int((time.perf_counter() - t0) * 1000),
+            )
             return _Outcome("skipped")
         img = loaded.bgr
 
@@ -440,10 +471,15 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
             with run.step("enrich"):
                 _auto_enrich(s, image, auto, now)
 
-        image.status = "done"
-        image.error = None
-        image.skip_reason = None
-        image.processing_ms = int((time.perf_counter() - t0) * 1000)
+        _finish(
+            s,
+            image_id,
+            run.claimed_at,
+            status="done",
+            error=None,
+            skip_reason=None,
+            processing_ms=int((time.perf_counter() - t0) * 1000),
+        )
         return out
 
 
@@ -464,25 +500,30 @@ def _cleanup_raw(image_id: int) -> None:
         Path(path).unlink(missing_ok=True)
 
 
-def _mark_failed(image_id: int, error: str, ms: int) -> None:
+def _mark_failed(image_id: int, claimed_at: datetime, error: str, ms: int) -> str:
     with get_session() as s:
-        s.execute(
+        res = s.execute(
             update(Image)
-            .where(Image.id == image_id, Image.status == "processing")
+            .where(*_owned(image_id, claimed_at))
             .values(status="failed", error=error, processing_ms=ms)
         )
+        return "failed" if res.rowcount == 1 else "superseded"  # type: ignore[attr-defined]
 
 
 class _PipelineInitError(Exception):
     """Building the detector/embedder failed (download, checksum, load): infrastructure."""
 
 
-def _requeue_transient(image_id: int, error: str, ms: int) -> str:
+def _requeue_transient(image_id: int, claimed_at: datetime, error: str, ms: int) -> str:
     """Put the row back to `queued` for the sweeper; after MAX_TRANSIENT_REQUEUES attempts
     mark it `failed` ('infrastructure') so a broken setup cannot loop silently forever."""
     with get_session() as s:
         image = s.get(Image, image_id)
-        if image is None or image.status != "processing":
+        if (
+            image is None
+            or image.status != "processing"
+            or image.processing_started_at != claimed_at
+        ):
             return "superseded"
         image.transient_count += 1
         image.processing_ms = ms
@@ -511,10 +552,11 @@ def run_pipeline(image_id: int) -> str:
     """Process one image; returns the final status, or `not_claimed` if another run owns it
     (or it is already terminal). Never raises for pipeline errors."""
     t0 = time.perf_counter()
-    if not _claim(image_id):
+    claimed_at = _claim(image_id)
+    if claimed_at is None:
         return "not_claimed"
     st = get_settings()
-    run = _Run()
+    run = _Run(claimed_at)
     try:
         run.stage = "init"
         try:
@@ -522,6 +564,12 @@ def run_pipeline(image_id: int) -> str:
         except Exception as e:
             raise _PipelineInitError() from e
         outcome = _process(image_id, st, pipe, run, t0)
+    except _Superseded:
+        _discard_files(run, st.photos_dir)
+        logger.warning(
+            "image {}: run superseded (row recovered elsewhere); output discarded", image_id
+        )
+        return "superseded"
     except Exception as e:
         ms = int((time.perf_counter() - t0) * 1000)
         _discard_files(run, st.photos_dir)
@@ -529,11 +577,10 @@ def run_pipeline(image_id: int) -> str:
         cause = e.__cause__ if isinstance(e, _PipelineInitError) and e.__cause__ else e
         err = _sanitize(run.stage, cause)
         if transient:
-            status = _requeue_transient(image_id, err, ms)
+            status = _requeue_transient(image_id, claimed_at, err, ms)
             logger.warning("image {} hit an infrastructure error ({}): {}", image_id, status, err)
         else:
-            _mark_failed(image_id, err, ms)
-            status = "failed"
+            status = _mark_failed(image_id, claimed_at, err, ms)
             logger.error("image {} failed: {}", image_id, err)
         if status == "failed":
             metrics.images.labels(status="failed").inc()

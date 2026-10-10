@@ -780,3 +780,31 @@ def test_corrupt_image_fails_immediately_not_requeued(world):
     iid, _ = seed_image(env, data=b"garbage" * 50, group_id=gid)
     img = run(iid)
     assert img.status == "failed" and img.transient_count == 0
+
+
+# --- superseded runs ---------------------------------------------------------------------
+
+
+def test_run_superseded_by_sweeper_recovery_discards_output(world):
+    env, gid, *_ = world
+
+    class RecoveringDetector(FakeDetector):
+        def detect(self, img, det_size, max_upscale=1.0):
+            # the sweeper decides this run is stuck and hands the row to another worker
+            with dbs.get_session() as s:
+                row = s.get(Image, self.image_id)
+                row.status, row.processing_started_at, row.stuck_count = "queued", None, 1
+            return [det(100, 80, 120)]
+
+    d = RecoveringDetector()
+    q = Enqueue()
+    tasks.set_pipeline(detector=d, embedder=FakeEmbedder([unit(0)]), enqueue_forward=q)
+    iid, raw = seed_image(env, group_id=gid)
+    d.image_id = iid
+    assert tasks.run_pipeline(iid) == "superseded"
+    img = get(Image, iid)
+    assert img.status == "queued" and img.error is None
+    assert rows(Face) == [] and rows(Match) == [] and rows(SavedPhoto) == []
+    assert rows(Forward) == [] and q.ids == [] and raw.exists()
+    assert [p for p in (env / "photos").rglob("*.jpg")] == []
+    assert [p for p in (env / "crops").rglob("*.jpg")] == []
