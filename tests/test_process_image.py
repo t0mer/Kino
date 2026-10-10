@@ -228,7 +228,8 @@ def test_enrolled_kid_saved_and_forwarded(world):
     assert face.embedding is not None and not face.from_tile
     assert face.quality and face.quality > 0.7 and face.size_px == 120
     assert Path(face.crop_path).is_file()
-    assert PILImage.open(face.crop_path).size == (160, 160)
+    with PILImage.open(face.crop_path) as crop:
+        assert crop.size == (160, 160)
     assert Path(face.crop_path).is_relative_to(env / "crops")
     (m,) = rows(Match, Match.face_id == face.id)
     assert (m.kid_id, m.decision, m.method, m.decided_by) == (noa, "auto_saved", "face", "system")

@@ -52,6 +52,7 @@ include = ["kino*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = ["models: hits the network to check real model URLs (opt-in)"]
 addopts = "-m 'not models'"
 

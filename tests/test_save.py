@@ -68,7 +68,8 @@ def test_exif_and_pixels_untouched(jpg: Path, tmp_path: Path) -> None:
     assert ex["0th"][piexif.ImageIFD.ImageDescription] == b"Class A"
     assert ex["0th"][piexif.ImageIFD.Artist] == b"Dana"
     assert sos_data(out.read_bytes()) == sos_data(jpg.read_bytes())
-    assert np.array_equal(np.asarray(Image.open(out)), np.asarray(Image.open(jpg)))
+    with Image.open(out) as a, Image.open(jpg) as b:
+        assert np.array_equal(np.asarray(a), np.asarray(b))
 
 
 def test_hebrew_roundtrip(jpg: Path, tmp_path: Path) -> None:
@@ -209,7 +210,8 @@ def test_remove_keeps_hardlinked_sibling(jpg: Path, tmp_path: Path) -> None:
     remove_photo(res[1], root)
     assert not res[1].exists()
     assert os.stat(res[2]).st_nlink == 1
-    assert Image.open(res[2]).format == "JPEG"
+    with Image.open(res[2]) as im:
+        assert im.format == "JPEG"
     assert not (root / "noa").exists()
 
 

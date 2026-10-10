@@ -49,6 +49,7 @@ def server():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_port}", hits
     srv.shutdown()
+    srv.server_close()
 
 
 @pytest.fixture
@@ -168,6 +169,7 @@ def test_refuses_http_redirect(tmp_path):
             download._download(f"http://127.0.0.1:{srv.server_port}/", tmp_path / "x")
     finally:
         srv.shutdown()
+    srv.server_close()
 
 
 def test_buffalo_warns_noncommercial(server, monkeypatch, tmp_path):
