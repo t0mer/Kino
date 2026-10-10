@@ -215,6 +215,8 @@ class Forward(Base):
     openwa_message_id: Mapped[str | None] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    file_path: Mapped[str | None] = mapped_column(String)
 
 
 class Digest(Base):
