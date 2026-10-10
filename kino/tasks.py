@@ -33,7 +33,7 @@ from kino.config import Settings, get_settings
 from kino.db.models import Face, Group, Image, Kid, Match, ReferenceFace, SavedPhoto, Setting
 from kino.db.session import embedding_to_blob, get_session
 from kino.pipeline import save as save_mod
-from kino.pipeline.decide import Thresholds, decide
+from kino.pipeline.decide import Decision, Thresholds, decide
 from kino.pipeline.detect import Detector, detect_image
 from kino.pipeline.embed import Embedder, align_face, make_crop, should_embed
 from kino.pipeline.matcher import Matcher
@@ -218,17 +218,34 @@ def _bump_gallery_version(s: Session) -> None:
         row.value = new
 
 
-def _auto_enrich(
-    s: Session, image: Image, by_kid: dict[int, list[_FaceWork]], now: datetime
-) -> bool:
-    """Add the best tier-L, quality >= 0.7 auto-saved face per kid as an `auto` reference,
-    keeping at most AUTO_REF_CAP active auto refs per kid within AUTO_REF_WINDOW."""
-    changed = False
-    for kid_id, works in by_kid.items():
-        good = [w for w in works if w.tier is Tier.L and w.quality >= AUTO_REF_MIN_QUALITY]
-        if not good:
+def _one_face_per_kid(decided: list[tuple[_FaceWork, Decision]], image_id: int) -> None:
+    """A kid appears at most once per photo: per kid, only the highest-scoring face keeps its
+    auto_save/review decision; every other auto_save for that kid is demoted to review (a
+    lookalike, sibling or classmate must never be saved or enrolled as the kid). Drops stay."""
+    top: dict[int, tuple[_FaceWork, Decision]] = {}
+    for w, dec in decided:
+        if dec.action == "drop" or dec.kid_id is None:
             continue
-        best = max(good, key=lambda w: w.quality)
+        cur = top.get(dec.kid_id)
+        if cur is None or dec.score > cur[1].score:
+            top[dec.kid_id] = (w, dec)
+    for w, dec in decided:
+        if dec.kid_id is None or dec.action == "drop" or top[dec.kid_id][0] is w:
+            continue
+        if dec.action == "auto_save":
+            dec.action = "review"
+            dec.reason = "kid already matched by a higher-scoring face in this photo"
+            logger.info("image {}: face demoted to review ({})", image_id, dec.reason)
+
+
+def _auto_enrich(s: Session, image: Image, by_kid: dict[int, _FaceWork], now: datetime) -> bool:
+    """Enrol each kid's single auto-saved face (its top-scoring face in the photo, decided
+    against the pre-job gallery) as an `auto` reference when it is tier L with quality >= 0.7.
+    Keeps at most AUTO_REF_CAP active auto refs per kid within AUTO_REF_WINDOW."""
+    changed = False
+    for kid_id, best in by_kid.items():
+        if best.tier is not Tier.L or best.quality < AUTO_REF_MIN_QUALITY:
+            continue
         assert best.row.embedding is not None
         s.add(
             ReferenceFace(
@@ -348,11 +365,12 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                 out.tiers.append((tier.value, "tile" if d.from_tile else "full"))
             s.flush()
 
-        auto: dict[int, list[_FaceWork]] = {}
+        auto: dict[int, _FaceWork] = {}
         with run.step("match"):
             pipe.matcher.maybe_reload(s)
             thresholds = Thresholds.from_settings(s)
             slugs = {k.id: k.slug for k in s.scalars(select(Kid))}
+            decided: list[tuple[_FaceWork, Decision]] = []
             for w in works:
                 if w.emb is None:
                     continue
@@ -367,8 +385,11 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                     thresholds,
                     pipe.matcher.group_mapped(best, image.group_id),
                 )
-                if dec.kid_id is None:
-                    continue
+                if dec.kid_id is not None:
+                    decided.append((w, dec))
+            _one_face_per_kid(decided, image_id)
+            for w, dec in decided:
+                assert dec.kid_id is not None
                 decision = _DECISION[dec.action]
                 s.add(
                     Match(
@@ -384,7 +405,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                 )
                 out.matches.append((slugs.get(dec.kid_id, str(dec.kid_id)), decision))
                 if dec.action == "auto_save":
-                    auto.setdefault(dec.kid_id, []).append(w)
+                    auto[dec.kid_id] = w
             s.flush()
 
         if auto:

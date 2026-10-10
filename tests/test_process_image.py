@@ -665,3 +665,54 @@ def test_sweeper_periodic_task_registered():
     (task_cls,) = [t for t in tasks.huey._registry._periodic_tasks if t.__name__ == "sweep_images"]
     every5 = task_cls().validate_datetime
     assert every5(datetime(2026, 3, 7, 12, 5)) and not every5(datetime(2026, 3, 7, 12, 7))
+
+
+# --- one face per kid per image ----------------------------------------------------------
+
+
+def lookalike(i, sim, other=5):
+    v = np.zeros(512, dtype=np.float32)
+    v[i], v[other] = sim, float(np.sqrt(1 - sim**2))
+    return v
+
+
+def _match_by_face():
+    faces = {f.id: f for f in rows(Face)}
+    return {faces[m.face_id].bbox_x: m for m in rows(Match)}
+
+
+def test_lookalike_demoted_and_only_top_face_enrolled(world):
+    env, gid, noa, _ = world
+    # the lookalike has better detection score and quality order is irrelevant: score decides
+    pipeline([det(20, 20, 120, 0.99), det(250, 60, 120, 0.9)], [lookalike(0, 0.8), unit(0)])
+    iid, _ = seed_image(env, group_id=gid)
+    assert run(iid).status == "done"
+    by_x = _match_by_face()
+    assert (by_x[250].kid_id, by_x[250].decision) == (noa, "auto_saved")
+    assert (by_x[20].kid_id, by_x[20].decision) == (noa, "review")
+    assert by_x[20].score == pytest.approx(0.8, abs=1e-5)
+    (ref,) = rows(ReferenceFace, ReferenceFace.source == "auto")
+    top_face = next(f for f in rows(Face) if f.bbox_x == 250)
+    assert ref.face_id == top_face.id
+    assert len(rows(SavedPhoto)) == 1 and len(rows(Forward)) == 1
+
+
+def test_lookalike_review_candidate_demotes_others(world):
+    env, gid, noa, _ = world
+    # top face for noa is tier S (review); a lower-scoring tier-L face must not auto-save
+    pipeline([det(20, 20, 30, 0.99), det(250, 60, 120, 0.9)], [unit(0), lookalike(0, 0.7)])
+    iid, _ = seed_image(env, group_id=gid)
+    run(iid)
+    by_x = _match_by_face()
+    assert by_x[20].decision == "review" and by_x[250].decision == "review"
+    assert rows(SavedPhoto) == [] and rows(ReferenceFace, ReferenceFace.source == "auto") == []
+
+
+def test_two_different_kids_still_both_auto_save_and_enrol(world):
+    env, gid, noa, itai = world
+    pipeline([det(20, 20, 100, 0.95), det(250, 60, 100, 0.9)], [unit(0), unit(1)])
+    iid, _ = seed_image(env, group_id=gid)
+    run(iid)
+    assert {m.decision for m in rows(Match)} == {"auto_saved"}
+    refs = rows(ReferenceFace, ReferenceFace.source == "auto")
+    assert sorted(r.kid_id for r in refs) == sorted([noa, itai])
