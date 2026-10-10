@@ -287,8 +287,13 @@ def _recheck(forward_id: int, dest: str) -> str | None:
         if f is None or f.status != "pending":
             return "skipped"  # cancelled (or otherwise settled) while waiting
         reason = None
-        if not get_forward_config(s).enabled:
+        cfg = get_forward_config(s)
+        if not cfg.enabled:
             reason = "forwarding was disabled"
+        elif dest not in {cfg.default_chat_id, *cfg.per_kid.values()}:
+            # `forward set` moved the destination while this row waited; the old chat must
+            # not keep receiving photos.
+            reason = "destination changed"
         else:
             try:
                 validate_destination(dest, s)

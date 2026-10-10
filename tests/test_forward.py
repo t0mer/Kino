@@ -412,3 +412,28 @@ def test_cancelled_row_not_revived(s):
 
 def test_bidi_controls_stripped():
     assert fw.render_caption("{kids}", ["a\u202eb\u2066c\u2069"], "g", "s", SENT) == "abc"
+
+
+def test_destination_changed_cancels(pending):
+    fid, _ = pending
+
+    def move():
+        with dbs.get_session() as s2:
+            s2.merge(Setting(key="forward.default_chat_id", value="97250000002@c.us"))
+
+    c = FakeClient()
+    assert deliver(fid, c, primed_limiter(move)) == "cancelled"
+    r = row(fid)
+    assert r.status == "cancelled" and r.last_error == "destination changed" and not c.calls
+
+
+def test_destination_still_configured_as_per_kid_override_sends(pending):
+    fid, _ = pending
+
+    def move_default_keep_override():
+        with dbs.get_session() as s2:
+            s2.merge(Setting(key="forward.default_chat_id", value="97250000002@c.us"))
+            s2.merge(Setting(key="forward.per_kid", value={"99": "97250000001@c.us"}))
+
+    c = FakeClient()
+    assert deliver(fid, c, primed_limiter(move_default_keep_override)) == "sent"
