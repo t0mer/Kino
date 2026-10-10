@@ -165,7 +165,7 @@ def test_atomic_no_partial(jpg: Path, tmp_path: Path, monkeypatch: pytest.Monkey
     def boom(*a: object, **k: object) -> None:
         raise RuntimeError("crash")
 
-    monkeypatch.setattr(save_mod.piexif, "insert", boom)
+    monkeypatch.setattr(save_mod, "rewrite_jpeg_metadata", boom)
     kid, group, image = mk()
     root = tmp_path / "p"
     with pytest.raises(RuntimeError):
@@ -305,3 +305,103 @@ def test_timezone_winter_offset_and_siblings(jpg: Path, tmp_path: Path) -> None:
     res = save_for_kids(jpg, [k1, k2], group, image, tmp_path / "p", timezone="Asia/Jerusalem")
     assert res[2].name == "2026-01-15_230000_class_00000042.jpg"
     assert piexif.load(str(res[1]))["Exif"][piexif.ExifIFD.OffsetTimeOriginal] == b"+02:00"
+
+
+# --- GPS / location stripping across JPEG segment layouts --------------------------------
+
+_EXIF_HDR = b"Exif\x00\x00"
+_XMP_HDR = b"http://ns.adobe.com/xap/1.0/\x00"
+_XMP_GPS = (
+    b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description '
+    b'exif:GPSLatitude="32,5.0N" exif:GPSLongitude="34,46.0E"/></rdf:RDF></x:xmpmeta>'
+)
+
+
+def _seg(marker: int, payload: bytes) -> bytes:
+    return bytes([0xFF, marker]) + (len(payload) + 2).to_bytes(2, "big") + payload
+
+
+def _gps_exif_payload() -> bytes:
+    gps = {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: ((32, 1), (5, 1), (0, 1)),
+        piexif.GPSIFD.GPSLongitudeRef: b"E",
+        piexif.GPSIFD.GPSLongitude: ((34, 1), (46, 1), (0, 1)),
+    }
+    return piexif.dump({"0th": {piexif.ImageIFD.Make: b"Cam"}, "GPS": gps})
+
+
+def _segments(b: bytes) -> list[tuple[int, bytes]]:
+    """(marker, payload) for every segment before SOS."""
+    out, i = [], 2
+    while b[i + 1] != 0xDA:
+        n = int.from_bytes(b[i + 2 : i + 4], "big")
+        out.append((b[i + 1], b[i + 4 : i + 2 + n]))
+        i += 2 + n
+    return out
+
+
+def _layout(tmp_path: Path, segs: list[bytes]) -> Path:
+    """A real JPEG with its header segments replaced by ``segs`` (SOI kept, DQT.. kept)."""
+    import io
+
+    buf = io.BytesIO()
+    noisy().save(buf, "JPEG", quality=90)
+    plain = buf.getvalue()
+    i = 2
+    while plain[i + 1] in (0xE0, 0xE1, 0xE2, 0xED, 0xFE):  # drop Pillow's APPn/COM
+        i += 2 + int.from_bytes(plain[i + 2 : i + 4], "big")
+    p = tmp_path / "layout.jpg"
+    p.write_bytes(plain[:2] + b"".join(segs) + plain[i:])
+    return p
+
+
+_JFIF = _seg(0xE0, b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+_ICC = _seg(0xE2, b"ICC_PROFILE\x00\x01\x01" + b"\x00" * 64)
+_IPTC = _seg(0xED, b"Photoshop 3.0\x008BIM\x04\x04\x00\x00\x00\x00\x00\x08\x1c\x02\x5a\x00\x03TLV")
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        pytest.param([_JFIF, _seg(0xE1, _gps_exif_payload())], id="app0-exif"),
+        pytest.param([_JFIF, _ICC, _seg(0xE1, _gps_exif_payload())], id="app0-icc-exif"),
+        pytest.param(
+            [_seg(0xE1, _XMP_HDR + _XMP_GPS), _seg(0xE1, _gps_exif_payload())], id="xmp-exif"
+        ),
+        pytest.param([_ICC, _IPTC, _seg(0xE1, _gps_exif_payload()), _JFIF], id="exif-not-first"),
+        pytest.param([_JFIF, _ICC], id="no-exif"),
+    ],
+)
+def test_location_stripped_in_every_layout(tmp_path: Path, layout: list[bytes]) -> None:
+    src = _layout(tmp_path, layout)
+    kid, group, image = mk()
+    out = save_photo(src, kid, group, image, tmp_path / "p", timezone="UTC").read_bytes()
+    segs = _segments(out)
+    exifs = [p for m, p in segs if m == 0xE1 and p.startswith(_EXIF_HDR)]
+    assert len(exifs) == 1
+    ex = piexif.load(out)
+    assert ex["GPS"] == {}
+    assert ex["Exif"][piexif.ExifIFD.DateTimeOriginal] == b"2026:03:07 14:05:09"
+    assert not any(m == 0xE1 and p.startswith(_XMP_HDR) for m, p in segs)
+    assert b"GPSLatitude" not in out
+    assert not any(m == 0xED for m, _ in segs)  # Photoshop/IPTC (may hold location)
+    if any(s == _ICC for s in layout):
+        assert (0xE2, _ICC[4:]) in segs  # ICC profile kept
+    if layout[0] == _JFIF:
+        assert segs[0][0] == 0xE0  # JFIF stays first
+    assert sos_data(out) == sos_data(src.read_bytes())
+    if any(s.startswith(b"\xff\xe1") and _EXIF_HDR in s[:10] for s in layout):
+        assert ex["0th"][piexif.ImageIFD.Make] == b"Cam"  # other original EXIF preserved
+
+
+def test_xmp_kept_when_gps_stripping_disabled(tmp_path: Path) -> None:
+    src = _layout(
+        tmp_path, [_JFIF, _seg(0xE1, _XMP_HDR + _XMP_GPS), _seg(0xE1, _gps_exif_payload())]
+    )
+    kid, group, image = mk()
+    out = save_photo(src, kid, group, image, tmp_path / "p", strip_gps=False, timezone="UTC")
+    segs = _segments(out.read_bytes())
+    assert sum(1 for m, p in segs if m == 0xE1 and p.startswith(_EXIF_HDR)) == 1
+    assert any(m == 0xE1 and p.startswith(_XMP_HDR) for m, p in segs)
+    assert piexif.load(str(out))["GPS"][piexif.GPSIFD.GPSLatitudeRef] == b"N"

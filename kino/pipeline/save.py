@@ -1,8 +1,11 @@
 """Saving matched photos to the per-kid folder layout (CLAUDE.md section 9.8).
 
 Policy:
-* JPEG input keeps its original pixel/entropy bytes; only the EXIF segment is
-  rewritten (``piexif.insert``).
+* JPEG input keeps its original pixel/entropy bytes; only the header segments
+  before SOS are rewritten (:func:`rewrite_jpeg_metadata`): EVERY ``Exif`` APP1
+  block is removed (wherever it sits) and exactly one new one is inserted after a
+  leading JFIF APP0. Other segments (JFIF, ICC APP2, DQT, SOF, ...) and everything
+  from SOS on stay byte-identical.
 * PNG/WebP/HEIC input is the ONLY case where pixels are re-encoded: converted to
   JPEG at quality 95 with EXIF orientation applied to the pixels.
 * Dates use ``image.sent_at`` converted to the configured local time zone
@@ -16,10 +19,11 @@ Policy:
   :func:`read_text_tags` prefers.
 * ``image_id_short`` is the image id zero-padded to 8 digits.
 * GPS: by default (``strip_gps=True``, ``KINO_STRIP_GPS``) the whole GPS IFD is
-  removed from JPEG input. Task 11 forwards the SAVED file, so forwarded
-  photos are GPS-free too. Other original EXIF is preserved, except stale
-  sub-second tags, which are dropped, and the date/offset tags, which are
-  rewritten from ``sent_at``.
+  removed from JPEG input, and so are XMP APP1 blocks (standard and extended) and
+  Photoshop/IPTC APP13 blocks, which can carry location too. Task 11 forwards
+  the SAVED file, so forwarded photos are GPS-free too. Other original EXIF is
+  preserved, except stale sub-second tags, which are dropped, and the date/offset
+  tags, which are rewritten from ``sent_at``.
 * Text values are sanitised (control chars removed, lone surrogates replaced,
   truncated to 255 chars) so untrusted names cannot break the EXIF segment.
 * Saved files are chmod 0o644 & ~umask and fsynced before ``os.replace``.
@@ -35,7 +39,7 @@ import os
 import shutil
 import tempfile
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -213,6 +217,71 @@ def _write_atomic(dst: Path, write: Any, finalize: bool = True) -> None:
         raise
 
 
+_EXIF_HDR = b"Exif\x00\x00"
+_XMP_HDRS = (b"http://ns.adobe.com/xap/1.0/\x00", b"http://ns.adobe.com/xmp/extension/\x00")
+_APP0, _APP1, _APP13, _SOS = 0xE0, 0xE1, 0xED, 0xDA
+_MAX_SEGMENT_PAYLOAD = 65533
+
+
+def _jpeg_segments(data: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
+    """Split a JPEG into header segments ``(marker, whole segment bytes)`` and the tail
+    starting at SOS (entropy-coded data, kept verbatim). Raises ValueError if malformed."""
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("not a JPEG")
+    segs: list[tuple[int, bytes]] = []
+    i = 2
+    while True:
+        while i < len(data) and data[i] == 0xFF and i + 1 < len(data) and data[i + 1] == 0xFF:
+            i += 1  # fill bytes
+        if i + 4 > len(data) or data[i] != 0xFF:
+            raise ValueError("malformed JPEG header")
+        marker = data[i + 1]
+        if marker == _SOS:
+            return segs, data[i:]
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # standalone markers carry no length
+            segs.append((marker, data[i : i + 2]))
+            i += 2
+            continue
+        n = int.from_bytes(data[i + 2 : i + 4], "big")
+        if n < 2 or i + 2 + n > len(data):
+            raise ValueError("malformed JPEG segment length")
+        segs.append((marker, data[i : i + 2 + n]))
+        i += 2 + n
+
+
+def rewrite_jpeg_metadata(
+    data: bytes, build_exif: Callable[[bytes | None], bytes], *, strip_gps: bool
+) -> bytes:
+    """Return ``data`` with every EXIF APP1 replaced by one new block.
+
+    ``build_exif(existing)`` gets the first original EXIF payload (``Exif\\0\\0...``) or
+    None and returns the new ``piexif.dump`` bytes. With ``strip_gps`` XMP APP1 and
+    Photoshop/IPTC APP13 segments are dropped as well (they can hold location).
+    """
+    segs, tail = _jpeg_segments(data)
+    existing: bytes | None = None
+    kept: list[tuple[int, bytes]] = []
+    for marker, seg in segs:
+        payload = seg[4:]
+        if marker == _APP1 and payload.startswith(_EXIF_HDR):
+            if existing is None:
+                existing = payload
+            continue
+        if strip_gps and ((marker == _APP1 and payload.startswith(_XMP_HDRS)) or marker == _APP13):
+            continue
+        kept.append((marker, seg))
+    exif: bytes = build_exif(existing)
+    if not exif.startswith(_EXIF_HDR):
+        exif = _EXIF_HDR + exif
+    if len(exif) > _MAX_SEGMENT_PAYLOAD:
+        raise ValueError("EXIF block too large for one APP1 segment")
+    new_seg = b"\xff\xe1" + (len(exif) + 2).to_bytes(2, "big") + exif
+    at = 1 if kept and kept[0][0] == _APP0 else 0  # JFIF APP0 must stay first
+    out = [seg for _, seg in kept]
+    out.insert(at, new_seg)
+    return b"\xff\xd8" + b"".join(out) + tail
+
+
 def save_photo(
     raw_path: Path,
     kid: _KidLike,
@@ -230,9 +299,10 @@ def save_photo(
     if data[:2] == b"\xff\xd8":
 
         def write(tmp: Path) -> None:
-            tmp.write_bytes(data)
-            exif = _build_exif(data, image, group, timezone=timezone, strip_gps=strip_gps)
-            piexif.insert(exif, str(tmp))
+            def build(existing: bytes | None) -> bytes:
+                return _build_exif(existing, image, group, timezone=timezone, strip_gps=strip_gps)
+
+            tmp.write_bytes(rewrite_jpeg_metadata(data, build, strip_gps=strip_gps))
 
     else:
 
