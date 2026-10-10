@@ -89,3 +89,20 @@ async def test_transport_error_and_bad_json_wrapped():
         await make(lambda r: httpx.Response(200, content=b"<html>")).list_groups()
     with pytest.raises(OpenWAError):
         await make(lambda r: httpx.Response(201, json={})).send_text("c@c.us", "x")
+
+
+async def test_serialized_message_id_masked_and_no_context():
+    c = make(lambda r: httpx.Response(404))
+    with pytest.raises(OpenWAError) as e:
+        await c.get_media("972501234567@c.us", "true_972501234567@c.us_ABC")
+    for text in (str(e.value), repr(e.value), e.value.path):
+        assert "972501234567" not in text and "key123" not in text
+    assert e.value.__context__ is None and e.value.__cause__ is None
+
+
+async def test_missing_message_id_label():
+    c = make(lambda r: httpx.Response(201, json={}))
+    with pytest.raises(OpenWAError) as e:
+        await c.send_text("c@c.us", "x")
+    assert "path=/api/sessions/sess/messages/send-text" in str(e.value)
+    assert e.value.__context__ is None

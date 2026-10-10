@@ -21,7 +21,7 @@ class OpenWAError(Exception):
         super().__init__(f"OpenWA {what} (status={status}, path={path})")
 
 
-_ID_RE = re.compile(r"(\d{4})\d+(\d{3})(?=@)")
+_ID_RE = re.compile(r"(\d{4})\d{2,}(\d{3})")
 
 
 def mask_path(path: str) -> str:
@@ -51,13 +51,16 @@ class OpenWAClient:
         return f"/api/sessions/{self._session}/{suffix}"
 
     async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
+        failure: OpenWAError | None = None
         try:
             r = await self._http.request(method, path, **kw)
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise OpenWAError("http error", e.response.status_code, mask_path(path)) from None
+            failure = OpenWAError("http error", e.response.status_code, mask_path(path))
         except httpx.HTTPError as e:
-            raise OpenWAError(type(e).__name__, None, mask_path(path)) from None
+            failure = OpenWAError(type(e).__name__, None, mask_path(path))
+        if failure is not None:
+            raise failure  # raised outside except: __context__ stays None
         return r
 
     async def _json(self, method: str, path: str, **kw: Any) -> Any:
@@ -65,7 +68,8 @@ class OpenWAClient:
         try:
             return r.json()
         except ValueError:
-            raise OpenWAError("invalid json", r.status_code, mask_path(path)) from None
+            failure = OpenWAError("invalid json", r.status_code, mask_path(path))
+        raise failure
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -94,7 +98,8 @@ class OpenWAClient:
         try:
             return str(res["messageId"])
         except (KeyError, TypeError):
-            raise OpenWAError(f"{what}: no messageId in response", None, what) from None
+            failure = OpenWAError("no messageId in response", None, self._p(f"messages/{what}"))
+        raise failure
 
     async def send_text(self, chat_id: str, text: str) -> str:
         res = await self._json(
