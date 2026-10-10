@@ -485,3 +485,23 @@ def test_forward_echo_ignored(client):
     assert [i.message_id for i in images()] == ["orig"]
     # a different message id is still processed
     assert post(client, with_media(payload(id="OTHER"), jpeg())).json()["result"] == "queued"
+
+
+@pytest.mark.parametrize(
+    ("stored", "incoming"),
+    [
+        ("true_120363@g.us_3EB0ABC123", "3EB0ABC123"),
+        ("3EB0ABC123", "false_120363021234567890@g.us_3EB0ABC123"),
+        ("true_1@g.us_3EB0ABC123", "false_2@g.us_3EB0ABC123"),
+    ],
+)
+def test_forward_echo_id_forms(client, stored, incoming):
+    from kino.db.models import Forward
+
+    watch()
+    with dbs.get_session() as s:
+        img = ImageRow(message_id="orig", status="done")
+        s.add(img)
+        s.flush()
+        s.add(Forward(image_id=img.id, dest_chat_id="d@c.us", openwa_message_id=stored))
+    assert post(client, with_media(payload(id=incoming), jpeg())).json() == {"result": "ignored"}

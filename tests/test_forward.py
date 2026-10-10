@@ -164,7 +164,8 @@ def limiter(clock=None):
 
 
 @pytest.fixture
-def pending(s, tmp_path):
+def pending(s, tmp_path, monkeypatch):
+    monkeypatch.setattr(fw, "_photos_dir", lambda: tmp_path)
     g, k1, _, img = seed(s)
     f = tmp_path / "p.jpg"
     f.write_bytes(b"\xff\xd8jpegdata")
@@ -333,3 +334,81 @@ def test_consumer_single_instance(tmp_path):
     fw.run_forward_consumer(tmp_path, FakeConsumer)
     assert started == [{"workers": 1, "worker_type": "thread"}]
     fw.run_forward_consumer(tmp_path, FakeConsumer)  # lock released afterwards
+
+
+def primed_limiter(on_sleep):
+    c = Clock()
+
+    def sleeper(d):
+        on_sleep()
+        c.t += d
+
+    lim = fw.RateLimiter(6, c, sleeper, FixedRng())
+    lim.wait()  # the next wait() sleeps
+    return lim
+
+
+def set_status(fid, status):
+    with dbs.get_session() as s2:
+        s2.get(Forward, fid).status = status
+
+
+def test_disabled_mid_queue_cancels(pending):
+    fid, _ = pending
+    c = FakeClient()
+
+    def off():
+        with dbs.get_session() as s2:
+            s2.merge(Setting(key="forward.enabled", value=False))
+
+    assert deliver(fid, c, primed_limiter(off)) == "cancelled"
+    r = row(fid)
+    assert r.status == "cancelled" and "disabled" in r.last_error and not c.calls
+
+
+def test_destination_became_watched_cancels(pending):
+    fid, _ = pending
+
+    def watch_it():
+        with dbs.get_session() as s2:
+            s2.add(Group(chat_id="97250000001@c.us", name="x", slug="x", watched=True))
+
+    c = FakeClient()
+    assert deliver(fid, c, primed_limiter(watch_it)) == "cancelled"
+    assert "watched" in row(fid).last_error and not c.calls
+
+
+def test_cancelled_during_limiter_sleep_not_sent(pending):
+    fid, _ = pending
+    c = FakeClient()
+    assert deliver(fid, c, primed_limiter(lambda: set_status(fid, "cancelled"))) == "skipped"
+    assert row(fid).status == "cancelled" and not c.calls
+
+
+def test_file_outside_photos_dir_fails(pending, tmp_path, monkeypatch):
+    fid, _ = pending
+    monkeypatch.setattr(fw, "_photos_dir", lambda: tmp_path / "other")
+    c = FakeClient()
+    assert deliver(fid, c, limiter()[0]) == "failed"
+    assert "outside" in row(fid).last_error and not c.calls
+
+
+def test_oversize_file_fails(pending, monkeypatch):
+    fid, _ = pending
+    monkeypatch.setattr(fw, "MAX_FILE_BYTES", 3)
+    c = FakeClient()
+    assert deliver(fid, c, limiter()[0]) == "failed"
+    assert "too large" in row(fid).last_error and not c.calls
+
+
+def test_cancelled_row_not_revived(s):
+    g, k1, _, img = seed(s)
+    cfg(s, enabled=True, default_chat_id="d@c.us")
+    (f,) = fw.plan_forwards(s, img, [k1], {}, g)
+    fw.cancel_forwards(s, img.id, k1.id)
+    (again,) = fw.plan_forwards(s, img, [k1], {}, g)
+    assert again.id == f.id and again.status == "cancelled"
+
+
+def test_bidi_controls_stripped():
+    assert fw.render_caption("{kids}", ["a\u202eb\u2066c\u2069"], "g", "s", SENT) == "abc"

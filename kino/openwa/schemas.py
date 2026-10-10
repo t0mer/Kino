@@ -121,3 +121,12 @@ __all__ = [
     "parse_webhook",
     "verify_signature",
 ]
+
+
+_SERIALIZED_ID_RE = re.compile(r"^(?:true|false)_.+_([^_]+)$")
+
+
+def normalize_message_id(message_id: str) -> str:
+    """Bare id of a serialized `true_<chat>_<id>` / `false_<chat>_<id>`; other ids unchanged."""
+    m = _SERIALIZED_ID_RE.match(message_id)
+    return m.group(1) if m else message_id

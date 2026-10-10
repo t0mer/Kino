@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -29,6 +29,7 @@ from kino.openwa.schemas import (
     EVENT_MESSAGE_RECEIVED,
     SIGNATURE_HEADER,
     WebhookEvent,
+    normalize_message_id,
     parse_webhook,
     verify_signature,
 )
@@ -164,11 +165,21 @@ def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, int | None]
 
 
 def _is_forward_echo(message_id: str) -> bool:
-    """True when the message is one Kino itself sent as a forward (loop guard)."""
+    """True when the message is one Kino itself sent as a forward (loop guard).
+
+    Ids are compared normalised on both sides (serialized `true_<chat>_<id>` vs bare id).
+    """
+    want = normalize_message_id(message_id)
     with get_session() as s:
-        return (
-            s.scalar(select(Forward.id).where(Forward.openwa_message_id == message_id)) is not None
+        stored = s.scalars(
+            select(Forward.openwa_message_id).where(
+                or_(
+                    Forward.openwa_message_id == want,
+                    Forward.openwa_message_id.endswith("_" + want, autoescape=True),
+                )
+            )
         )
+        return any(m is not None and normalize_message_id(m) == want for m in stored)
 
 
 def _message_known(ev: WebhookEvent) -> bool:

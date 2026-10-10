@@ -85,7 +85,7 @@ def get_forward_config(session: Session) -> ForwardConfig:
     )
 
 
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 
 
@@ -133,7 +133,12 @@ def plan_forwards(
     saved_paths: dict[int, Path],
     group: Group,
 ) -> list[Forward]:
-    """One Forward row per (image, destination); idempotent."""
+    """One Forward row per (image, destination); idempotent.
+
+    An existing row for the same (image, destination) is reused as it is, whatever its status. A
+    `cancelled` row is deliberately NOT revived automatically (the photo was removed from a kid
+    on purpose); a new forward needs an explicit manual action.
+    """
     cfg = get_forward_config(session)
     if not cfg.enabled or not cfg.default_chat_id and not cfg.per_kid:
         return []
@@ -191,6 +196,7 @@ def cancel_forwards(session: Session, image_id: int, kid_id: int) -> int:
     ):
         if kid_id in (f.kid_ids or []):
             f.status = "cancelled"
+            metrics.forwards.labels(status="cancelled").inc()
             n += 1
     return n
 
@@ -208,6 +214,7 @@ def forward_blocks_raw_cleanup(session: Session, image_id: int) -> bool:
 # --- sender -----------------------------------------------------------------------------
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)  # retries 1..4 after a failure
+MAX_FILE_BYTES = 20 * 1024 * 1024
 STALE_PENDING = timedelta(minutes=5)
 CLAIM_LEASE = timedelta(minutes=5)
 _DIGITS_RE = re.compile(r"\d{6,}")
@@ -255,6 +262,49 @@ def _default_limiter() -> RateLimiter:
     if _limiter is None:
         _limiter = RateLimiter(get_settings().forward_rate_per_min)
     return _limiter
+
+
+def _photos_dir() -> Path:
+    return get_settings().photos_dir
+
+
+def _recheck(forward_id: int, dest: str) -> str | None:
+    """Re-validate just before sending; returns a final result, or None to go ahead."""
+    with get_session() as s:
+        f = s.get(Forward, forward_id)
+        if f is None or f.status != "pending":
+            return "skipped"  # cancelled (or otherwise settled) while waiting
+        reason = None
+        if not get_forward_config(s).enabled:
+            reason = "forwarding was disabled"
+        else:
+            try:
+                validate_destination(dest, s)
+            except ForwardError as e:
+                reason = str(e)
+        if reason is None:
+            return None
+        f.status = "cancelled"
+        f.last_error = reason
+        f.next_attempt_at = None
+        metrics.forwards.labels(status="cancelled").inc()
+        s.flush()
+        _update_depth(s)
+        return "cancelled"
+
+
+def _read_saved_file(path: str | None) -> bytes:
+    """Read the saved photo; it must be inside the photos dir and at most MAX_FILE_BYTES."""
+    if not path:
+        raise FileNotFoundError("saved photo file is missing")
+    p = Path(path).resolve()
+    if not p.is_relative_to(_photos_dir().resolve()):
+        raise PermissionError("saved photo path is outside the photos directory")
+    if not p.is_file():
+        raise FileNotFoundError("saved photo file is missing")
+    if p.stat().st_size > MAX_FILE_BYTES:
+        raise ValueError("saved photo file is too large to forward")
+    return p.read_bytes()
 
 
 def _default_client() -> OpenWAClient:
@@ -322,14 +372,15 @@ def deliver_forward(
             return "skipped"
         dest, caption, path = f.dest_chat_id, f.caption or "", f.file_path
     try:
-        if not path or not Path(path).is_file():
-            raise FileNotFoundError("saved photo file is missing")
-        data = Path(path).read_bytes()
-    except OSError as e:
+        data = _read_saved_file(path)
+    except (OSError, ValueError) as e:
         _fail(forward_id, sanitize_error(e), terminal=True, now=now())
         return "failed"
-    mimetype = mimetypes.guess_type(path)[0] or "image/jpeg"
+    mimetype = mimetypes.guess_type(path or "")[0] or "image/jpeg"
     (limiter or _default_limiter()).wait()
+    verdict = _recheck(forward_id, dest)
+    if verdict is not None:
+        return verdict
 
     async def send() -> str:
         client = client_factory()
@@ -350,6 +401,8 @@ def deliver_forward(
         f = s.get(Forward, forward_id)
         if f is not None:
             f.status = "sent"
+            # Stored as returned. NOTE: the OpenWA send-image messageId format is UNVERIFIED
+            # against the live instance; the webhook echo guard normalises both forms.
             f.openwa_message_id = message_id
             f.sent_at = now()
             f.next_attempt_at = None
