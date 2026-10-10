@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -5,6 +6,7 @@ import hmac
 import io
 import json
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -203,7 +205,8 @@ def test_duplicate_message_id_no_second_row(client, enqueued):
     p = with_media(payload(), jpeg())
     assert post(client, p).status_code == 200
     assert post(client, p).status_code == 200
-    assert len(images()) == 1 and len(enqueued) == 1
+    assert len(images()) == 1
+    assert enqueued == [images()[0].id] * 2  # redelivery of a still-queued row re-enqueues
 
 
 def test_phash_duplicate_skipped(client, enqueued):
@@ -281,9 +284,21 @@ def test_media_fetch_failure_not_500(client):
     assert images() == []
 
 
-def test_group_name_cached_and_fallback_on_failure(client):
-    from kino.openwa.client import OpenWAError
+def _wait_for(pred, timeout=3.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
 
+
+def _group_name_in_db(chat_id):
+    with dbs.get_session() as s:
+        return s.scalar(select(Group.name).where(Group.chat_id == chat_id))
+
+
+def test_group_name_refreshed_off_request_path_and_cached(client):
     calls = []
 
     class Fake:
@@ -294,21 +309,118 @@ def test_group_name_cached_and_fallback_on_failure(client):
     client.app.state.openwa = Fake()
     post(client, payload("text_group"))  # ignored: no lookup
     post(client, with_media(payload(id="1"), jpeg()))
+    assert _wait_for(lambda: _group_name_in_db(GROUP) == "Fresh Name")
     post(client, with_media(payload(id="2"), jpeg("checker")))
     assert calls == [GROUP]
-    with dbs.get_session() as s:
-        assert s.scalar(select(Group.name).where(Group.chat_id == GROUP)) == "Fresh Name"
+
+
+def test_slow_openwa_does_not_block_webhook(client):
+    from kino.api import webhook
+
+    class Slow:
+        async def get_group_name(self, chat_id):
+            await asyncio.sleep(0.6)
+            return "Late Name"
+
+    client.app.state.openwa = Slow()
+    t0 = time.monotonic()
+    r = post(client, with_media(payload(id="1"), jpeg()))
+    assert r.status_code == 200 and time.monotonic() - t0 < 0.4
+    assert _group_name_in_db(GROUP).startswith("Group ")  # fallback for now
+    assert _wait_for(lambda: _group_name_in_db(GROUP) == "Late Name")
+    assert webhook.NAME_FETCH_TIMEOUT <= 2.0
+
+
+def test_hanging_openwa_times_out_and_keeps_fallback(client, monkeypatch):
+    from kino.api import webhook
+
+    monkeypatch.setattr(webhook, "NAME_FETCH_TIMEOUT", 0.2)
+
+    class Hang:
+        async def get_group_name(self, chat_id):
+            await asyncio.sleep(30)
+
+    client.app.state.openwa = Hang()
+    assert post(client, payload("text_group")).status_code == 200
+    r = post(client, with_media(payload(id="1"), jpeg()))
+    assert r.status_code == 200
+    time.sleep(0.5)
+    assert _group_name_in_db(GROUP).startswith("Group ")
+
+
+def test_openwa_error_falls_back(client):
+    from kino.openwa.client import OpenWAError
 
     class Boom:
         async def get_group_name(self, chat_id):
             raise OpenWAError("http error", 500, "/x")
 
     client.app.state.openwa = Boom()
-    other = "999@g.us"
-    r = post(client, with_media(payload(id="3", chatId=other, **{"from": other}), jpeg()))
-    assert r.status_code == 200
+    r = post(client, with_media(payload(id="3"), jpeg()))
+    assert r.status_code == 200 and _group_name_in_db(GROUP)
+
+
+def test_enqueue_failure_then_redelivery_enqueues_once(client, monkeypatch):
+    watch()
+    calls = []
+
+    def boom(i):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(tasks, "process_image", boom)
+    p = with_media(payload(id="Q1"), jpeg())
+    r = post(client, p)
+    assert r.status_code == 200 and r.json()["result"] == "enqueue_failed"
+    (img,) = images()
+    assert img.status == "queued"
+    monkeypatch.setattr(tasks, "process_image", lambda i: calls.append(i))
+    assert post(client, p).status_code == 200
+    assert calls == [img.id] and len(images()) == 1
+
+
+def test_uniform_images_not_deduped(client, enqueued):
+    watch()
+
+    def solid(v):
+        buf = io.BytesIO()
+        Image.new("RGB", (256, 256), (v, v, v)).save(buf, "JPEG")
+        return buf.getvalue()
+
+    post(client, with_media(payload(id="B"), solid(0)))
+    post(client, with_media(payload(id="W"), solid(255)))
+    a, b = images()
+    assert a.status == b.status == "queued" and b.duplicate_of is None
+
+
+@pytest.mark.parametrize(("age_days", "is_dup"), [(29, True), (31, False)])
+def test_phash_window_boundary(client, enqueued, age_days, is_dup):
+    from datetime import UTC, datetime, timedelta
+
+    watch()
+    data = jpeg("grad")
+    old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=age_days)
     with dbs.get_session() as s:
-        assert s.scalar(select(Group.name).where(Group.chat_id == other))
+        s.add(ImageRow(message_id="old", phash=compute_phash(data), received_at=old, status="done"))
+    post(client, with_media(payload(id="NEW"), data))
+    new = [i for i in images() if i.message_id == "NEW"][0]
+    assert (new.duplicate_of is not None) == is_dup
+
+
+def test_unexpected_integrity_error_not_swallowed(client, enqueued, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    watch()
+    real = Session.flush
+
+    def bad(self, *a, **k):
+        if any(isinstance(o, ImageRow) for o in self.new):
+            raise IntegrityError("x", {}, Exception("other constraint"))
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Session, "flush", bad)
+    r = post(client, with_media(payload(id="Z"), jpeg()))
+    assert r.status_code == 503 and enqueued == []
 
 
 def test_concurrent_same_message_one_row(client, enqueued):

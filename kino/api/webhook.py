@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -40,6 +41,8 @@ PHASH_WINDOW = timedelta(days=30)
 PHASH_MAX_DISTANCE = 4
 GROUP_NAME_TTL = 24 * 3600.0
 GROUP_NAME_FAILURE_TTL = 300.0
+NAME_FETCH_TIMEOUT = 2.0
+UNIFORM_POPCOUNT = (2, 62)
 
 # chat_id -> (expires_monotonic, name or None when the lookup failed)
 _name_cache: dict[str, tuple[float, str | None]] = {}
@@ -61,23 +64,49 @@ def _fallback_name(chat_id: str) -> str:
     return "Group " + mask_path(chat_id).split("@")[0][-7:]
 
 
-async def _group_name(request: Request, chat_id: str) -> str | None:
-    """Group name via OpenWA with a 24h in-process cache; None if unknown/unreachable."""
+_refresh_tasks: set[asyncio.Task[None]] = set()
+
+
+def _update_group_name(chat_id: str, name: str) -> None:
+    with get_session() as s:
+        g = s.scalar(select(Group).where(Group.chat_id == chat_id))
+        if g is not None and g.name != name:
+            g.name = name
+            g.slug = _slugify(name, chat_id)
+
+
+async def _refresh_group_name(client: Any, chat_id: str) -> None:
+    """Fetch the name off the request path (short timeout) and update cache + DB."""
+    ttl = GROUP_NAME_FAILURE_TTL
+    name: str | None = None
+    try:
+        name = await asyncio.wait_for(client.get_group_name(chat_id), NAME_FETCH_TIMEOUT)
+        if name:
+            ttl = GROUP_NAME_TTL
+            await run_in_threadpool(_update_group_name, chat_id, name)
+    except (OpenWAError, TimeoutError) as e:
+        logger.warning("group name lookup failed: {}", type(e).__name__)
+    except Exception as e:  # never let a background refresh crash noisily
+        logger.error("group name refresh error: {}", type(e).__name__)
+    _name_cache[chat_id] = (time.monotonic() + ttl, name)
+
+
+def _cached_group_name(request: Request, chat_id: str) -> tuple[str | None, bool]:
+    """Return (cached name or None, whether a background refresh should be started)."""
     now = time.monotonic()
     hit = _name_cache.get(chat_id)
     if hit and hit[0] > now:
-        return hit[1]
-    client = request.app.state.openwa
-    name: str | None = None
-    ttl = GROUP_NAME_FAILURE_TTL
-    if client is not None:
-        try:
-            name = await client.get_group_name(chat_id)
-            ttl = GROUP_NAME_TTL if name else GROUP_NAME_FAILURE_TTL
-        except OpenWAError as e:
-            logger.warning("group name lookup failed: {}", e)
-    _name_cache[chat_id] = (now + ttl, name)
-    return name
+        return hit[1], False
+    previous = hit[1] if hit else None
+    # placeholder entry so concurrent requests do not each start a refresh
+    _name_cache[chat_id] = (now + GROUP_NAME_FAILURE_TTL, previous)
+    return previous, request.app.state.openwa is not None
+
+
+def _start_refresh(request: Request, chat_id: str) -> None:
+    task = asyncio.create_task(_refresh_group_name(request.app.state.openwa, chat_id))
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
 
 
 def _upsert_group(s: Session, chat_id: str, name: str | None, now: datetime) -> Group:
@@ -110,23 +139,33 @@ def _find_duplicate(s: Session, phash: str, now: datetime) -> Image | None:
     return None
 
 
+class StoreError(Exception):
+    """Unexpected DB failure while storing an image."""
+
+
 @dataclass
 class _Outcome:
     result: str
     image_id: int | None = None
 
 
-def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, bool]:
-    """Upsert the group; return (watched, message_already_known)."""
+def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, int | None]:
+    """Upsert the group; return (watched, id of a still-`queued` image for this message)."""
     now = datetime.now(UTC).replace(tzinfo=None)
     with get_session() as s:
         g = _upsert_group(s, ev.chat_id, name, now)
         watched = g.watched
-        known = (
-            watched
-            and s.scalar(select(Image.id).where(Image.message_id == ev.message_id)) is not None
-        )
-    return watched, known
+        queued_id = None
+        if watched:
+            queued_id = s.scalar(
+                select(Image.id).where(Image.message_id == ev.message_id, Image.status == "queued")
+            )
+    return watched, queued_id
+
+
+def _message_known(ev: WebhookEvent) -> bool:
+    with get_session() as s:
+        return s.scalar(select(Image.id).where(Image.message_id == ev.message_id)) is not None
 
 
 def _save_image(ev: WebhookEvent, data: bytes, info: ImageInfo, settings: Settings) -> _Outcome:
@@ -137,7 +176,8 @@ def _save_image(ev: WebhookEvent, data: bytes, info: ImageInfo, settings: Settin
         with get_session() as s:
             g = s.scalar(select(Group).where(Group.chat_id == ev.chat_id))
             assert g is not None
-            dup = _find_duplicate(s, phash, now)
+            uniform = not UNIFORM_POPCOUNT[0] < int(phash, 16).bit_count() < UNIFORM_POPCOUNT[1]
+            dup = None if uniform else _find_duplicate(s, phash, now)
             img = Image(
                 message_id=ev.message_id,
                 group_id=g.id,
@@ -158,7 +198,10 @@ def _save_image(ev: WebhookEvent, data: bytes, info: ImageInfo, settings: Settin
                 s.flush()
             except IntegrityError:
                 s.rollback()
-                return _Outcome("duplicate_message")
+                if s.scalar(select(Image.id).where(Image.message_id == ev.message_id)) is not None:
+                    return _Outcome("duplicate_message")
+                logger.error("image insert failed with an unexpected integrity error")
+                raise StoreError("integrity error") from None
             if dup:
                 metrics.duplicates.inc()
                 metrics.images.labels(status="skipped").inc()
@@ -214,11 +257,17 @@ async def openwa_webhook(request: Request) -> Response:
     if ev.media_type != "image" or not ev.is_group or ev.from_me:
         return _reply("ignored")
 
-    name = await _group_name(request, ev.chat_id)
-    watched, known = await run_in_threadpool(_handle_group, ev, name)
+    name, refresh = _cached_group_name(request, ev.chat_id)
+    watched, queued_id = await run_in_threadpool(_handle_group, ev, name)
+    if refresh:  # after the upsert, so the refresh finds the group row
+        _start_refresh(request, ev.chat_id)
     if not watched:
         return _reply("unwatched")
-    if known:
+    if queued_id is not None:
+        # Redelivery of a message whose earlier enqueue may have failed. Enqueueing twice
+        # is safe only because process_image is idempotent (Task 10 guards on status).
+        return await _enqueue(queued_id, "requeued")
+    if await run_in_threadpool(_message_known, ev):
         return _reply("duplicate_message")
 
     data: bytes
@@ -240,21 +289,27 @@ async def openwa_webhook(request: Request) -> Response:
         return _reply("too_large", 413)
 
     try:
-        info = sniff_image(data)
+        info = await run_in_threadpool(sniff_image, data)
     except NotAnImage as e:
         logger.info("ignoring non-image media in {}: {}", mask_path(ev.chat_id), e)
         return _reply("not_an_image")
 
     try:
         outcome = await run_in_threadpool(_save_image, ev, data, info, settings)
-    except (OSError, NotAnImage) as e:
+    except (OSError, NotAnImage, StoreError) as e:
         logger.error("storing image failed: {}", type(e).__name__)
         return _reply("store_failed", 503)
 
     if outcome.result == "queued" and outcome.image_id is not None:
-        try:
-            tasks.process_image(outcome.image_id)
-        except Exception as e:  # row is stored; a sweeper can requeue it
-            logger.error("enqueue failed for image {}: {}", outcome.image_id, type(e).__name__)
-            return _reply("enqueue_failed")
+        return await _enqueue(outcome.image_id, "queued")
     return _reply(outcome.result)
+
+
+async def _enqueue(image_id: int, result: str) -> Response:
+    """Enqueue process_image; process_image must be idempotent (re-enqueued on redelivery)."""
+    try:
+        await run_in_threadpool(tasks.process_image, image_id)
+    except Exception as e:  # row stays `queued`; redelivery or the sweeper re-enqueues it
+        logger.error("enqueue failed for image {}: {}", image_id, type(e).__name__)
+        return _reply("enqueue_failed")
+    return _reply(result)
