@@ -117,3 +117,140 @@ def test_cancel_only_pending(s):
     f.status = "sent"
     assert fw.cancel_forwards(s, img.id, k1.id) == 0
     assert f.status == "sent"
+
+
+# --- sender ---
+
+from datetime import timedelta  # noqa: E402
+
+from kino.openwa.client import OpenWAError  # noqa: E402
+
+
+class FakeClient:
+    def __init__(self, fail=0, msg="MSG1"):
+        self.fail, self.msg, self.calls = fail, msg, []
+
+    async def send_image(self, chat_id, data, mimetype, caption):
+        self.calls.append((chat_id, data, mimetype, caption))
+        if self.fail:
+            raise OpenWAError("send-image failed", 500, "/x/97250000001@c.us")
+        return self.msg
+
+    async def aclose(self):
+        pass
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, d):
+        self.sleeps.append(d)
+        self.t += d
+
+
+class FixedRng:
+    def uniform(self, a, b):
+        return a
+
+
+def limiter(clock=None):
+    c = clock or Clock()
+    return fw.RateLimiter(6, c, c.sleep, FixedRng()), c
+
+
+@pytest.fixture
+def pending(s, tmp_path):
+    g, k1, _, img = seed(s)
+    f = tmp_path / "p.jpg"
+    f.write_bytes(b"\xff\xd8jpegdata")
+    cfg(s, enabled=True, default_chat_id="97250000001@c.us")
+    (row,) = fw.plan_forwards(s, img, [k1], {k1.id: f}, g)
+    s.commit()
+    return row.id, f
+
+
+def row(fid):
+    with dbs.get_session() as s2:
+        return s2.get(Forward, fid)
+
+
+T0 = datetime(2026, 3, 7, 12, 0)
+
+
+def test_send_success(pending):
+    fid, _ = pending
+    c = FakeClient()
+    assert (
+        fw.deliver_forward(fid, client_factory=lambda: c, limiter=limiter()[0], now=lambda: T0)
+        == "sent"
+    )
+    r = row(fid)
+    assert (r.status, r.openwa_message_id, r.sent_at) == ("sent", "MSG1", T0)
+    assert c.calls[0][1] == b"\xff\xd8jpegdata" and c.calls[0][2] == "image/jpeg"
+    # not pending any more -> skipped, no second send
+    assert fw.deliver_forward(fid, client_factory=lambda: c, limiter=limiter()[0]) == "skipped"
+    assert len(c.calls) == 1
+
+
+def test_retry_schedule_then_failed(pending):
+    fid, _ = pending
+    c = FakeClient(fail=1)
+    lim, _ = limiter()
+    expected = [60, 300, 1800, 7200]
+    for secs in expected:
+        assert (
+            fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: T0)
+            == "retry"
+        )
+        r = row(fid)
+        assert r.status == "pending"
+        assert r.next_attempt_at == T0 + timedelta(seconds=secs)
+        assert "9725" not in (r.last_error or "") and "50000001" not in (r.last_error or "")
+    assert fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: T0) == "retry"
+    r = row(fid)
+    assert r.status == "failed" and r.attempts == 5 and r.last_error
+
+
+def test_manual_retry_resets_failed(pending):
+    fid, _ = pending
+    with dbs.get_session() as s2:
+        f = s2.get(Forward, fid)
+        f.status, f.attempts, f.last_error = "failed", 5, "boom"
+        assert fw.retry_forward(s2, fid)
+        assert (f.status, f.attempts, f.last_error) == ("pending", 0, None)
+        assert not fw.retry_forward(s2, fid)  # pending rows are not retried manually
+
+
+def test_missing_file_fails_cleanly(pending):
+    fid, f = pending
+    f.unlink()
+    c = FakeClient()
+    assert fw.deliver_forward(fid, client_factory=lambda: c, limiter=limiter()[0]) == "failed"
+    r = row(fid)
+    assert r.status == "failed" and "missing" in r.last_error and not c.calls
+
+
+def test_rate_limiter_spacing():
+    lim, c = limiter()
+    lim.wait()
+    assert c.sleeps == []
+    lim.wait()
+    assert c.sleeps == [pytest.approx(12.0)]  # 10 s interval + 2 s jitter
+    c.t += 100
+    lim.wait()
+    assert len(c.sleeps) == 1
+
+
+def test_enqueue_due_claims_rows(pending):
+    fid, _ = pending
+    now = datetime(2026, 3, 7, 12, 0)
+    assert fw.enqueue_due_forwards(now) == []  # fresh row, not stale yet
+    created = row(fid).created_at
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=6)) == [fid]
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=7)) == []  # claimed
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=17)) == [fid]

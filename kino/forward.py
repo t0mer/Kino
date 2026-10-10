@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
+import mimetypes
+import random
 import re
-from datetime import datetime
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from huey import crontab
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from kino import metrics
+from kino.config import get_settings
 from kino.db.models import Forward, Group, Image, Kid, Setting
-from kino.openwa.client import mask_path
+from kino.db.session import get_session
+from kino.openwa.client import OpenWAClient, mask_path
+from kino.tasks import forward_huey
 
 DEFAULT_CAPTION = "📸 {kids} · {group} · {date}"
 MAX_CAPTION = 1000
@@ -191,3 +201,178 @@ def forward_blocks_raw_cleanup(session: Session, image_id: int) -> bool:
         )
         is not None
     )
+
+
+# --- sender -----------------------------------------------------------------------------
+
+BACKOFF_SECONDS = (60, 300, 1800, 7200)  # retries 1..4 after a failure
+STALE_PENDING = timedelta(minutes=5)
+CLAIM_WINDOW = timedelta(minutes=10)
+_DIGITS_RE = re.compile(r"\d{6,}")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def sanitize_error(e: BaseException) -> str:
+    """Error text safe to store: no long digit runs (phone numbers), bounded length."""
+    return _DIGITS_RE.sub("****", f"{type(e).__name__}: {e}")[:300]
+
+
+class RateLimiter:
+    """Spaces sends by at least 60/rate seconds plus 2-5 s jitter. Clock/sleeper/rng injectable."""
+
+    def __init__(
+        self,
+        rate_per_min: int,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.interval = 60.0 / max(rate_per_min, 1)
+        self._clock = clock
+        self._sleep = sleeper
+        self._rng = rng or random.Random()
+        self._last: float | None = None
+
+    def wait(self) -> None:
+        if self._last is not None:
+            gap = self.interval + self._rng.uniform(2.0, 5.0)
+            delay = self._last + gap - self._clock()
+            if delay > 0:
+                self._sleep(delay)
+        self._last = self._clock()
+
+
+_limiter: RateLimiter | None = None
+
+
+def _default_limiter() -> RateLimiter:
+    global _limiter
+    if _limiter is None:
+        _limiter = RateLimiter(get_settings().forward_rate_per_min)
+    return _limiter
+
+
+def _default_client() -> OpenWAClient:
+    st = get_settings()
+    if not (st.openwa_url and st.openwa_api_key and st.openwa_session_id):
+        raise ForwardError("OpenWA is not configured")
+    return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
+
+
+def _update_depth(s: Session) -> None:
+    n = len(list(s.scalars(select(Forward.id).where(Forward.status == "pending"))))
+    metrics.forward_queue_depth.set(n)
+
+
+def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None:
+    with get_session() as s:
+        f = s.get(Forward, forward_id)
+        if f is None:
+            return
+        f.attempts += 1
+        f.last_error = error
+        if terminal or f.attempts > len(BACKOFF_SECONDS):
+            f.status = "failed"
+            f.next_attempt_at = None
+            metrics.forwards.labels(status="failed").inc()
+        else:
+            f.next_attempt_at = now + timedelta(seconds=BACKOFF_SECONDS[f.attempts - 1])
+        s.flush()
+        _update_depth(s)
+
+
+def deliver_forward(
+    forward_id: int,
+    *,
+    client_factory: Callable[[], Any] = _default_client,
+    limiter: RateLimiter | None = None,
+    now: Callable[[], datetime] = _utcnow,
+) -> str:
+    """Send one pending forward; returns the resulting status (or 'skipped')."""
+    with get_session() as s:
+        f = s.get(Forward, forward_id)
+        if f is None or f.status != "pending":
+            return "skipped"
+        dest, caption, path = f.dest_chat_id, f.caption or "", f.file_path
+    try:
+        if not path or not Path(path).is_file():
+            raise FileNotFoundError("saved photo file is missing")
+        data = Path(path).read_bytes()
+    except OSError as e:
+        _fail(forward_id, sanitize_error(e), terminal=True, now=now())
+        return "failed"
+    mimetype = mimetypes.guess_type(path)[0] or "image/jpeg"
+    (limiter or _default_limiter()).wait()
+
+    async def send() -> str:
+        client = client_factory()
+        try:
+            return str(await client.send_image(dest, data, mimetype, caption))
+        finally:
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
+
+    try:
+        message_id = asyncio.run(send())
+    except Exception as e:  # any send failure is retried/recorded, never crashes the worker
+        logger.warning("forward {} to {} failed: {}", forward_id, mask_path(dest), type(e).__name__)
+        _fail(forward_id, sanitize_error(e), terminal=False, now=now())
+        return "retry"
+    with get_session() as s:
+        f = s.get(Forward, forward_id)
+        if f is not None:
+            f.status = "sent"
+            f.openwa_message_id = message_id
+            f.sent_at = now()
+            f.next_attempt_at = None
+            f.last_error = None
+            metrics.forwards.labels(status="sent").inc()
+            s.flush()
+            _update_depth(s)
+    return "sent"
+
+
+@forward_huey.task()  # type: ignore[untyped-decorator]
+def send_forward(forward_id: int) -> None:
+    """Send one forward. The consumer for `forward_huey` must run with a single worker."""
+    deliver_forward(forward_id)
+
+
+def enqueue_due_forwards(now: datetime | None = None) -> list[int]:
+    """Re-enqueue pending rows that are due; claim them so the next sweep skips them."""
+    now = now or _utcnow()
+    due: list[int] = []
+    with get_session() as s:
+        for f in s.scalars(select(Forward).where(Forward.status == "pending")):
+            if f.next_attempt_at is not None:
+                is_due = f.next_attempt_at <= now
+            else:
+                is_due = f.created_at <= now - STALE_PENDING
+            if is_due:
+                f.next_attempt_at = now + CLAIM_WINDOW
+                due.append(f.id)
+        s.flush()
+        _update_depth(s)
+    return due
+
+
+@forward_huey.periodic_task(crontab(minute="*/5"))  # type: ignore[untyped-decorator]
+def retry_forwards() -> None:
+    for fid in enqueue_due_forwards():
+        send_forward(fid)
+
+
+def retry_forward(session: Session, forward_id: int) -> bool:
+    """Manual retry of a failed forward: reset to pending (caller enqueues send_forward)."""
+    f = session.get(Forward, forward_id)
+    if f is None or f.status != "failed":
+        return False
+    f.status = "pending"
+    f.attempts = 0
+    f.last_error = None
+    f.next_attempt_at = None
+    return True

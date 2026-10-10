@@ -11,6 +11,9 @@ _data_dir.mkdir(parents=True, exist_ok=True)
 
 huey = SqliteHuey("kino", filename=str(_data_dir / "queue.db"))
 
+# Forwarding has its own queue so a single consumer (`-w 1`) keeps sends ordered and rate limited.
+forward_huey = SqliteHuey("kino-forward", filename=str(_data_dir / "forward_queue.db"))
+
 
 @huey.task()  # type: ignore[untyped-decorator]
 def process_image(image_id: int) -> None:
