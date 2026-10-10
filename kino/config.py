@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -41,15 +41,15 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
     photos_dir: Path = Path("/data/photos")
     openwa_url: str | None = None
-    openwa_api_key: str | None = None
+    openwa_api_key: SecretStr | None = None
     openwa_session_id: str | None = None
-    webhook_secret: str | None = None
+    webhook_secret: SecretStr | None = None
     admin_user: str | None = None
-    admin_password_hash: str | None = None
+    admin_password_hash: SecretStr | None = None
     cf_access_team_domain: str | None = None
     cf_access_aud: str | None = None
     cf_access_allowed_emails: str | None = None
-    secret_key: str | None = None
+    secret_key: SecretStr | None = None
     metrics_public: bool = False
     embedder: Literal["auraface", "buffalo_l"] = "auraface"
     det_size: int = 1024
@@ -79,9 +79,10 @@ class Settings(BaseSettings):
         return (init_settings, env_settings, _YamlSource(settings_cls))
 
     def require_webhook_secret(self) -> str:
-        if not self.webhook_secret:
+        value = self.webhook_secret.get_secret_value() if self.webhook_secret else ""
+        if not value:
             raise RuntimeError("KINO_WEBHOOK_SECRET is required; refusing to start without it")
-        return self.webhook_secret
+        return value
 
 
 @lru_cache

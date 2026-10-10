@@ -50,3 +50,16 @@ def test_webhook_secret_returned(monkeypatch):
 
 def test_get_settings_cached():
     assert get_settings() is get_settings()
+
+
+def test_repr_hides_secrets():
+    s = Settings(
+        webhook_secret="WH-SECRET-1",
+        secret_key="SK-SECRET-2",
+        admin_password_hash="PW-HASH-3",
+        openwa_api_key="API-KEY-4",
+    )
+    text = repr(s) + str(s)
+    for v in ("WH-SECRET-1", "SK-SECRET-2", "PW-HASH-3", "API-KEY-4"):
+        assert v not in text
+    assert s.require_webhook_secret() == "WH-SECRET-1"
