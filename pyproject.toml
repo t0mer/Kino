@@ -36,8 +36,11 @@ dev = [
 [project.scripts]
 kino = "kino.cli:app"
 
-[tool.setuptools]
-packages = ["kino"]
+[tool.setuptools.packages.find]
+include = ["kino*"]
+
+[tool.setuptools.package-data]
+"kino.db" = ["alembic/script.py.mako"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -57,3 +60,6 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["kino.pipeline.*", "kino.api.*"]
 strict = true
+
+[tool.ruff.lint.per-file-ignores]
+"kino/db/alembic/versions/*" = ["E501", "I", "UP"]
