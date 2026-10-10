@@ -20,6 +20,8 @@ dependencies = [
     "typer==0.27.3",
     "httpx==0.28.1",
     "numpy==2.5.4",
+    "onnxruntime==1.31.0",
+    "opencv-python-headless==5.0.0.93",
     "filelock==4.1.0",
     "prometheus-client==0.26.0",
     "imagehash==4.3.2",
@@ -71,4 +73,13 @@ strict = true
 
 [[tool.mypy.overrides]]
 module = ["imagehash", "huey", "huey.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Vendored from InsightFace (MIT); keep numpy-typing noise out of strict checks.
+module = ["kino.pipeline._insightface.*"]
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
