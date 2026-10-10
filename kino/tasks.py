@@ -22,10 +22,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from huey import SqliteHuey
+from huey import SqliteHuey, crontab
 from loguru import logger
 from numpy.typing import NDArray
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from kino import metrics
@@ -52,6 +52,8 @@ AUTO_REF_MIN_QUALITY = 0.7
 AUTO_REF_CAP = 10
 AUTO_REF_WINDOW = timedelta(days=30)
 ERROR_MAX = 300
+STALE_QUEUED = timedelta(minutes=5)
+STUCK_PROCESSING = timedelta(minutes=30)
 
 
 def _utcnow() -> datetime:
@@ -200,7 +202,7 @@ def _claim(image_id: int) -> bool:
         res = s.execute(
             update(Image)
             .where(Image.id == image_id, Image.status == "queued")
-            .values(status="processing", error=None)
+            .values(status="processing", error=None, processing_started_at=_utcnow())
         )
         return bool(res.rowcount == 1)  # type: ignore[attr-defined]
 
@@ -507,3 +509,67 @@ def process_image(image_id: int) -> None:
         run_pipeline(image_id)
     except Exception as e:  # e.g. DB unavailable during the claim; the sweeper retries
         logger.error("process_image {} aborted: {}", image_id, type(e).__name__)
+
+
+# --- stale image sweeper -----------------------------------------------------------------
+
+
+def _enqueue_image(image_id: int) -> None:
+    process_image(image_id)
+
+
+def sweep_stale_images(
+    now: datetime | None = None, enqueue: Callable[[int], None] = _enqueue_image
+) -> dict[str, list[int]]:
+    """Re-enqueue `queued` rows older than 5 minutes (a lost enqueue) and recover rows stuck
+    in `processing` for over 30 minutes (a crashed worker): back to `queued` the first time,
+    `failed` with error `stuck` the second time. Duplicate enqueues are harmless because
+    `process_image` claims rows atomically."""
+    now = now or _utcnow()
+    result: dict[str, list[int]] = {"requeued": [], "recovered": [], "failed": []}
+    to_enqueue: list[tuple[str, int]] = []
+    with get_session() as s:
+        for iid in s.scalars(
+            select(Image.id).where(Image.status == "queued", Image.received_at < now - STALE_QUEUED)
+        ):
+            to_enqueue.append(("requeued", iid))
+        stuck = s.execute(
+            select(Image.id, Image.stuck_count).where(
+                Image.status == "processing",
+                or_(
+                    Image.processing_started_at.is_(None),
+                    Image.processing_started_at < now - STUCK_PROCESSING,
+                ),
+            )
+        ).all()
+        for iid, count in stuck:
+            guard = (Image.id == iid, Image.status == "processing")
+            if count >= 1:
+                s.execute(update(Image).where(*guard).values(status="failed", error="stuck"))
+                result["failed"].append(iid)
+                metrics.images.labels(status="failed").inc()
+            else:
+                s.execute(
+                    update(Image)
+                    .where(*guard)
+                    .values(status="queued", stuck_count=count + 1, processing_started_at=None)
+                )
+                to_enqueue.append(("recovered", iid))
+    for kind, iid in to_enqueue:  # after the commit
+        try:
+            enqueue(iid)
+        except Exception as e:  # the next sweep tries again
+            logger.error("sweeper enqueue of image {} failed: {}", iid, type(e).__name__)
+            continue
+        result[kind].append(iid)
+    if any(result.values()):
+        logger.info("image sweeper: {}", {k: len(v) for k, v in result.items()})
+    return result
+
+
+@huey.periodic_task(crontab(minute="*/5"))  # type: ignore[untyped-decorator]
+def sweep_images() -> None:
+    try:
+        sweep_stale_images()
+    except Exception as e:
+        logger.error("image sweeper failed: {}", type(e).__name__)

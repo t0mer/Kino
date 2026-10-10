@@ -101,6 +101,9 @@ class Image(Base):
     skip_reason: Mapped[str | None] = mapped_column(String)
     processing_ms: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    # Set when a worker claims the row; the sweeper recovers rows stuck past a deadline.
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    stuck_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
 
 class Cluster(Base):

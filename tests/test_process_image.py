@@ -1,7 +1,7 @@
 import io
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -584,3 +584,84 @@ def test_matcher_reloaded_once_per_job_and_sees_new_refs(world):
     iid2, _ = seed_image(env, group_id=gid, msg="m2")
     run(iid2)
     assert rows(Match)[-1].decision == "auto_saved"
+
+
+# --- stale image sweeper -----------------------------------------------------------------
+
+
+def test_claim_records_processing_start(world):
+    env, gid, *_ = world
+    iid, _ = seed_image(env, group_id=gid)
+    before = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
+    assert tasks._claim(iid)
+    img = get(Image, iid)
+    assert img.status == "processing" and img.processing_started_at >= before
+
+
+def test_sweeper_requeues_stale_queued(env):
+    gid = seed_group()
+    now = datetime(2026, 3, 7, 12, 0)
+    old, _ = seed_image(env, group_id=gid, msg="old", received_at=now - timedelta(minutes=6))
+    fresh, _ = seed_image(env, group_id=gid, msg="new", received_at=now - timedelta(minutes=2))
+    done, _ = seed_image(
+        env, group_id=gid, msg="done", status="done", received_at=now - timedelta(hours=1)
+    )
+    calls: list[int] = []
+    result = tasks.sweep_stale_images(now=now, enqueue=calls.append)
+    assert calls == [old]
+    assert result == {"requeued": [old], "recovered": [], "failed": []}
+    assert get(Image, fresh).status == "queued" and get(Image, done).status == "done"
+
+
+def test_sweeper_recovers_stuck_processing_once_then_fails(env):
+    gid = seed_group()
+    now = datetime(2026, 3, 7, 12, 0)
+    iid, raw = seed_image(
+        env,
+        group_id=gid,
+        status="processing",
+        processing_started_at=now - timedelta(minutes=31),
+        received_at=now - timedelta(hours=1),
+    )
+    young, _ = seed_image(
+        env,
+        group_id=gid,
+        msg="young",
+        status="processing",
+        processing_started_at=now - timedelta(minutes=10),
+    )
+    calls: list[int] = []
+    r1 = tasks.sweep_stale_images(now=now, enqueue=calls.append)
+    assert r1["recovered"] == [iid] and calls == [iid]
+    img = get(Image, iid)
+    assert img.status == "queued" and img.stuck_count == 1
+    assert get(Image, young).status == "processing"
+
+    # claimed again and stuck again -> failed 'stuck', not requeued
+    later = now + timedelta(hours=1)
+    with dbs.get_session() as s:
+        s.get(Image, iid).status = "processing"
+        s.get(Image, iid).processing_started_at = later - timedelta(minutes=45)
+    calls.clear()
+    r2 = tasks.sweep_stale_images(now=later, enqueue=calls.append)
+    assert r2["failed"] == [iid] and iid not in calls
+    img = get(Image, iid)
+    assert (img.status, img.error) == ("failed", "stuck")
+    assert raw.exists()
+
+
+def test_sweeper_enqueue_failure_is_contained(env):
+    gid = seed_group()
+    now = datetime(2026, 3, 7, 12, 0)
+    seed_image(env, group_id=gid, received_at=now - timedelta(minutes=10))
+
+    def boom(_):
+        raise RuntimeError("queue down")
+
+    assert tasks.sweep_stale_images(now=now, enqueue=boom)["requeued"] == []
+
+
+def test_sweeper_periodic_task_registered():
+    (task_cls,) = [t for t in tasks.huey._registry._periodic_tasks if t.__name__ == "sweep_images"]
+    every5 = task_cls().validate_datetime
+    assert every5(datetime(2026, 3, 7, 12, 5)) and not every5(datetime(2026, 3, 7, 12, 7))
