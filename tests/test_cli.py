@@ -69,6 +69,9 @@ COMMANDS = [
     ["forward", "disable"],
     ["forward", "retry"],
     ["forward", "list"],
+    ["openwa"],
+    ["openwa", "register-webhook"],
+    ["bench"],
 ]
 
 
@@ -581,3 +584,142 @@ def test_forward_list_and_retry(env, monkeypatch):
         assert (f.status, f.attempts) == ("pending", 0)
     assert "does not exist or has not failed" in one_line_error(run("forward", "retry", "2"))
     assert sent == [1]
+
+
+# --- openwa register-webhook ---------------------------------------------------------------------
+
+import json  # noqa: E402
+
+SECRET = "s3cret-webhook-secret-value"
+HOOK_URL = "http://kino-api:8080/api/webhook/openwa"
+
+
+@pytest.fixture
+def openwa(env, monkeypatch):
+    """Fake OpenWA webhook API; `state['hooks']` is what GET returns."""
+    state = {"hooks": [], "calls": []}
+
+    def handler(request):
+        body = json.loads(request.content) if request.content else None
+        state["calls"].append((request.method, request.url.path, body))
+        assert request.headers["x-api-key"] == "key"
+        if request.method == "GET":
+            return httpx.Response(200, json=state["hooks"])
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "h-1", **body})
+        return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[1]})
+
+    monkeypatch.setattr(
+        cli,
+        "OpenWAClient",
+        lambda url, key, sid: OpenWAClient(url, key, sid, transport=httpx.MockTransport(handler)),
+    )
+    settings = Settings(
+        data_dir=env.data_dir,
+        openwa_url="http://openwa",
+        openwa_api_key="key",  # type: ignore[arg-type]
+        openwa_session_id="sess",
+        webhook_secret=SECRET,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    return state
+
+
+def test_register_webhook_creates_then_updates(openwa):
+    r = run("openwa", "register-webhook")
+    assert r.exit_code == 0, r.output
+    assert r.output.startswith("created webhook h-1")
+    assert SECRET not in r.output and SECRET not in r.stderr
+    assert "********" in r.output and "message.received" in r.output and HOOK_URL in r.output
+    method, path, body = openwa["calls"][-1]
+    assert (method, path) == ("POST", "/api/sessions/sess/webhooks")
+    assert body["url"] == HOOK_URL
+    assert body["events"] == ["message.received"]
+    assert body["secret"] == SECRET
+    assert {"field": "isGroup", "operator": "is", "value": True} in body["filters"]["conditions"]
+
+    openwa["hooks"] = [{"id": "h-1", "url": HOOK_URL}, {"id": "h-2", "url": "http://other"}]
+    openwa["calls"].clear()
+    r = run("openwa", "register-webhook")
+    assert r.exit_code == 0, r.output
+    assert r.output.startswith("updated webhook h-1")
+    assert SECRET not in r.output
+    methods = [(m, p) for m, p, _ in openwa["calls"]]
+    assert methods == [
+        ("GET", "/api/sessions/sess/webhooks"),
+        ("PUT", "/api/sessions/sess/webhooks/h-1"),
+    ]
+    assert openwa["calls"][-1][2]["active"] is True
+    assert "url" not in openwa["calls"][-1][2]
+
+
+def test_register_webhook_custom_url(openwa):
+    r = run("openwa", "register-webhook", "--url", "http://x:1/hook")
+    assert r.exit_code == 0, r.output
+    assert openwa["calls"][-1][2]["url"] == "http://x:1/hook"
+
+
+def test_register_webhook_errors_are_one_line(openwa, monkeypatch):
+    short = Settings(
+        data_dir=cli.get_settings().data_dir,
+        openwa_url="http://openwa",
+        openwa_api_key="key",  # type: ignore[arg-type]
+        openwa_session_id="sess",
+        webhook_secret="short",  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: short)
+    assert "at least 16" in one_line_error(run("openwa", "register-webhook"))
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(data_dir=short.data_dir))
+    assert "KINO_WEBHOOK_SECRET" in one_line_error(run("openwa", "register-webhook"))
+
+
+def test_register_webhook_http_error_is_masked(env, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "OpenWAClient",
+        lambda url, key, sid: OpenWAClient(
+            url, key, sid, transport=httpx.MockTransport(lambda r: httpx.Response(403))
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(
+            data_dir=env.data_dir,
+            openwa_url="http://openwa",
+            openwa_api_key="key",  # type: ignore[arg-type]
+            openwa_session_id="sess",
+            webhook_secret=SECRET,  # type: ignore[arg-type]
+        ),
+    )
+    msg = one_line_error(run("openwa", "register-webhook"))
+    assert "403" in msg and "key" not in msg.lower()
+
+
+# --- bench -----------------------------------------------------------------------------------
+
+
+def test_bench_prints_stage_timings_and_target(env, photos, pipeline):
+    write_jpeg(photos / "a.jpg", 400)
+    write_jpeg(photos / "b.jpg", 410)
+    pipeline({400: [det(100, 100, 120)], 410: [det(50, 60, 90), det(250, 60, 90)]}, [0] * 10)
+    r = run("bench", str(photos), "--repeat", "2")
+    assert r.exit_code == 0, r.output
+    assert "4 run(s), 6 face(s)" in r.output  # 2 images x 2 repeats; (1 + 2) faces x 2
+    for word in ("load", "detect", "quality", "embed", "total", "mean", "p50", "p95"):
+        assert word in r.output
+    assert "within 2.5s target" in r.output
+    assert not (env.data_dir / "kino.db").exists()  # no DB writes
+
+
+def test_bench_errors(env, photos, tmp_path):
+    assert "not a directory" in one_line_error(run("bench", str(tmp_path / "nope")))
+    assert "no jpg" in one_line_error(run("bench", str(photos)))
+
+
+def test_bench_stats():
+    from kino.bench import stats
+
+    assert stats([]) == (0.0, 0.0, 0.0)
+    mean, p50, p95 = stats([1.0, 2.0, 3.0, 4.0, 100.0])
+    assert (mean, p50, p95) == (22.0, 3.0, 100.0)

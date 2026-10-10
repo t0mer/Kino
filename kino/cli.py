@@ -46,6 +46,8 @@ kids_app = typer.Typer(help="Kids and their save settings.", no_args_is_help=Tru
 app.add_typer(kids_app, name="kids")
 forward_app = typer.Typer(help="Forwarding of saved photos.", no_args_is_help=True)
 app.add_typer(forward_app, name="forward")
+openwa_app = typer.Typer(help="OpenWA integration.", no_args_is_help=True)
+app.add_typer(openwa_app, name="openwa")
 
 
 class CliError(Exception):
@@ -453,3 +455,68 @@ def forward_list(
                 f"{f.id}  {f.status:<9} -> {mask_chat_id(f.dest_chat_id)}  "
                 f"attempts {f.attempts}{err}"
             )
+
+
+def mask_secret(_secret: str) -> str:
+    return "********"
+
+
+@openwa_app.command("register-webhook")
+@command
+def openwa_register_webhook(
+    url: Annotated[
+        str, typer.Option(help="URL OpenWA calls (reachable from OpenWA).")
+    ] = "http://kino-api:8080/api/webhook/openwa",
+) -> None:
+    """Register (or update) Kino's webhook in OpenWA."""
+    from kino.openwa.register import EVENTS, register_webhook
+
+    st = _settings()
+    secret = st.require_webhook_secret()
+
+    async def go() -> tuple[str, str]:
+        client = _openwa_client()
+        try:
+            return await register_webhook(client, url, secret)
+        finally:
+            await client.aclose()
+
+    action, hook_id = asyncio.run(go())
+    typer.echo(
+        f"{action} webhook {hook_id}: url {url}, events {', '.join(EVENTS)}, "
+        f"session {st.openwa_session_id}, secret {mask_secret(secret)}"
+    )
+
+
+@app.command()
+@command
+def bench(
+    directory: Annotated[Path, typer.Argument(help="Folder of images to time.")],
+    repeat: Annotated[int, typer.Option(min=1, help="Runs per image.")] = 1,
+) -> None:
+    """Time detect / quality / embed on real images (no database writes)."""
+    from kino import bench as bench_mod
+    from kino import enroll as enroll_mod
+    from kino import tasks
+
+    if not directory.is_dir():
+        raise CliError(f"{directory} is not a directory")
+    images = enroll_mod.list_images(directory)
+    if not images:
+        raise CliError(f"no jpg/jpeg/png/webp/heic images in {directory}")
+    pipe = tasks.get_pipeline()
+    res = bench_mod.run_bench(images, pipe.detector, pipe.embedder, _settings(), repeat)
+    if not res.totals:
+        raise CliError("no image could be benchmarked (all skipped by the prefilter)")
+    typer.echo(f"{len(res.totals)} run(s), {res.faces} face(s); times in seconds")
+    typer.echo(f"{'stage':<9} {'mean':>8} {'p50':>8} {'p95':>8}")
+    for name, values in {**res.stages, "total": res.totals}.items():
+        mean, p50, p95 = bench_mod.stats(values)
+        typer.echo(f"{name:<9} {mean:>8.3f} {p50:>8.3f} {p95:>8.3f}")
+    mean_total = bench_mod.stats(res.totals)[0]
+    verdict = "within" if mean_total <= bench_mod.TARGET_SECONDS else "OVER"
+    typer.echo(
+        f"mean total per image {mean_total:.3f}s: {verdict} {bench_mod.TARGET_SECONDS}s target"
+    )
+    if res.skipped:
+        typer.echo(f"skipped by prefilter: {', '.join(res.skipped)}")

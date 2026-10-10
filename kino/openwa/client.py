@@ -119,3 +119,27 @@ class OpenWAClient:
             },
         )
         return self._message_id(res, "send-image")
+
+    # --- webhook management -------------------------------------------------------------
+    # Source: https://github.com/rmyndharis/openwa/blob/main/docs/06-api-specification.md
+    # section 6.4.8 (read 2026-10): GET/POST /api/sessions/:sessionId/webhooks,
+    # PUT /api/sessions/:sessionId/webhooks/:id (OPERATOR role). Body: url, events[], secret
+    # (>= 16 chars, write-only), filters {conditions:[{field, operator, value}]}, active (update).
+
+    async def list_webhooks(self) -> list[dict[str, Any]]:
+        return list(await self._json("GET", self._p("webhooks")))
+
+    async def create_webhook(self, body: dict[str, Any]) -> str:
+        res = await self._json("POST", self._p("webhooks"), json=body)
+        return self._webhook_id(res, "webhooks")
+
+    async def update_webhook(self, webhook_id: str, body: dict[str, Any]) -> str:
+        res = await self._json("PUT", self._p(f"webhooks/{quote(webhook_id, safe='')}"), json=body)
+        return self._webhook_id(res, "webhooks/{id}")
+
+    def _webhook_id(self, res: Any, what: str) -> str:
+        try:
+            return str(res["id"])
+        except (KeyError, TypeError):
+            failure = OpenWAError("no id in response", None, self._p(what))
+        raise failure
