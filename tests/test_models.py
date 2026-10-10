@@ -81,9 +81,39 @@ def test_bad_checksum_leaves_no_file(server, patch_spec, tmp_path):
 def test_http_error_leaves_no_file(server, patch_spec, tmp_path):
     url, _ = server
     patch_spec(url=url + "/missing", sha256=SHA)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ModelError, match="HTTPStatusError"):
         ensure_model("auraface_glintr100", tmp_path)
     assert list((tmp_path / "models").iterdir()) == []
+
+
+def test_missing_archive_member_is_model_error(server, monkeypatch, tmp_path):
+    url, _ = server
+    monkeypatch.setitem(
+        MODELS,
+        "scrfd_10g",
+        replace(MODELS["scrfd_10g"], url=url + "/pack.zip", archive_member="absent.onnx"),
+    )
+    with pytest.raises(ModelError, match="absent.onnx"):
+        ensure_model("scrfd_10g", tmp_path)
+    assert list((tmp_path / "models").iterdir()) == []
+
+
+def test_bad_zip_is_model_error(server, monkeypatch, tmp_path):
+    url, _ = server
+    monkeypatch.setitem(MODELS, "scrfd_10g", replace(MODELS["scrfd_10g"], url=url + "/m.onnx"))
+    with pytest.raises(ModelError, match="BadZipFile"):
+        ensure_model("scrfd_10g", tmp_path)
+    assert list((tmp_path / "models").iterdir()) == []
+
+
+def test_connection_error_is_model_error(monkeypatch, tmp_path):
+    monkeypatch.setitem(
+        MODELS,
+        "auraface_glintr100",
+        replace(MODELS["auraface_glintr100"], url="http://127.0.0.1:1/x"),
+    )
+    with pytest.raises(ModelError, match="ConnectError"):
+        ensure_model("auraface_glintr100", tmp_path)
 
 
 def test_existing_valid_not_redownloaded(server, patch_spec, tmp_path):

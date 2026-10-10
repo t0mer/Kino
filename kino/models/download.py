@@ -94,7 +94,14 @@ def ensure_model(name: str, data_dir: Path | str) -> Path:
         final.unlink()
 
     logger.info("downloading model {} from {}", name, spec.url)
-    tmp = _fetch(spec, models_dir)
+    try:
+        tmp = _fetch(spec, models_dir)
+    except KeyError as e:
+        raise ModelError(
+            f"model {name}: file {e.args[0]!r} not found in downloaded archive"
+        ) from None
+    except (zipfile.BadZipFile, httpx.HTTPError) as e:
+        raise ModelError(f"downloading model {name} failed: {type(e).__name__}") from None
     try:
         actual = _sha256(tmp)
         if actual != spec.sha256:
