@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -76,12 +77,22 @@ class WebhookEvent(BaseModel):
     from_me: bool = False
 
 
+_DATA_URI_RE = re.compile(r"^data:([^;,]*)(?:;[^,]*)?;base64,", re.IGNORECASE)
+
+
 def parse_webhook(payload: dict[str, Any]) -> WebhookEvent:
     """Build a WebhookEvent from the raw envelope; raises ValueError if malformed."""
     try:
         data = payload["data"]
         media = data.get("media") or {}
         contact = data.get("contact") or {}
+        b64 = media.get("data")
+        uri_mime = None
+        if isinstance(b64, str):
+            m = _DATA_URI_RE.match(b64)
+            if m:
+                uri_mime = m.group(1) or None
+                b64 = b64[m.end() :]
         sender = next((data[k] for k in SENDER_FIELD_CANDIDATES if data.get(k)), None)
         return WebhookEvent(
             session_id=payload["sessionId"],
@@ -92,12 +103,21 @@ def parse_webhook(payload: dict[str, Any]) -> WebhookEvent:
             sender_name=contact.get("pushName") or contact.get("name"),
             timestamp=datetime.fromtimestamp(float(data["timestamp"]), tz=UTC),
             media_type=data["type"],
-            media_b64=media.get("data") or None,
-            mimetype=media.get("mimetype") or None,
+            media_b64=b64 or None,
+            mimetype=media.get("mimetype") or uri_mime or None,
             from_me=bool(data.get("fromMe", False)),
         )
-    except (KeyError, TypeError, AttributeError) as e:
+    except (KeyError, TypeError, AttributeError, OverflowError, OSError) as e:
         raise ValueError(f"malformed OpenWA webhook payload: missing/invalid {e}") from e
 
 
-__all__ = ["WebhookEvent", "parse_webhook", "verify_signature"]
+__all__ = [
+    "API_KEY_HEADER",
+    "EVENT_MESSAGE_RECEIVED",
+    "SENDER_FIELD_CANDIDATES",
+    "SIGNATURE_HEADER",
+    "SIGNATURE_PREFIX",
+    "WebhookEvent",
+    "parse_webhook",
+    "verify_signature",
+]

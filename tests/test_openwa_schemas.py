@@ -74,3 +74,21 @@ def test_verify_signature():
     assert not verify_signature("s3", body, "")
     assert not verify_signature("s3", body, "sha256=abc")
     assert not verify_signature("", body, good)
+
+
+def test_data_uri_and_raw_base64():
+    d = load("image_group.json")
+    d["data"]["media"] = {"data": "data:image/png;base64,QUJD"}
+    ev = parse_webhook(d)
+    assert ev.media_b64 == "QUJD" and ev.mimetype == "image/png"
+    d["data"]["media"] = {"data": "data:image/png;base64,QUJD", "mimetype": "image/jpeg"}
+    assert parse_webhook(d).mimetype == "image/jpeg"
+    d["data"]["media"] = {"data": "QUJD", "mimetype": "image/jpeg"}
+    assert parse_webhook(d).media_b64 == "QUJD"
+
+
+def test_bad_timestamp_is_value_error():
+    d = load("text_group.json")
+    d["data"]["timestamp"] = 1e30
+    with pytest.raises(ValueError):
+        parse_webhook(d)

@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from kino.openwa.client import OpenWAClient
+from kino.openwa.client import OpenWAClient, OpenWAError
 
 
 def make(handler) -> OpenWAClient:
@@ -69,8 +69,23 @@ async def test_list_chats_filters():
     assert len(await make(h).list_chats()) == 2
 
 
-async def test_http_error_message_has_no_key():
-    c = make(lambda r: httpx.Response(401, json={"message": "no"}))
-    with pytest.raises(httpx.HTTPStatusError) as e:
-        await c.list_groups()
-    assert "key123" not in str(e.value)
+async def test_get_media_error_is_sanitised():
+    c = make(lambda r: httpx.Response(404, json={"message": "nope 972501234567"}))
+    with pytest.raises(OpenWAError) as e:
+        await c.get_media("972501234567@c.us", "MID")
+    for text in (str(e.value), repr(e.value)):
+        assert "972501234567" not in text and "key123" not in text
+    assert e.value.status == 404 and "9725****567@c.us" in str(e.value)
+
+
+async def test_transport_error_and_bad_json_wrapped():
+    def boom(r: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("x 972501234567@c.us", request=r)
+
+    with pytest.raises(OpenWAError) as e:
+        await make(boom).get_media("972501234567@c.us", "M")
+    assert "972501234567" not in str(e.value) and e.value.status is None
+    with pytest.raises(OpenWAError):
+        await make(lambda r: httpx.Response(200, content=b"<html>")).list_groups()
+    with pytest.raises(OpenWAError):
+        await make(lambda r: httpx.Response(201, json={})).send_text("c@c.us", "x")
