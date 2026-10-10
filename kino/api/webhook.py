@@ -248,11 +248,30 @@ def _save_image(ev: WebhookEvent, data: bytes, info: ImageInfo, settings: Settin
         raise
 
 
+class _TooLarge(Exception):
+    """Request body exceeds MAX_BODY_BYTES."""
+
+
+async def _read_body(request: Request) -> bytes:
+    """Read the raw body with a hard cap: a declared Content-Length over the limit is
+    rejected before anything is read, and a streamed body stops at the first chunk past it."""
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.strip().isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise _TooLarge
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > MAX_BODY_BYTES:
+            raise _TooLarge
+    return bytes(buf)
+
+
 @router.post("/api/webhook/openwa")
 async def openwa_webhook(request: Request) -> Response:
     settings: Settings = request.app.state.settings
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
+    try:
+        body = await _read_body(request)
+    except _TooLarge:
         return _reply("too_large", 413)
 
     secret = settings.require_webhook_secret()

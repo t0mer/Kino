@@ -524,3 +524,70 @@ def test_from_me_forward_echo_ignored(client, enqueued):
     p = with_media(payload(fromMe=True, id=echo_id), jpeg())
     assert post(client, p).json() == {"result": "ignored"}
     assert enqueued == []
+
+
+async def _asgi_post(app, headers, chunks):
+    """Drive the ASGI app directly; returns (status, number of body chunks read)."""
+    reads = 0
+
+    async def receive():
+        nonlocal reads
+        if reads < len(chunks):
+            reads += 1
+            return {
+                "type": "http.request",
+                "body": chunks[reads - 1],
+                "more_body": reads < len(chunks),
+            }
+        return {"type": "http.disconnect"}
+
+    status = {}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            status["code"] = msg["status"]
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/webhook/openwa",
+        "raw_path": b"/api/webhook/openwa",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+    }
+    await app(scope, receive, send)
+    return status.get("code"), reads
+
+
+async def test_oversize_content_length_rejected_before_reading(env, enqueued, monkeypatch):
+    from kino.api import webhook
+    from kino.api.app import create_app
+
+    monkeypatch.setattr(webhook, "MAX_BODY_BYTES", 100)
+    app = create_app()
+    code, reads = await _asgi_post(app, {"content-length": "101"}, [b"x" * 101])
+    assert (code, reads) == (413, 0)
+
+
+async def test_oversize_streamed_body_stops_at_cap(env, enqueued, monkeypatch):
+    from kino.api import webhook
+    from kino.api.app import create_app
+
+    monkeypatch.setattr(webhook, "MAX_BODY_BYTES", 100)
+    app = create_app()
+    code, reads = await _asgi_post(app, {}, [b"x" * 60] * 10)  # no Content-Length (chunked)
+    assert code == 413 and reads == 2
+
+
+async def test_body_within_cap_still_verified(env, enqueued, monkeypatch):
+    from kino.api.app import create_app
+
+    app = create_app()
+    code, _ = await _asgi_post(app, {}, [b'{"event":', b'"x"}'])
+    assert code == 401  # read fully, then HMAC checked over the raw bytes
