@@ -923,3 +923,38 @@ def test_failed_run_keeps_preexisting_and_committed_photos(world, monkeypatch):
     assert run(iid).status == "failed"
     # committed (and pre-existing) files, including the hardlinked sibling, survive
     assert saved[noa].is_file() and saved[itai].is_file()
+
+
+def test_claim_operational_error_never_raises(world, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    env, gid, *_ = world
+    pipeline([])
+    iid, _ = seed_image(env, group_id=gid)
+
+    def locked(_):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(tasks, "_claim", locked)
+    assert tasks.run_pipeline(iid) == "deferred"
+    assert get(Image, iid).status == "queued"
+
+
+def test_requeue_operational_error_never_raises(world, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    env, gid, *_ = world
+    tasks.set_pipeline(embedder=FakeEmbedder(), enqueue_forward=Enqueue())
+
+    def broken(st):
+        raise RuntimeError("no model")
+
+    def locked(*a):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(tasks, "_default_detector", broken)
+    monkeypatch.setattr(tasks, "_requeue_transient", locked)
+    monkeypatch.setattr(tasks, "_mark_failed", locked)
+    iid, _ = seed_image(env, group_id=gid)
+    assert tasks.run_pipeline(iid) == "deferred"
+    assert get(Image, iid).status == "processing"  # left for the sweeper

@@ -587,7 +587,11 @@ def run_pipeline(image_id: int) -> str:
     `superseded` if the row was recovered elsewhere mid-run, or `deferred` when the DB was
     unavailable to record the outcome (the row is left for the sweeper). Never raises."""
     t0 = time.perf_counter()
-    claimed_at = _claim(image_id)
+    try:
+        claimed_at = _claim(image_id)
+    except OperationalError as e:
+        logger.warning("image {}: claim deferred: {}", image_id, _sanitize("claim", e))
+        return "deferred"
     if claimed_at is None:
         return "not_claimed"
     st = get_settings()
@@ -611,10 +615,19 @@ def run_pipeline(image_id: int) -> str:
         transient = isinstance(e, _PipelineInitError | OperationalError)
         cause = e.__cause__ if isinstance(e, _PipelineInitError) and e.__cause__ else e
         err = _sanitize(run.stage, cause)
-        if transient:
-            status = _requeue_transient(image_id, claimed_at, err, ms)
-        else:
-            status = _mark_failed(image_id, claimed_at, err, ms)
+        try:
+            if transient:
+                status = _requeue_transient(image_id, claimed_at, err, ms)
+            else:
+                status = _mark_failed(image_id, claimed_at, err, ms)
+        except OperationalError as db_err:
+            logger.warning(
+                "image {}: could not record outcome ({}); left for the sweeper: {}",
+                image_id,
+                _sanitize("record", db_err),
+                err,
+            )
+            return "deferred"
         if transient:
             logger.warning("image {} hit an infrastructure error ({}): {}", image_id, status, err)
         else:
