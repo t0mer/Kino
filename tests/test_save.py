@@ -211,3 +211,78 @@ def test_remove_keeps_hardlinked_sibling(jpg: Path, tmp_path: Path) -> None:
     assert os.stat(res[2]).st_nlink == 1
     assert Image.open(res[2]).format == "JPEG"
     assert not (root / "noa").exists()
+
+
+def test_resave_keeps_siblings_linked(jpg: Path, tmp_path: Path) -> None:
+    root = tmp_path / "p"
+    _, group, image = mk()
+    k1 = SimpleNamespace(id=1, slug="noa")
+    k2 = SimpleNamespace(id=2, slug="itai")
+    save_for_kids(jpg, [k1, k2], group, image, root)
+    res = save_for_kids(jpg, [k1, k2], group, image, root)
+    s1, s2 = os.stat(res[1]), os.stat(res[2])
+    assert s1.st_ino == s2.st_ino and s1.st_nlink == 2
+
+
+def test_hostile_text_saves(jpg: Path, tmp_path: Path) -> None:
+    kid, group, image = mk(group_name="x" * 100_000, sender="a\ud800b\x00c\x07")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    ex = piexif.load(str(out))
+    assert len(ex["0th"][piexif.ImageIFD.ImageDescription]) <= 256
+    assert read_text_tags(out)[1] == "a?bc"
+
+
+def gps_jpeg(path: Path) -> None:
+    gps = {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: ((32, 1), (5, 1), (0, 1)),
+        piexif.GPSIFD.GPSLongitudeRef: b"E",
+        piexif.GPSIFD.GPSLongitude: ((34, 1), (46, 1), (0, 1)),
+    }
+    exif = {
+        "0th": {piexif.ImageIFD.Make: b"Cam", piexif.ImageIFD.DateTime: b"2000:01:01 00:00:00"},
+        "Exif": {
+            piexif.ExifIFD.OffsetTimeOriginal: b"+03:00",
+            piexif.ExifIFD.SubSecTimeOriginal: b"123",
+            piexif.ExifIFD.OffsetTime: b"+03:00",
+        },
+        "GPS": gps,
+    }
+    noisy().save(path, "JPEG", exif=piexif.dump(exif))
+
+
+def test_gps_stripped_by_default_and_stale_tags(tmp_path: Path) -> None:
+    src = tmp_path / "g.jpg"
+    gps_jpeg(src)
+    kid, group, image = mk()
+    ex = piexif.load(str(save_photo(src, kid, group, image, tmp_path / "p")))
+    assert ex["GPS"] == {}
+    assert ex["0th"][piexif.ImageIFD.Make] == b"Cam"
+    assert ex["0th"][piexif.ImageIFD.DateTime] == b"2026:03:07 14:05:09"
+    for t in (
+        piexif.ExifIFD.OffsetTimeOriginal,
+        piexif.ExifIFD.SubSecTimeOriginal,
+        piexif.ExifIFD.OffsetTime,
+    ):
+        assert t not in ex["Exif"]
+
+
+def test_gps_kept_when_disabled(tmp_path: Path) -> None:
+    src = tmp_path / "g.jpg"
+    gps_jpeg(src)
+    kid, group, image = mk()
+    out = save_photo(src, kid, group, image, tmp_path / "p", strip_gps=False)
+    assert piexif.load(str(out))["GPS"][piexif.GPSIFD.GPSLatitudeRef] == b"N"
+
+
+def test_file_mode(jpg: Path, tmp_path: Path) -> None:
+    out = save_photo(jpg, *mk()[0:3], tmp_path / "p")
+    umask = os.umask(0)
+    os.umask(umask)
+    assert out.stat().st_mode & 0o777 == 0o644 & ~umask
+
+
+def test_missing_sent_at(jpg: Path, tmp_path: Path) -> None:
+    kid, group, image = mk(sent=None)
+    with pytest.raises(ValueError, match="sent_at missing"):
+        save_photo(jpg, kid, group, image, tmp_path / "p")

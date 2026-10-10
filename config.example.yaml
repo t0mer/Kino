@@ -16,3 +16,6 @@ log_level: INFO
 #   send-text:  POST /api/sessions/{sid}/messages/send-text   {chatId, text}
 #   send-image: POST /api/sessions/{sid}/messages/send-image  {chatId, base64, mimetype, caption}
 #   get-media:  GET  /api/sessions/{sid}/messages/{chatId}/{messageId}/media
+
+# Remove GPS EXIF from saved (and therefore forwarded) photos; default true
+strip_gps: true

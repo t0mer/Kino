@@ -12,6 +12,14 @@ Policy:
   ``XPTitle``/``XPAuthor`` (UTF-16LE, the Windows convention), which is what
   :func:`read_text_tags` prefers.
 * ``image_id_short`` is the image id zero-padded to 8 digits.
+* GPS: by default (``strip_gps=True``, ``KINO_STRIP_GPS``) the whole GPS IFD is
+  removed from JPEG input. Task 11 forwards the SAVED file, so forwarded
+  photos are GPS-free too. Other original EXIF is preserved, except stale
+  time-zone/sub-second tags, which are dropped, and ``DateTime`` which is set
+  to the same UTC value as ``DateTimeOriginal``.
+* Text values are sanitised (control chars removed, lone surrogates replaced,
+  truncated to 255 chars) so untrusted names cannot break the EXIF segment.
+* Saved files are chmod 0o644 & ~umask and fsynced before ``os.replace``.
 * Files are written to a temp file in the destination directory and moved with
   ``os.replace`` so a crash never leaves a partial destination.
 """
@@ -23,6 +31,7 @@ import io
 import os
 import shutil
 import tempfile
+import unicodedata
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,7 +78,7 @@ class _ImageLike(Protocol):
 
 def _utc(dt: datetime | None) -> datetime:
     if dt is None:
-        return datetime.fromtimestamp(0, UTC)
+        raise ValueError("sent_at missing")
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
@@ -105,14 +114,29 @@ def build_dest_path(kid: _KidLike, group: _GroupLike, image: _ImageLike, dest_ro
 
 
 def _clean(text: str | None) -> str:
-    return (text or "").replace("\x00", "")
+    """Sanitise an untrusted name for EXIF: no controls, valid unicode, <=255 chars."""
+    safe = (text or "").encode("utf-8", "replace").decode("utf-8")
+    safe = "".join(c for c in safe if unicodedata.category(c) != "Cc")
+    return safe[:255]
 
 
 def _xp(text: str) -> bytes:
     return text.encode("utf-16-le") + b"\x00\x00"
 
 
-def _build_exif(existing: bytes | None, image: _ImageLike, group: _GroupLike) -> bytes:
+_STALE_EXIF_TAGS = (
+    piexif.ExifIFD.OffsetTime,
+    piexif.ExifIFD.OffsetTimeOriginal,
+    piexif.ExifIFD.OffsetTimeDigitized,
+    piexif.ExifIFD.SubSecTime,
+    piexif.ExifIFD.SubSecTimeOriginal,
+    piexif.ExifIFD.SubSecTimeDigitized,
+)
+
+
+def _build_exif(
+    existing: bytes | None, image: _ImageLike, group: _GroupLike, strip_gps: bool = True
+) -> bytes:
     exif: dict[str, Any] = {"0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}}
     if existing:
         with contextlib.suppress(Exception):
@@ -120,6 +144,11 @@ def _build_exif(existing: bytes | None, image: _ImageLike, group: _GroupLike) ->
     exif["thumbnail"] = None
     exif["1st"] = {}
     stamp = _utc(image.sent_at).strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
+    for tag in _STALE_EXIF_TAGS:
+        exif["Exif"].pop(tag, None)
+    if strip_gps:
+        exif["GPS"] = {}
+    exif["0th"][piexif.ImageIFD.DateTime] = stamp
     exif["Exif"][piexif.ExifIFD.DateTimeOriginal] = stamp
     exif["Exif"][piexif.ExifIFD.DateTimeDigitized] = stamp
     desc = _clean(group.name)
@@ -144,13 +173,19 @@ def read_text_tags(path: Path) -> tuple[str, str]:
     return dec(_XP_TITLE), dec(_XP_AUTHOR)
 
 
-def _write_atomic(dst: Path, write: Any) -> None:
+def _write_atomic(dst: Path, write: Any, finalize: bool = True) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=".kino-", suffix=".tmp")
     os.close(fd)
     tmp = Path(tmp_name)
     try:
         write(tmp)
+        if finalize:
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp, 0o644 & ~umask)
+            with tmp.open("rb") as fh:
+                os.fsync(fh.fileno())
         os.replace(tmp, dst)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -158,7 +193,12 @@ def _write_atomic(dst: Path, write: Any) -> None:
 
 
 def save_photo(
-    raw_path: Path, kid: _KidLike, group: _GroupLike, image: _ImageLike, dest_root: Path
+    raw_path: Path,
+    kid: _KidLike,
+    group: _GroupLike,
+    image: _ImageLike,
+    dest_root: Path,
+    strip_gps: bool = True,
 ) -> Path:
     """Write the photo for ``kid`` under ``dest_root`` with rewritten EXIF."""
     dst = build_dest_path(kid, group, image, dest_root)
@@ -168,7 +208,7 @@ def save_photo(
 
         def write(tmp: Path) -> None:
             tmp.write_bytes(data)
-            piexif.insert(_build_exif(data, image, group), str(tmp))
+            piexif.insert(_build_exif(data, image, group, strip_gps), str(tmp))
 
     else:
 
@@ -186,12 +226,8 @@ def save_photo(
 def link_or_copy(src: Path, dst: Path) -> None:
     """Hardlink ``src`` to ``dst``; fall back to a copy. Idempotent."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        if os.path.samefile(src, dst):
-            return
-        if src.read_bytes() == dst.read_bytes():
-            return
-        dst.unlink()
+    if dst.exists() and os.path.samefile(src, dst):
+        return
 
     def write(tmp: Path) -> None:
         tmp.unlink()
@@ -200,7 +236,7 @@ def link_or_copy(src: Path, dst: Path) -> None:
         except OSError:
             shutil.copy2(src, tmp)
 
-    _write_atomic(dst, write)
+    _write_atomic(dst, write, finalize=False)
 
 
 def save_for_kids(
@@ -209,13 +245,14 @@ def save_for_kids(
     group: _GroupLike,
     image: _ImageLike,
     dest_root: Path,
+    strip_gps: bool = True,
 ) -> dict[int, Path]:
     """Save for the first kid, hardlink (or copy) for the rest."""
     result: dict[int, Path] = {}
     first: Path | None = None
     for kid in kids:
         if first is None:
-            first = save_photo(raw_path, kid, group, image, dest_root)
+            first = save_photo(raw_path, kid, group, image, dest_root, strip_gps)
             result[kid.id] = first
         else:
             dst = build_dest_path(kid, group, image, dest_root)

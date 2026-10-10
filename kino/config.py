@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("/data")
     photos_dir: Path = Path("/data/photos")
+    strip_gps: bool = True
     openwa_url: str | None = None
     openwa_api_key: SecretStr | None = None
     openwa_session_id: str | None = None
