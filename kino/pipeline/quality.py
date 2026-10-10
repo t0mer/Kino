@@ -67,6 +67,10 @@ def estimate_pose(kps: NDArray[np.float32]) -> tuple[float, float]:
 
 
 def face_quality(det: Detection, aligned_crop: NDArray[np.uint8]) -> FaceQuality:
+    if aligned_crop.shape[:2] != (112, 112):
+        raise ValueError(f"aligned_crop must be 112x112, got {aligned_crop.shape[:2]}")
+    if not (np.isfinite(det.bbox).all() and np.isfinite(det.kps).all()):
+        return FaceQuality(0.0, 0.0, 0.0, 0.0, 0.0)
     size_px = float(det.size_px)
     gray = (
         cv2.cvtColor(aligned_crop, cv2.COLOR_BGR2GRAY) if aligned_crop.ndim == 3 else aligned_crop

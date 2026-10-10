@@ -172,3 +172,79 @@ def test_real_auraface_similarity(tmp_path_factory):
     diff = float(vec(a) @ vec(b))
     print(f"same={same:.3f} diff={diff:.3f}")
     assert same > 0.6 and same > diff + 0.3
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_inputs_give_zero_quality(bad):
+    import math
+
+    kps = KPS.copy()
+    kps[2, 0] = bad
+    for d in (
+        Detection(bbox=(0.0, 0.0, bad, 50.0), score=0.9, kps=KPS.copy()),
+        Detection(bbox=(0.0, 0.0, 50.0, 50.0), score=0.9, kps=kps),
+    ):
+        fq = face_quality(d, sharp_img())
+        assert fq.quality == 0.0
+        assert all(math.isfinite(v) for v in (fq.size_px, fq.blur_score, fq.yaw, fq.pitch))
+
+
+def test_face_quality_requires_112_crop():
+    with pytest.raises(ValueError, match="112"):
+        face_quality(det(), np.zeros((64, 64, 3), np.uint8))
+
+
+def test_embedder_preprocessing_values(monkeypatch):
+    seen = {}
+
+    class Cap(_FakeSession):
+        def run(self, _o, feed):
+            seen["blob"] = feed["data"].copy()
+            return [np.ones((1, 512), np.float32)]
+
+    monkeypatch.setattr(embed_mod.ort, "InferenceSession", lambda *a, **k: Cap())
+    img = np.zeros((112, 112, 3), np.uint8)
+    img[..., 0] = 255  # BGR: pure blue
+    OnnxEmbedder("x.onnx").embed(img)
+    blob = seen["blob"]
+    assert blob.shape == (1, 3, 112, 112) and blob.dtype == np.float32
+    assert (blob[0, 0] == -1.0).all()  # R
+    assert (blob[0, 1] == -1.0).all()  # G
+    assert (blob[0, 2] == 1.0).all()  # B
+    assert blob.min() >= -1.0 and blob.max() <= 1.0
+
+
+@pytest.mark.parametrize(("choice", "warns"), [("buffalo_l", True), ("auraface", False)])
+def test_get_embedder_license_warning(monkeypatch, tmp_path, choice, warns):
+    from loguru import logger
+
+    from kino.models import download
+
+    def fake_ensure(name, _data_dir):
+        download._announce(name, download.MODELS[name])
+        return tmp_path / "m.onnx"
+
+    monkeypatch.setattr(embed_mod, "ensure_model", fake_ensure)
+    monkeypatch.setattr(embed_mod.ort, "InferenceSession", lambda *a, **k: _FakeSession())
+    msgs: list[str] = []
+    hid = logger.add(lambda m: msgs.append(m.record["message"]), level="WARNING")
+    try:
+        embed_mod.get_embedder(Settings(embedder=choice))
+    finally:
+        logger.remove(hid)
+    assert any("non-commercial" in m for m in msgs) is warns
+
+
+def test_make_crop_not_stretched_near_border():
+    img = np.full((200, 300, 3), 255, np.uint8)
+    d = Detection(bbox=(0.0, 50.0, 40.0, 90.0), score=0.9, kps=KPS)  # face touches left edge
+    out = cv2.imdecode(np.frombuffer(make_crop(img, d), np.uint8), cv2.IMREAD_COLOR)
+    gray = out.mean(axis=2)
+    white_cols = np.where((gray > 200).any(axis=0))[0]
+    white_rows = np.where((gray > 200).any(axis=1))[0]
+    assert gray[80, :10].max() < 30  # left padding is black
+    w = white_cols.max() - white_cols.min() + 1
+    h = white_rows.max() - white_rows.min() + 1
+    assert h == 160 and 0.5 < w / h < 1.0  # padded: width truncated, scale unchanged
+    # square 40px face with margin -> 64px side -> scale 2.5; image region left of face = 0
+    assert w == pytest.approx(160 - 160 * (0.3 / 1.6), abs=3)
