@@ -12,10 +12,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
 from huey import crontab
+from huey.consumer import Consumer
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -207,7 +209,7 @@ def forward_blocks_raw_cleanup(session: Session, image_id: int) -> bool:
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)  # retries 1..4 after a failure
 STALE_PENDING = timedelta(minutes=5)
-CLAIM_WINDOW = timedelta(minutes=10)
+CLAIM_LEASE = timedelta(minutes=5)
 _DIGITS_RE = re.compile(r"\d{6,}")
 
 
@@ -263,16 +265,16 @@ def _default_client() -> OpenWAClient:
 
 
 def _update_depth(s: Session) -> None:
-    n = len(list(s.scalars(select(Forward.id).where(Forward.status == "pending"))))
-    metrics.forward_queue_depth.set(n)
+    n = s.scalar(select(func.count()).select_from(Forward).where(Forward.status == "pending"))
+    metrics.forward_queue_depth.set(n or 0)
 
 
 def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None:
+    """Record a failed attempt (attempts was already incremented by the claim)."""
     with get_session() as s:
         f = s.get(Forward, forward_id)
-        if f is None:
+        if f is None or f.status != "pending":
             return
-        f.attempts += 1
         f.last_error = error
         if terminal or f.attempts > len(BACKOFF_SECONDS):
             f.status = "failed"
@@ -284,6 +286,21 @@ def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None
         _update_depth(s)
 
 
+def _claim(forward_id: int, now: datetime) -> bool:
+    """Atomically lease a due pending row; only the caller that gets rowcount 1 may send."""
+    with get_session() as s:
+        res = s.execute(
+            update(Forward)
+            .where(
+                Forward.id == forward_id,
+                Forward.status == "pending",
+                or_(Forward.next_attempt_at.is_(None), Forward.next_attempt_at <= now),
+            )
+            .values(attempts=Forward.attempts + 1, next_attempt_at=now + CLAIM_LEASE)
+        )
+        return bool(res.rowcount == 1)  # type: ignore[attr-defined]
+
+
 def deliver_forward(
     forward_id: int,
     *,
@@ -291,10 +308,17 @@ def deliver_forward(
     limiter: RateLimiter | None = None,
     now: Callable[[], datetime] = _utcnow,
 ) -> str:
-    """Send one pending forward; returns the resulting status (or 'skipped')."""
+    """Send one pending forward; returns the resulting status (or 'skipped').
+
+    The row is leased atomically first, so duplicate queue entries cannot double-send. Delivery
+    is at-least-once: a crash after the send but before the row is marked sent re-sends once the
+    lease expires.
+    """
+    if not _claim(forward_id, now()):
+        return "skipped"
     with get_session() as s:
         f = s.get(Forward, forward_id)
-        if f is None or f.status != "pending":
+        if f is None:
             return "skipped"
         dest, caption, path = f.dest_chat_id, f.caption or "", f.file_path
     try:
@@ -343,7 +367,7 @@ def send_forward(forward_id: int) -> None:
 
 
 def enqueue_due_forwards(now: datetime | None = None) -> list[int]:
-    """Re-enqueue pending rows that are due; claim them so the next sweep skips them."""
+    """List pending rows that are due. Duplicate enqueues are harmless: `_claim` is atomic."""
     now = now or _utcnow()
     due: list[int] = []
     with get_session() as s:
@@ -353,7 +377,6 @@ def enqueue_due_forwards(now: datetime | None = None) -> list[int]:
             else:
                 is_due = f.created_at <= now - STALE_PENDING
             if is_due:
-                f.next_attempt_at = now + CLAIM_WINDOW
                 due.append(f.id)
         s.flush()
         _update_depth(s)
@@ -376,3 +399,20 @@ def retry_forward(session: Session, forward_id: int) -> bool:
     f.last_error = None
     f.next_attempt_at = None
     return True
+
+
+def run_forward_consumer(
+    data_dir: Path | None = None,
+    consumer_factory: Callable[..., Any] = Consumer,
+) -> None:
+    """Run the forward queue consumer: exactly one worker thread, one process (file lock)."""
+    lock_path = (data_dir or get_settings().data_dir) / "forward_consumer.lock"
+    lock = FileLock(str(lock_path), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout:
+        raise ForwardError("another forward consumer is already running") from None
+    try:
+        consumer_factory(forward_huey, workers=1, worker_type="thread").run()
+    finally:
+        lock.release()

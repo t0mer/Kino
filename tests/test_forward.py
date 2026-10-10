@@ -197,21 +197,24 @@ def test_send_success(pending):
     assert len(c.calls) == 1
 
 
+def deliver(fid, c, lim, at=T0):
+    return fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: at)
+
+
 def test_retry_schedule_then_failed(pending):
     fid, _ = pending
     c = FakeClient(fail=1)
     lim, _ = limiter()
-    expected = [60, 300, 1800, 7200]
-    for secs in expected:
-        assert (
-            fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: T0)
-            == "retry"
-        )
+    at = T0
+    for secs in [60, 300, 1800, 7200]:
+        assert deliver(fid, c, lim, at) == "retry"
         r = row(fid)
         assert r.status == "pending"
-        assert r.next_attempt_at == T0 + timedelta(seconds=secs)
-        assert "9725" not in (r.last_error or "") and "50000001" not in (r.last_error or "")
-    assert fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: T0) == "retry"
+        assert r.next_attempt_at == at + timedelta(seconds=secs)
+        assert "50000001" not in (r.last_error or "")
+        assert deliver(fid, c, lim, at) == "skipped"  # not due yet
+        at = r.next_attempt_at
+    assert deliver(fid, c, lim, at) == "retry"
     r = row(fid)
     assert r.status == "failed" and r.attempts == 5 and r.last_error
 
@@ -246,11 +249,87 @@ def test_rate_limiter_spacing():
     assert len(c.sleeps) == 1
 
 
-def test_enqueue_due_claims_rows(pending):
+def test_enqueue_due_lists_rows(pending):
     fid, _ = pending
     now = datetime(2026, 3, 7, 12, 0)
     assert fw.enqueue_due_forwards(now) == []  # fresh row, not stale yet
     created = row(fid).created_at
     assert fw.enqueue_due_forwards(created + timedelta(minutes=6)) == [fid]
-    assert fw.enqueue_due_forwards(created + timedelta(minutes=7)) == []  # claimed
-    assert fw.enqueue_due_forwards(created + timedelta(minutes=17)) == [fid]
+    # the sweep does not claim; `_claim` makes duplicate enqueues harmless
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=7)) == [fid]
+    assert fw._claim(fid, created + timedelta(minutes=7))
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=8)) == []  # leased
+    assert fw.enqueue_due_forwards(created + timedelta(minutes=13)) == [fid]  # lease expired
+
+
+class Boom(BaseException):
+    pass
+
+
+class CrashLimiter:
+    def wait(self):
+        raise Boom
+
+
+def test_double_delivery_sends_once(pending):
+    fid, _ = pending
+    c = FakeClient()
+    lim = limiter()[0]
+    assert deliver(fid, c, lim) == "sent"
+    assert (
+        fw.deliver_forward(fid, client_factory=lambda: c, limiter=lim, now=lambda: T0) == "skipped"
+    )
+    assert len(c.calls) == 1
+
+
+def test_claimed_row_skipped_until_lease_expires(pending):
+    fid, _ = pending
+    c = FakeClient()
+    with pytest.raises(Boom):  # crash after the claim, before the send
+        fw.deliver_forward(fid, client_factory=lambda: c, limiter=CrashLimiter(), now=lambda: T0)
+    assert row(fid).attempts == 1 and row(fid).status == "pending"
+    soon = T0 + timedelta(minutes=1)
+    assert (
+        fw.deliver_forward(fid, client_factory=lambda: c, limiter=limiter()[0], now=lambda: soon)
+        == "skipped"
+    )
+    later = T0 + fw.CLAIM_LEASE + timedelta(seconds=1)
+    assert (
+        fw.deliver_forward(fid, client_factory=lambda: c, limiter=limiter()[0], now=lambda: later)
+        == "sent"
+    )
+    assert len(c.calls) == 1
+
+
+def test_concurrent_claim_single_winner(pending):
+    import threading
+
+    fid, _ = pending
+    wins = []
+    barrier = threading.Barrier(4)
+
+    def go():
+        barrier.wait()
+        wins.append(fw._claim(fid, T0))
+
+    ts = [threading.Thread(target=go) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert wins.count(True) == 1
+
+
+def test_consumer_single_instance(tmp_path):
+    started = []
+
+    class FakeConsumer:
+        def __init__(self, huey, **kw):
+            started.append(kw)
+
+        def run(self):
+            # while running, a second consumer must refuse to start
+            with pytest.raises(ForwardError, match="already running"):
+                fw.run_forward_consumer(tmp_path, FakeConsumer)
+
+    fw.run_forward_consumer(tmp_path, FakeConsumer)
+    assert started == [{"workers": 1, "worker_type": "thread"}]
+    fw.run_forward_consumer(tmp_path, FakeConsumer)  # lock released afterwards
