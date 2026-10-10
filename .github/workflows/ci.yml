@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+      - name: Ruff lint
+        run: .venv/bin/ruff check .
+      - name: Ruff format
+        run: .venv/bin/ruff format --check .
+      - name: Mypy
+        run: .venv/bin/mypy kino
+      - name: Pytest
+        run: .venv/bin/pytest -q
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install runtime dependencies
+        run: |
+          uv venv
+          uv pip install .
+          uv pip install pip-licenses==5.0.0
+      - name: Fail on AGPL licenses or ultralytics
+        run: |
+          set -euo pipefail
+          .venv/bin/pip-licenses --format=csv --with-system > licenses.csv
+          cat licenses.csv
+          if grep -iE 'agpl|affero' licenses.csv; then
+            echo "::error::AGPL-licensed dependency found"
+            exit 1
+          fi
+          if uv pip freeze | grep -iq '^ultralytics'; then
+            echo "::error::ultralytics (AGPL) must not be installed"
+            exit 1
+          fi
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (amd64, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: kino:ci
