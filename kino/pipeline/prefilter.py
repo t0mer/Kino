@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from pathlib import Path
 
 import imagehash
+import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+try:  # HEIC/HEIF decoding for the pipeline loader
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:  # pragma: no cover
+    pass
 
 MAX_IMAGE_PIXELS = 100_000_000
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
@@ -57,3 +67,48 @@ def compute_phash(data: bytes) -> str:
 def hamming(a: str, b: str) -> int:
     """Hamming distance between two hex hashes."""
     return (int(a, 16) ^ int(b, 16)).bit_count()
+
+
+# --- pipeline prefilter (CLAUDE.md 9.1) ---------------------------------------------------
+
+MIN_SIDE_PX = 200
+
+
+def skip_reason(im: Image.Image) -> str | None:
+    """Why the pipeline should skip this image, or None.
+
+    * ``animated``: more than one frame (animated GIF/WebP).
+    * ``sticker``: a WebP with an alpha channel; WhatsApp stickers are transparent WebP,
+      photos are not.
+    * ``too_small``: smallest side under 200 px.
+    """
+    if getattr(im, "is_animated", False) or getattr(im, "n_frames", 1) > 1:
+        return "animated"
+    if im.format == "WEBP" and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info):
+        return "sticker"
+    if min(im.size) < MIN_SIDE_PX:
+        return "too_small"
+    return None
+
+
+@dataclass
+class LoadedImage:
+    """Upright BGR pixels, or the reason the image is skipped (then ``bgr`` is None)."""
+
+    bgr: NDArray[np.uint8] | None
+    skip_reason: str | None = None
+
+
+def load_for_pipeline(path: Path) -> LoadedImage:
+    """Decode with Pillow, apply EXIF orientation and return a BGR array.
+
+    Undecodable files raise (Pillow's own errors); the caller marks the image failed.
+    """
+    with Image.open(path) as im:
+        reason = skip_reason(im)
+        if reason is not None:
+            return LoadedImage(None, reason)
+        im.load()
+        rgb = ImageOps.exif_transpose(im).convert("RGB")
+    bgr = np.ascontiguousarray(np.asarray(rgb, dtype=np.uint8)[:, :, ::-1])
+    return LoadedImage(bgr)
