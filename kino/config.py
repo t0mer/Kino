@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     tile_overlap: float = Field(0.2, ge=0, lt=1)
     workers: int = Field(2, ge=1)
     ort_threads: int = Field(2, ge=1)
+
+    @field_validator("det_size")
+    @classmethod
+    def _check_det_size(cls, v: int) -> int:
+        if v < 32 or v % 32 != 0:
+            raise ValueError("det_size must be a multiple of 32 and at least 32")
+        return v
+
     raw_retention_days: int = 7
     face_retention_days: int = 30
     burst_enabled: bool = False

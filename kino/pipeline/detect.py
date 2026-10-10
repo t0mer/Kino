@@ -14,6 +14,7 @@ from kino.pipeline._insightface import distance2bbox, distance2kps, make_anchors
 
 MIN_DET_SCORE = 0.5
 TILE_DET_SIZE = 640
+TILE_MAX_UPSCALE = 2.0
 NMS_IOU = 0.4
 _STRIDES = (8, 16, 32)
 _NUM_ANCHORS = 2
@@ -35,7 +36,9 @@ class Detection:
 
 
 class Detector(Protocol):
-    def detect(self, img_bgr: NDArray[np.uint8], det_size: int) -> list[Detection]: ...
+    def detect(
+        self, img_bgr: NDArray[np.uint8], det_size: int, max_upscale: float = 1.0
+    ) -> list[Detection]: ...
 
 
 def decode_outputs(
@@ -48,7 +51,8 @@ def decode_outputs(
         scores = outputs[idx].reshape(-1)
         boxes = outputs[idx + fmc].reshape(-1, 4) * stride
         kps = outputs[idx + 2 * fmc].reshape(-1, 10) * stride
-        side = det_size // stride
+        # Grid derived from the model output (maps are rounded up), not det_size // stride.
+        side = round((len(scores) / _NUM_ANCHORS) ** 0.5)
         anchors = make_anchors(side, side, stride, _NUM_ANCHORS)
         keep = np.where(scores >= thresh)[0]
         if keep.size == 0:
@@ -69,6 +73,15 @@ def decode_outputs(
     return [dets[i] for i in nms(arr, NMS_IOU)]
 
 
+def letterbox_scale(w: int, h: int, det_size: int, max_upscale: float) -> float:
+    """Resize factor to fit the longest side into det_size, upscaling at most max_upscale.
+
+    The full pass uses max_upscale=1.0 (deliberately no upscaling: blowing a 330px portrait
+    up to 1024 dropped its score from 0.73 to 0.40); tiles may upscale up to 2x.
+    """
+    return min(max_upscale, det_size / max(h, w))
+
+
 class ScrfdDetector:
     """SCRFD-10GF on onnxruntime CPU."""
 
@@ -81,10 +94,12 @@ class ScrfdDetector:
         self._input = self._sess.get_inputs()[0].name
         self._out_names = [o.name for o in self._sess.get_outputs()]
 
-    def detect(self, img_bgr: NDArray[np.uint8], det_size: int) -> list[Detection]:
+    def detect(
+        self, img_bgr: NDArray[np.uint8], det_size: int, max_upscale: float = 1.0
+    ) -> list[Detection]:
         h, w = img_bgr.shape[:2]
-        # Never upscale: SCRFD scores drop for faces blown up well past native size.
-        scale = min(1.0, det_size / max(h, w))
+        scale = letterbox_scale(w, h, det_size, max_upscale)
+        det_size = -(-det_size // 32) * 32  # SCRFD feature maps need a multiple of 32
         new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
         resized = cv2.resize(img_bgr, (new_w, new_h))
         canvas = np.zeros((det_size, det_size, 3), dtype=np.uint8)
@@ -157,7 +172,7 @@ def detect_image(detector: Detector, img: NDArray[np.uint8], settings: Settings)
     if needs_tiling(settings.tiling, w, h, full):
         grid = choose_grid(w, h) if settings.tile_grid == "auto" else int(settings.tile_grid[0])
         for x0, y0, x1, y1 in tile_grid(w, h, grid, settings.tile_overlap):
-            for d in detector.detect(img[y0:y1, x0:x1], TILE_DET_SIZE):
+            for d in detector.detect(img[y0:y1, x0:x1], TILE_DET_SIZE, TILE_MAX_UPSCALE):
                 if d.score < MIN_DET_SCORE:
                     continue
                 bx1, by1, bx2, by2 = d.bbox

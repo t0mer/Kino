@@ -15,9 +15,11 @@ from kino.pipeline._insightface import (
 )
 from kino.pipeline.detect import (
     Detection,
+    ScrfdDetector,
     choose_grid,
     decode_outputs,
     detect_image,
+    letterbox_scale,
     merge_nms,
     needs_tiling,
     tile_grid,
@@ -38,14 +40,14 @@ class FakeDetector:
         self.base: np.ndarray | None = None
         self.calls: list[tuple[int, int, int]] = []
 
-    def detect(self, img, det_size):
+    def detect(self, img, det_size, max_upscale=1.0):
         h, w = img.shape[:2]
         if self.base is None:
             self.base = img
         self.calls.append((w, h, det_size))
         if (w, h) == self.full_size:
             return [Detection(f.bbox, f.score, f.kps.copy(), False) for f in self.faces]
-        # tile: img[0,0,0] encodes nothing; locate by marker pixels
+        # tile: locate its origin from the pointer offset into the base image
         off = img.__array_interface__["data"][0] - self.base.__array_interface__["data"][0]
         y0, x0 = divmod(off, self.base.strides[0])
         x0 //= 3
@@ -62,7 +64,6 @@ class FakeDetector:
 
 def marked_image(w, h):
     img = np.zeros((h, w, 3), dtype=np.uint8)
-    # encode tile origin / 100 in pixel (0,0) via per-region fill
     for y in range(0, h, 100):
         for x in range(0, w, 100):
             img[y : y + 100, x : x + 100, 1] = x // 100
@@ -135,10 +136,10 @@ def test_tile_only_face_mapped_exactly():
     f = det(1000, 700, 1030, 730, 0.8)
 
     class TileOnly(FakeDetector):
-        def detect(self, img, det_size):
+        def detect(self, img, det_size, max_upscale=1.0):
             if (img.shape[1], img.shape[0]) == self.full_size:
                 return []
-            return super().detect(img, det_size)
+            return super().detect(img, det_size, max_upscale)
 
     out = detect_image(TileOnly([f], (w, h)), marked_image(w, h), Settings(tile_grid="2x2"))
     assert len(out) == 1 and out[0].from_tile is True
@@ -190,12 +191,10 @@ def test_vendored_helpers():
     assert distance2bbox(np.array([[10, 10]], np.float32), np.array([[1, 2, 3, 4]], np.float32))[
         0
     ].tolist() == [9, 8, 13, 14]
-    d = np.array([[10, 10, 20, 20, 5, 5, 10, 20, 20, 20, 1.0]], dtype=np.float32)[:, :10]
     keep = nms(
         np.array([[0, 0, 10, 10, 0.9], [1, 1, 10, 10, 0.8], [50, 50, 60, 60, 0.7]], np.float32), 0.4
     )
     assert keep == [0, 2]
-    assert d.shape == (1, 10)
     assert distance2kps(np.array([[1, 2]], np.float32), np.ones((1, 10), np.float32))[
         0, :2
     ].tolist() == [2, 3]
@@ -210,29 +209,105 @@ def test_estimate_norm_identity_on_template():
     np.testing.assert_allclose(mapped, ARCFACE_TEMPLATE, atol=1e-3)
 
 
-@pytest.mark.models
-def test_real_scrfd_detects_face():
+def test_decode_grid_from_output_rows_for_non_multiple_det_size():
+    det_size = 1000  # maps are ceil(1000/stride): 125, 63, 32
+    sides = {8: 125, 16: 63, 32: 32}
+    outs = [np.zeros((sides[st] ** 2 * 2, 1), np.float32) for st in (8, 16, 32)]
+    boxes = [np.zeros((len(o), 4), np.float32) for o in outs]
+    kps = [np.zeros((len(o), 10), np.float32) for o in outs]
+    idx = (2 * 63 + 3) * 2  # stride 16, grid x=3 y=2 -> centre (48, 32)
+    outs[1][idx, 0] = 0.9
+    boxes[1][idx] = [1, 1, 1, 1]
+    res = decode_outputs([*outs, *boxes, *kps], det_size, 1.0, 0.5)
+    assert len(res) == 1
+    assert res[0].bbox == pytest.approx((32, 16, 64, 48))
+
+
+def test_det_size_validation():
+    for bad in (0, 16, 1000, 1025):
+        with pytest.raises(ValueError, match="multiple of 32"):
+            Settings(det_size=bad)
+    assert Settings(det_size=640).det_size == 640
+
+
+def test_letterbox_scale():
+    assert letterbox_scale(444, 333, 640, 1.0) == 1.0
+    assert letterbox_scale(444, 333, 640, 2.0) == pytest.approx(640 / 444)
+    assert letterbox_scale(200, 100, 640, 2.0) == 2.0
+    assert letterbox_scale(4000, 3000, 640, 2.0) == pytest.approx(0.16)
+
+
+def test_tile_pass_requests_upscale():
+    w, h = 800, 600
+    fake = FakeDetector([det(100, 100, 200, 200)], (w, h))
+    seen = []
+    orig = fake.detect
+
+    def spy(img, det_size, max_upscale=1.0):
+        seen.append((det_size, max_upscale))
+        return orig(img, det_size, max_upscale)
+
+    fake.detect = spy
+    detect_image(fake, marked_image(w, h), Settings(tiling="always", tile_grid="2x2"))
+    assert seen[0] == (1024, 1.0)
+    assert all(c == (640, 2.0) for c in seen[1:]) and len(seen) == 5
+
+
+@pytest.fixture(scope="module")
+def real_detector(tmp_path_factory):
+    from kino.models.download import ensure_model
+
+    data = Path(os.environ.get("KINO_TEST_DATA_DIR", "") or tmp_path_factory.mktemp("kino-data"))
+    data.mkdir(parents=True, exist_ok=True)
+    return ScrfdDetector(ensure_model("scrfd_10g", data), 2), data
+
+
+@pytest.fixture(scope="module")
+def portrait(real_detector):
     import urllib.request
 
     import cv2
 
-    from kino.models.download import ensure_model
-    from kino.pipeline.detect import ScrfdDetector
-
-    scratch = Path("/tmp/claude-0/-opt-dev-Kino/b1b798f9-80d6-4fe9-b229-0e319832be2c/scratchpad")
-    data = scratch / "kino-data"
-    data.mkdir(parents=True, exist_ok=True)
-    model = ensure_model("scrfd_10g", data)
-    img_path = scratch / "face.jpg"
-    if not img_path.exists():
+    path = real_detector[1] / "face.jpg"
+    if not path.exists():
         url = os.environ.get(
             "KINO_TEST_FACE_URL",
             "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/"
             "Albert_Einstein_Head.jpg/330px-Albert_Einstein_Head.jpg",
         )
         req = urllib.request.Request(url, headers={"User-Agent": "kino-tests/0"})
-        img_path.write_bytes(urllib.request.urlopen(req, timeout=30).read())  # noqa: S310
-    img = cv2.imread(str(img_path))
+        path.write_bytes(urllib.request.urlopen(req, timeout=30).read())  # noqa: S310
+    img = cv2.imread(str(path))
     assert img is not None
-    out = detect_image(ScrfdDetector(model, 2), img, Settings())
+    return img
+
+
+@pytest.mark.models
+def test_real_scrfd_detects_face(real_detector, portrait):
+    out = detect_image(real_detector[0], portrait, Settings())
     assert len(out) >= 1
+
+
+@pytest.mark.models
+def test_real_boxes_at_non_multiple_det_size(real_detector, portrait):
+    det = real_detector[0]
+    a = det.detect(portrait, 1024)
+    b = det.detect(portrait, 1000)
+    assert a and b
+    assert b[0].bbox == pytest.approx(a[0].bbox, abs=15)
+
+
+@pytest.mark.models
+def test_real_small_face_found_via_upscaled_tiles(real_detector, portrait):
+    import cv2
+
+    face = cv2.resize(portrait, (27, 36))
+    canvas = np.full((600, 800, 3), 128, dtype=np.uint8)
+    canvas[300:336, 400:427] = face
+    out = detect_image(real_detector[0], canvas, Settings(tiling="always"))
+    assert any(
+        d.from_tile
+        and 390 < (d.bbox[0] + d.bbox[2]) / 2 < 440
+        and 290 < (d.bbox[1] + d.bbox[3]) / 2 < 345
+        for d in out
+    )
