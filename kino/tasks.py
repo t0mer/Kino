@@ -2,8 +2,10 @@
 
 `process_image` is idempotent: the row is claimed atomically (`queued` -> `processing`) and
 terminal statuses are never reprocessed, so duplicate enqueues (webhook redelivery, the
-sweeper) are harmless. It never raises into huey: any pipeline error marks the image
-`failed` with a sanitised message, so a poison image is not retried forever.
+sweeper) are harmless. It never raises into huey: an image-specific error (decode, missing
+raw file, ...) marks the image `failed` with a sanitised message, so a poison image is not
+retried forever. Infrastructure errors (pipeline/model init, SQLite OperationalError) put the
+row back to `queued` for the sweeper, at most MAX_TRANSIENT_REQUEUES times.
 
 Heavy models (detector, embedder) and the gallery matcher are built once per worker
 process, lazily on first use (or by the consumer's startup hook); tests swap them with
@@ -26,6 +28,7 @@ from huey import SqliteHuey, crontab
 from loguru import logger
 from numpy.typing import NDArray
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from kino import metrics
@@ -52,6 +55,7 @@ AUTO_REF_MIN_QUALITY = 0.7
 AUTO_REF_CAP = 10
 AUTO_REF_WINDOW = timedelta(days=30)
 ERROR_MAX = 300
+MAX_TRANSIENT_REQUEUES = 10
 STALE_QUEUED = timedelta(minutes=5)
 STUCK_PROCESSING = timedelta(minutes=30)
 
@@ -469,6 +473,29 @@ def _mark_failed(image_id: int, error: str, ms: int) -> None:
         )
 
 
+class _PipelineInitError(Exception):
+    """Building the detector/embedder failed (download, checksum, load): infrastructure."""
+
+
+def _requeue_transient(image_id: int, error: str, ms: int) -> str:
+    """Put the row back to `queued` for the sweeper; after MAX_TRANSIENT_REQUEUES attempts
+    mark it `failed` ('infrastructure') so a broken setup cannot loop silently forever."""
+    with get_session() as s:
+        image = s.get(Image, image_id)
+        if image is None or image.status != "processing":
+            return "superseded"
+        image.transient_count += 1
+        image.processing_ms = ms
+        if image.transient_count >= MAX_TRANSIENT_REQUEUES:
+            image.status = "failed"
+            image.error = f"infrastructure: {error}"[:ERROR_MAX]
+            return "failed"
+        image.status = "queued"
+        image.processing_started_at = None
+        image.error = error
+        return "queued"
+
+
 def _discard_files(run: _Run, photos_dir: Path) -> None:
     for p in run.crops:
         p.unlink(missing_ok=True)
@@ -489,16 +516,28 @@ def run_pipeline(image_id: int) -> str:
     st = get_settings()
     run = _Run()
     try:
-        pipe = get_pipeline()
+        run.stage = "init"
+        try:
+            pipe = get_pipeline()
+        except Exception as e:
+            raise _PipelineInitError() from e
         outcome = _process(image_id, st, pipe, run, t0)
     except Exception as e:
         ms = int((time.perf_counter() - t0) * 1000)
-        err = _sanitize(run.stage, e)
-        logger.error("image {} failed at {}: {}", image_id, run.stage, err)
         _discard_files(run, st.photos_dir)
-        _mark_failed(image_id, err, ms)
-        metrics.images.labels(status="failed").inc()
-        return "failed"
+        transient = isinstance(e, _PipelineInitError | OperationalError)
+        cause = e.__cause__ if isinstance(e, _PipelineInitError) and e.__cause__ else e
+        err = _sanitize(run.stage, cause)
+        if transient:
+            status = _requeue_transient(image_id, err, ms)
+            logger.warning("image {} hit an infrastructure error ({}): {}", image_id, status, err)
+        else:
+            _mark_failed(image_id, err, ms)
+            status = "failed"
+            logger.error("image {} failed: {}", image_id, err)
+        if status == "failed":
+            metrics.images.labels(status="failed").inc()
+        return status
 
     metrics.images.labels(status=outcome.status).inc()
     for tier, source in outcome.tiers:

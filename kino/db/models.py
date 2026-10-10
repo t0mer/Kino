@@ -104,6 +104,10 @@ class Image(Base):
     # Set when a worker claims the row; the sweeper recovers rows stuck past a deadline.
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     stuck_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # Requeues after infrastructure failures (model load, DB locked); capped by the pipeline.
+    transient_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
 
 class Cluster(Base):

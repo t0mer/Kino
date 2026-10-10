@@ -716,3 +716,67 @@ def test_two_different_kids_still_both_auto_save_and_enrol(world):
     assert {m.decision for m in rows(Match)} == {"auto_saved"}
     refs = rows(ReferenceFace, ReferenceFace.source == "auto")
     assert sorted(r.kid_id for r in refs) == sorted([noa, itai])
+
+
+# --- transient infrastructure failures ---------------------------------------------------
+
+
+def test_pipeline_init_failure_requeues_then_succeeds(world, monkeypatch):
+    env, gid, *_ = world
+    tasks.set_pipeline(embedder=FakeEmbedder([unit(0)]), enqueue_forward=Enqueue())
+
+    def broken(st):
+        raise RuntimeError("model download failed for 972501234567")
+
+    monkeypatch.setattr(tasks, "_default_detector", broken)
+    iid, raw = seed_image(env, group_id=gid)
+    img = run(iid)
+    assert img.status == "queued" and img.processing_started_at is None
+    assert img.transient_count == 1 and img.stuck_count == 0
+    assert img.error.startswith("init: RuntimeError") and "972501234567" not in img.error
+    assert raw.exists() and rows(Face) == []
+
+    monkeypatch.setattr(tasks, "_default_detector", lambda st: FakeDetector([det(100, 80, 120)]))
+    img = run(iid)
+    assert img.status == "done" and img.error is None
+    assert len(rows(SavedPhoto)) == 1
+
+
+def test_operational_error_requeues(world):
+    from sqlalchemy.exc import OperationalError
+
+    env, gid, *_ = world
+
+    class LockedDetector(FakeDetector):
+        def detect(self, img, det_size, max_upscale=1.0):
+            raise OperationalError("UPDATE x", {}, Exception("database is locked"))
+
+    tasks.set_pipeline(
+        detector=LockedDetector(), embedder=FakeEmbedder(), enqueue_forward=Enqueue()
+    )
+    iid, _ = seed_image(env, group_id=gid)
+    img = run(iid)
+    assert img.status == "queued" and img.transient_count == 1
+    assert img.error.startswith("detect: OperationalError")
+
+
+def test_transient_cap_marks_failed_infrastructure(world, monkeypatch):
+    env, gid, *_ = world
+    tasks.set_pipeline(embedder=FakeEmbedder(), enqueue_forward=Enqueue())
+
+    def broken(st):
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr(tasks, "_default_detector", broken)
+    iid, _ = seed_image(env, group_id=gid, transient_count=tasks.MAX_TRANSIENT_REQUEUES - 1)
+    img = run(iid)
+    assert img.status == "failed" and img.error.startswith("infrastructure: init: ")
+    assert img.transient_count == tasks.MAX_TRANSIENT_REQUEUES
+
+
+def test_corrupt_image_fails_immediately_not_requeued(world):
+    env, gid, *_ = world
+    pipeline([])
+    iid, _ = seed_image(env, data=b"garbage" * 50, group_id=gid)
+    img = run(iid)
+    assert img.status == "failed" and img.transient_count == 0
