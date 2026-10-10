@@ -650,3 +650,20 @@ def test_group_without_name_gets_slug_from_first_real_name(client):
     assert _group_row().slug is None
     webhook._update_group_name(GROUP, "גן שמש")
     assert _group_row().slug == "gn-shmsh"
+
+
+def test_heic_webhook_stored_as_heic(client, enqueued):
+    pytest.importorskip("pillow_heif", reason="pillow_heif is needed to encode HEIC")
+    watch()
+    rng = np.random.default_rng(5)
+    buf = io.BytesIO()
+    Image.fromarray(rng.integers(0, 255, (240, 320, 3), dtype=np.uint8)).save(buf, "HEIF")
+    p = payload()
+    p["data"]["media"] = {
+        "mimetype": "image/heic",
+        "data": base64.b64encode(buf.getvalue()).decode(),
+    }
+    r = post(client, p)
+    assert r.json()["result"] == "queued"
+    (img,) = images()
+    assert img.raw_path.endswith(".heic") and len(enqueued) == 1
