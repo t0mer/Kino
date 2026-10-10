@@ -167,7 +167,8 @@ def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, int | None]
 def _is_forward_echo(message_id: str) -> bool:
     """True when the message is one Kino itself sent as a forward (loop guard).
 
-    Ids are compared normalised on both sides (serialized `true_<chat>_<id>` vs bare id).
+    Ids are compared normalised on both sides (serialized `true_<chat>_<id>[_<participant>]`
+    vs bare id); the SQL filter is only a coarse prefilter.
     """
     want = normalize_message_id(message_id)
     with get_session() as s:
@@ -175,7 +176,7 @@ def _is_forward_echo(message_id: str) -> bool:
             select(Forward.openwa_message_id).where(
                 or_(
                     Forward.openwa_message_id == want,
-                    Forward.openwa_message_id.endswith("_" + want, autoescape=True),
+                    Forward.openwa_message_id.contains("_" + want, autoescape=True),
                 )
             )
         )
@@ -273,8 +274,10 @@ async def openwa_webhook(request: Request) -> Response:
 
     if not settings.openwa_session_id or ev.session_id != settings.openwa_session_id:
         return _reply("bad_session", 403)
-    if ev.media_type != "image" or not ev.is_group or ev.from_me:
+    if ev.media_type != "image" or not ev.is_group:
         return _reply("ignored")
+    # The user's own (fromMe) photos are processed like anyone else's; only messages Kino
+    # itself sent as forwards are dropped, whoever they appear to come from.
     if await run_in_threadpool(_is_forward_echo, ev.message_id):
         return _reply("ignored")
 

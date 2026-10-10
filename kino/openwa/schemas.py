@@ -123,10 +123,12 @@ __all__ = [
 ]
 
 
-_SERIALIZED_ID_RE = re.compile(r"^(?:true|false)_.+_([^_]+)$")
+# `<fromMe>_<chat>_<id>` with an optional `_<participant>` suffix on group messages.
+_SERIALIZED_ID_RE = re.compile(r"^(?:true|false)_[^_]+_([^_]+)(?:_.+)?$")
 
 
 def normalize_message_id(message_id: str) -> str:
-    """Bare id of a serialized `true_<chat>_<id>` / `false_<chat>_<id>`; other ids unchanged."""
+    """Bare message id of a serialized `true_<chat>_<id>[_<participant>]` (or `false_...`);
+    other ids are returned unchanged."""
     m = _SERIALIZED_ID_RE.match(message_id)
     return m.group(1) if m else message_id

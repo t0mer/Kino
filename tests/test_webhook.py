@@ -154,10 +154,12 @@ def test_direct_message_ignored(client):
     assert images() == []
 
 
-def test_from_me_ignored(client):
+def test_from_me_image_in_watched_group_processed(client, enqueued):
+    # the user's own photos in watched groups must be processed too
     watch()
-    assert post(client, with_media(payload(fromMe=True), jpeg())).status_code == 200
-    assert images() == []
+    r = post(client, with_media(payload(fromMe=True), jpeg()))
+    assert r.json() == {"result": "queued"}
+    assert len(images()) == 1 and enqueued == [images()[0].id]
 
 
 def test_non_message_event_ignored(client):
@@ -493,6 +495,8 @@ def test_forward_echo_ignored(client):
         ("true_120363@g.us_3EB0ABC123", "3EB0ABC123"),
         ("3EB0ABC123", "false_120363021234567890@g.us_3EB0ABC123"),
         ("true_1@g.us_3EB0ABC123", "false_2@g.us_3EB0ABC123"),
+        ("true_1@g.us_3EB0ABC123_9725@c.us", "3EB0ABC123"),
+        ("3EB0ABC123", "true_1@g.us_3EB0ABC123_9725@c.us"),
     ],
 )
 def test_forward_echo_id_forms(client, stored, incoming):
@@ -505,3 +509,18 @@ def test_forward_echo_id_forms(client, stored, incoming):
         s.flush()
         s.add(Forward(image_id=img.id, dest_chat_id="d@c.us", openwa_message_id=stored))
     assert post(client, with_media(payload(id=incoming), jpeg())).json() == {"result": "ignored"}
+
+
+def test_from_me_forward_echo_ignored(client, enqueued):
+    from kino.db.models import Forward
+
+    watch()
+    with dbs.get_session() as s:
+        img = ImageRow(message_id="orig", status="done")
+        s.add(img)
+        s.flush()
+        s.add(Forward(image_id=img.id, dest_chat_id="d@c.us", openwa_message_id="3EB0ABC123"))
+    echo_id = "true_120363021234567890@g.us_3EB0ABC123_9725@c.us"
+    p = with_media(payload(fromMe=True, id=echo_id), jpeg())
+    assert post(client, p).json() == {"result": "ignored"}
+    assert enqueued == []

@@ -92,3 +92,19 @@ def test_bad_timestamp_is_value_error():
     d["data"]["timestamp"] = 1e30
     with pytest.raises(ValueError):
         parse_webhook(d)
+
+
+@pytest.mark.parametrize(
+    ("raw", "bare"),
+    [
+        ("3EB0ABC123", "3EB0ABC123"),
+        ("true_120363021234567890@g.us_3EB0ABC123", "3EB0ABC123"),
+        ("false_972500000001@c.us_3EB0ABC123", "3EB0ABC123"),
+        ("false_120363021234567890@g.us_3EB0ABC123_972500000001@c.us", "3EB0ABC123"),
+        ("true_120363021234567890@g.us_3EB0ABC123_972500000001@lid", "3EB0ABC123"),
+    ],
+)
+def test_normalize_message_id(raw, bare):
+    from kino.openwa.schemas import normalize_message_id
+
+    assert normalize_message_id(raw) == bare
