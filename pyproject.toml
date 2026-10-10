@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kino"
+version = "0.0.0"
+description = "Finds your kids in WhatsApp group photos and saves them per kid"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings==2.15.0",
+    "pyyaml==6.0.3",
+    "loguru==0.7.3",
+    "fastapi==0.143.0",
+    "uvicorn==0.54.0",
+    "sqlalchemy==2.1.4",
+    "alembic==1.20.0",
+    "huey==3.4.0",
+    "typer==0.27.3",
+    "numpy==2.5.4",
+    "filelock==4.1.0",
+    "prometheus-client==0.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.17.0",
+    "mypy==2.4.0",
+    "httpx==0.28.1",
+    "types-PyYAML==6.0.12.20260906",
+]
+
+[project.scripts]
+kino = "kino.cli:app"
+
+[tool.setuptools]
+packages = ["kino"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["kino.pipeline.*", "kino.api.*"]
+strict = true

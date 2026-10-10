@@ -1,0 +1,11 @@
+# Copy to /data/config.yaml. Environment variables (KINO_*) override these values.
+workers: 2
+ort_threads: 2
+embedder: auraface   # auraface | buffalo_l
+det_size: 1024
+tiling: auto         # off | auto | always
+tile_overlap: 0.2
+raw_retention_days: 7
+face_retention_days: 30
+forward_rate_per_min: 6
+log_level: INFO
