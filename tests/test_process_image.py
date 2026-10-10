@@ -808,3 +808,21 @@ def test_run_superseded_by_sweeper_recovery_discards_output(world):
     assert rows(Forward) == [] and q.ids == [] and raw.exists()
     assert [p for p in (env / "photos").rglob("*.jpg")] == []
     assert [p for p in (env / "crops").rglob("*.jpg")] == []
+
+
+def test_error_stage_labels_not_doubled(world):
+    from loguru import logger
+
+    env, gid, *_ = world
+    pipeline([])
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        iid, _ = seed_image(env, data=b"garbage" * 50, group_id=gid)
+        img = run(iid)
+    finally:
+        logger.remove(sink)
+    assert img.error.startswith("load: UnidentifiedImageError")
+    assert img.error.count("load:") == 1
+    assert not any("claim" in m or "load: load:" in m for m in messages)
+    assert any(f"image {iid} failed: load: " in m for m in messages)
