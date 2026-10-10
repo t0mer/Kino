@@ -63,3 +63,16 @@ def test_repr_hides_secrets():
     for v in ("WH-SECRET-1", "SK-SECRET-2", "PW-HASH-3", "API-KEY-4"):
         assert v not in text
     assert s.require_webhook_secret() == "WH-SECRET-1"
+
+
+def test_timezone_default_and_env(monkeypatch):
+    assert Settings().timezone == "UTC"
+    monkeypatch.setenv("KINO_TIMEZONE", "Asia/Jerusalem")
+    assert Settings().timezone == "Asia/Jerusalem"
+
+
+@pytest.mark.parametrize("bad", ["Mars/Olympus", "not a zone", "../etc/passwd", ""])
+def test_timezone_unknown_rejected(monkeypatch, bad):
+    monkeypatch.setenv("KINO_TIMEZONE", bad)
+    with pytest.raises(ValueError, match="timezone"):
+        Settings()

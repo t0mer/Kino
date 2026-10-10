@@ -19,3 +19,6 @@ log_level: INFO
 
 # Remove GPS EXIF from saved (and therefore forwarded) photos; default true
 strip_gps: true
+
+# IANA time zone for photo folders/filenames and EXIF local time (default UTC)
+timezone: Asia/Jerusalem

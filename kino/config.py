@@ -6,6 +6,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import Field, SecretStr, field_validator
@@ -41,6 +42,8 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
     photos_dir: Path = Path("/data/photos")
     strip_gps: bool = True
+    # IANA zone used for photo folders/filenames and EXIF local time (sent_at is stored in UTC).
+    timezone: str = "UTC"
     openwa_url: str | None = None
     openwa_api_key: SecretStr | None = None
     openwa_session_id: str | None = None
@@ -65,6 +68,17 @@ class Settings(BaseSettings):
     def _check_det_size(cls, v: int) -> int:
         if v < 32 or v % 32 != 0:
             raise ValueError("det_size must be a multiple of 32 and at least 32")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _check_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(
+                f"unknown timezone {v!r}; use an IANA name such as 'UTC' or 'Asia/Jerusalem'"
+            ) from None
         return v
 
     raw_retention_days: int = 7

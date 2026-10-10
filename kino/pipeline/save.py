@@ -5,8 +5,11 @@ Policy:
   rewritten (``piexif.insert``).
 * PNG/WebP/HEIC input is the ONLY case where pixels are re-encoded: converted to
   JPEG at quality 95 with EXIF orientation applied to the pixels.
-* Dates use ``image.sent_at`` in UTC (naive values are assumed to be UTC, aware
-  values are converted to UTC).
+* Dates use ``image.sent_at`` converted to the configured local time zone
+  (``KINO_TIMEZONE``; naive values are assumed to be UTC). Folder, filename and
+  EXIF ``DateTime``/``DateTimeOriginal``/``DateTimeDigitized`` are local time;
+  ``OffsetTime``/``OffsetTimeOriginal``/``OffsetTimeDigitized`` carry the UTC
+  offset (e.g. ``+03:00``).
 * EXIF ``ImageDescription``/``Artist`` are ASCII fields; non-ASCII text (Hebrew)
   is stored as raw UTF-8 bytes there (most readers decode it) and ALSO in
   ``XPTitle``/``XPAuthor`` (UTF-16LE, the Windows convention), which is what
@@ -15,8 +18,8 @@ Policy:
 * GPS: by default (``strip_gps=True``, ``KINO_STRIP_GPS``) the whole GPS IFD is
   removed from JPEG input. Task 11 forwards the SAVED file, so forwarded
   photos are GPS-free too. Other original EXIF is preserved, except stale
-  time-zone/sub-second tags, which are dropped, and ``DateTime`` which is set
-  to the same UTC value as ``DateTimeOriginal``.
+  sub-second tags, which are dropped, and the date/offset tags, which are
+  rewritten from ``sent_at``.
 * Text values are sanitised (control chars removed, lone surrogates replaced,
   truncated to 255 chars) so untrusted names cannot break the EXIF segment.
 * Saved files are chmod 0o644 & ~umask and fsynced before ``os.replace``.
@@ -36,6 +39,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 import piexif
 from PIL import Image, ImageOps
@@ -76,12 +80,20 @@ class _ImageLike(Protocol):
     def sender_name(self) -> str | None: ...
 
 
-def _utc(dt: datetime | None) -> datetime:
+def _local(dt: datetime | None, timezone: str) -> datetime:
+    """``sent_at`` (naive = UTC) as an aware datetime in ``timezone``."""
     if dt is None:
         raise ValueError("sent_at missing")
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+    aware = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+    return aware.astimezone(ZoneInfo(timezone))
+
+
+def _offset(ts: datetime) -> bytes:
+    off = ts.utcoffset()
+    minutes = int(off.total_seconds() // 60) if off is not None else 0
+    sign = "-" if minutes < 0 else "+"
+    h, m = divmod(abs(minutes), 60)
+    return f"{sign}{h:02d}:{m:02d}".encode("ascii")
 
 
 def _component(value: str, what: str) -> str:
@@ -103,9 +115,11 @@ def _inside(root: Path, candidate: Path) -> Path:
     return resolved
 
 
-def build_dest_path(kid: _KidLike, group: _GroupLike, image: _ImageLike, dest_root: Path) -> Path:
-    """Compute (and validate) the destination path for one kid."""
-    ts = _utc(image.sent_at)
+def build_dest_path(
+    kid: _KidLike, group: _GroupLike, image: _ImageLike, dest_root: Path, *, timezone: str
+) -> Path:
+    """Compute (and validate) the destination path for one kid (local time of ``timezone``)."""
+    ts = _local(image.sent_at, timezone)
     group_slug = group.slug or slugify(group.name or "", "group")
     name = f"{ts:%Y-%m-%d_%H%M%S}_{_component(group_slug, 'group')}_{image.id:08d}.jpg"
     path = dest_root / _component(kid.slug, "kid") / f"{ts:%Y}" / f"{ts:%m}" / name
@@ -125,9 +139,6 @@ def _xp(text: str) -> bytes:
 
 
 _STALE_EXIF_TAGS = (
-    piexif.ExifIFD.OffsetTime,
-    piexif.ExifIFD.OffsetTimeOriginal,
-    piexif.ExifIFD.OffsetTimeDigitized,
     piexif.ExifIFD.SubSecTime,
     piexif.ExifIFD.SubSecTimeOriginal,
     piexif.ExifIFD.SubSecTimeDigitized,
@@ -135,7 +146,12 @@ _STALE_EXIF_TAGS = (
 
 
 def _build_exif(
-    existing: bytes | None, image: _ImageLike, group: _GroupLike, strip_gps: bool = True
+    existing: bytes | None,
+    image: _ImageLike,
+    group: _GroupLike,
+    *,
+    timezone: str,
+    strip_gps: bool = True,
 ) -> bytes:
     exif: dict[str, Any] = {"0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}}
     if existing:
@@ -143,7 +159,9 @@ def _build_exif(
             exif = piexif.load(existing)
     exif["thumbnail"] = None
     exif["1st"] = {}
-    stamp = _utc(image.sent_at).strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
+    ts = _local(image.sent_at, timezone)
+    stamp = ts.strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
+    offset = _offset(ts)
     for tag in _STALE_EXIF_TAGS:
         exif["Exif"].pop(tag, None)
     if strip_gps:
@@ -151,6 +169,9 @@ def _build_exif(
     exif["0th"][piexif.ImageIFD.DateTime] = stamp
     exif["Exif"][piexif.ExifIFD.DateTimeOriginal] = stamp
     exif["Exif"][piexif.ExifIFD.DateTimeDigitized] = stamp
+    exif["Exif"][piexif.ExifIFD.OffsetTime] = offset
+    exif["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = offset
+    exif["Exif"][piexif.ExifIFD.OffsetTimeDigitized] = offset
     desc = _clean(group.name)
     artist = _clean(image.sender_name)
     zeroth = exif["0th"]
@@ -199,16 +220,19 @@ def save_photo(
     image: _ImageLike,
     dest_root: Path,
     strip_gps: bool = True,
+    *,
+    timezone: str,
 ) -> Path:
     """Write the photo for ``kid`` under ``dest_root`` with rewritten EXIF."""
-    dst = build_dest_path(kid, group, image, dest_root)
+    dst = build_dest_path(kid, group, image, dest_root, timezone=timezone)
     data = Path(raw_path).read_bytes()
 
     if data[:2] == b"\xff\xd8":
 
         def write(tmp: Path) -> None:
             tmp.write_bytes(data)
-            piexif.insert(_build_exif(data, image, group, strip_gps), str(tmp))
+            exif = _build_exif(data, image, group, timezone=timezone, strip_gps=strip_gps)
+            piexif.insert(exif, str(tmp))
 
     else:
 
@@ -217,7 +241,8 @@ def save_photo(
                 im.load()
                 oriented = ImageOps.exif_transpose(im)
                 rgb = oriented.convert("RGB")
-            rgb.save(tmp, "JPEG", quality=95, exif=_build_exif(None, image, group))
+            exif = _build_exif(None, image, group, timezone=timezone)
+            rgb.save(tmp, "JPEG", quality=95, exif=exif)
 
     _write_atomic(dst, write)
     return dst
@@ -246,16 +271,18 @@ def save_for_kids(
     image: _ImageLike,
     dest_root: Path,
     strip_gps: bool = True,
+    *,
+    timezone: str,
 ) -> dict[int, Path]:
     """Save for the first kid, hardlink (or copy) for the rest."""
     result: dict[int, Path] = {}
     first: Path | None = None
     for kid in kids:
         if first is None:
-            first = save_photo(raw_path, kid, group, image, dest_root, strip_gps)
+            first = save_photo(raw_path, kid, group, image, dest_root, strip_gps, timezone=timezone)
             result[kid.id] = first
         else:
-            dst = build_dest_path(kid, group, image, dest_root)
+            dst = build_dest_path(kid, group, image, dest_root, timezone=timezone)
             link_or_copy(first, dst)
             result[kid.id] = dst
     return result

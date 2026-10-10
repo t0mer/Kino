@@ -46,7 +46,7 @@ def sos_data(b: bytes) -> bytes:
 
 def test_path_format_naive(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk()
-    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     assert out == tmp_path / "p/noa/2026/03/2026-03-07_140509_class_00000042.jpg"
     assert out.exists()
 
@@ -54,14 +54,14 @@ def test_path_format_naive(jpg: Path, tmp_path: Path) -> None:
 def test_aware_non_utc_converted_to_utc(jpg: Path, tmp_path: Path) -> None:
     sent = datetime(2026, 3, 8, 1, 30, 0, tzinfo=timezone(timedelta(hours=3)))
     kid, group, image = mk(sent=sent)
-    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     assert out.name == "2026-03-07_223000_class_00000042.jpg"
     assert out.parent.name == "03"
 
 
 def test_exif_and_pixels_untouched(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk()
-    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     ex = piexif.load(str(out))
     assert ex["Exif"][piexif.ExifIFD.DateTimeOriginal] == b"2026:03:07 14:05:09"
     assert ex["Exif"][piexif.ExifIFD.DateTimeDigitized] == b"2026:03:07 14:05:09"
@@ -73,7 +73,7 @@ def test_exif_and_pixels_untouched(jpg: Path, tmp_path: Path) -> None:
 
 def test_hebrew_roundtrip(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk(group_name="גן שמש", group_slug="gan-shemesh", sender="דנה")
-    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     assert read_text_tags(out) == ("גן שמש", "דנה")
 
 
@@ -84,7 +84,7 @@ def test_png_converted_with_orientation(tmp_path: Path) -> None:
     src = tmp_path / "a.png"
     im.save(src, "PNG", exif=ex)
     kid, group, image = mk()
-    out = save_photo(src, kid, group, image, tmp_path / "p")
+    out = save_photo(src, kid, group, image, tmp_path / "p", timezone="UTC")
     with Image.open(out) as o:
         assert o.format == "JPEG"
         assert o.size == (30, 60)
@@ -94,7 +94,7 @@ def test_png_converted_with_orientation(tmp_path: Path) -> None:
 def test_webp_converted(tmp_path: Path) -> None:
     src = tmp_path / "a.webp"
     noisy().save(src, "WEBP")
-    out = save_photo(src, *mk()[0:3], tmp_path / "p")
+    out = save_photo(src, *mk()[0:3], tmp_path / "p", timezone="UTC")
     with Image.open(out) as o:
         assert o.format == "JPEG"
 
@@ -105,7 +105,7 @@ def test_heic_converted(tmp_path: Path) -> None:
 
     src = tmp_path / "a.heic"
     pillow_heif.from_pillow(noisy()).save(src)
-    out = save_photo(src, *mk()[0:3], tmp_path / "p")
+    out = save_photo(src, *mk()[0:3], tmp_path / "p", timezone="UTC")
     with Image.open(out) as o:
         assert o.format == "JPEG"
 
@@ -117,7 +117,7 @@ def test_second_kid_hardlink_and_copy_fallback(
     k1 = SimpleNamespace(id=1, slug="noa")
     k2 = SimpleNamespace(id=2, slug="itai")
     root = tmp_path / "p"
-    res = save_for_kids(jpg, [k1, k2], group, image, root)
+    res = save_for_kids(jpg, [k1, k2], group, image, root, timezone="UTC")
     assert os.stat(res[1]).st_ino == os.stat(res[2]).st_ino
     assert os.stat(res[1]).st_nlink == 2
     k3 = SimpleNamespace(id=3, slug="yam")
@@ -126,7 +126,7 @@ def test_second_kid_hardlink_and_copy_fallback(
         raise OSError("xdev")
 
     monkeypatch.setattr(save_mod.os, "link", boom)
-    res3 = save_for_kids(jpg, [k1, k3], group, image, tmp_path / "q")
+    res3 = save_for_kids(jpg, [k1, k3], group, image, tmp_path / "q", timezone="UTC")
     assert os.stat(res3[1]).st_ino != os.stat(res3[3]).st_ino
     assert res3[1].read_bytes() == res3[3].read_bytes()
 
@@ -142,22 +142,22 @@ def test_link_or_copy_idempotent(tmp_path: Path) -> None:
 
 def test_save_twice_idempotent(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk()
-    a = save_photo(jpg, kid, group, image, tmp_path / "p")
-    b = save_photo(jpg, kid, group, image, tmp_path / "p")
+    a = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
+    b = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     assert a == b and a.exists()
     assert len(list(a.parent.iterdir())) == 1
-    save_for_kids(jpg, [kid], group, image, tmp_path / "p")
-    save_for_kids(jpg, [kid], group, image, tmp_path / "p")
+    save_for_kids(jpg, [kid], group, image, tmp_path / "p", timezone="UTC")
+    save_for_kids(jpg, [kid], group, image, tmp_path / "p", timezone="UTC")
 
 
 @pytest.mark.parametrize("bad", ["../../etc", "/etc", "a\x00b", "..", "a/b", ""])
 def test_traversal_rejected(jpg: Path, tmp_path: Path, bad: str) -> None:
     kid, group, image = mk(kid_slug=bad)
     with pytest.raises(ValueError):
-        save_photo(jpg, kid, group, image, tmp_path / "p")
+        save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     kid, group, image = mk(group_slug=bad or "x/y")
     with pytest.raises(ValueError):
-        save_photo(jpg, kid, group, image, tmp_path / "p")
+        save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     assert not (tmp_path / "etc").exists()
 
 
@@ -169,17 +169,17 @@ def test_atomic_no_partial(jpg: Path, tmp_path: Path, monkeypatch: pytest.Monkey
     kid, group, image = mk()
     root = tmp_path / "p"
     with pytest.raises(RuntimeError):
-        save_photo(jpg, kid, group, image, root)
+        save_photo(jpg, kid, group, image, root, timezone="UTC")
     assert [p for p in root.rglob("*") if p.is_file()] == []
 
 
 def test_remove_prunes_and_keeps(jpg: Path, tmp_path: Path) -> None:
     root = tmp_path / "p"
     kid, group, image = mk()
-    out = save_photo(jpg, kid, group, image, root)
+    out = save_photo(jpg, kid, group, image, root, timezone="UTC")
     remove_photo(out, root)
     assert root.exists() and list(root.iterdir()) == []
-    out = save_photo(jpg, kid, group, image, root)
+    out = save_photo(jpg, kid, group, image, root, timezone="UTC")
     other = out.parent / "other.jpg"
     other.write_bytes(b"1")
     remove_photo(out, root)
@@ -205,7 +205,7 @@ def test_remove_keeps_hardlinked_sibling(jpg: Path, tmp_path: Path) -> None:
     _, group, image = mk()
     k1 = SimpleNamespace(id=1, slug="noa")
     k2 = SimpleNamespace(id=2, slug="itai")
-    res = save_for_kids(jpg, [k1, k2], group, image, root)
+    res = save_for_kids(jpg, [k1, k2], group, image, root, timezone="UTC")
     remove_photo(res[1], root)
     assert not res[1].exists()
     assert os.stat(res[2]).st_nlink == 1
@@ -218,15 +218,15 @@ def test_resave_keeps_siblings_linked(jpg: Path, tmp_path: Path) -> None:
     _, group, image = mk()
     k1 = SimpleNamespace(id=1, slug="noa")
     k2 = SimpleNamespace(id=2, slug="itai")
-    save_for_kids(jpg, [k1, k2], group, image, root)
-    res = save_for_kids(jpg, [k1, k2], group, image, root)
+    save_for_kids(jpg, [k1, k2], group, image, root, timezone="UTC")
+    res = save_for_kids(jpg, [k1, k2], group, image, root, timezone="UTC")
     s1, s2 = os.stat(res[1]), os.stat(res[2])
     assert s1.st_ino == s2.st_ino and s1.st_nlink == 2
 
 
 def test_hostile_text_saves(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk(group_name="x" * 100_000, sender="a\ud800b\x00c\x07")
-    out = save_photo(jpg, kid, group, image, tmp_path / "p")
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
     ex = piexif.load(str(out))
     assert len(ex["0th"][piexif.ImageIFD.ImageDescription]) <= 256
     assert read_text_tags(out)[1] == "a?bc"
@@ -255,28 +255,26 @@ def test_gps_stripped_by_default_and_stale_tags(tmp_path: Path) -> None:
     src = tmp_path / "g.jpg"
     gps_jpeg(src)
     kid, group, image = mk()
-    ex = piexif.load(str(save_photo(src, kid, group, image, tmp_path / "p")))
+    ex = piexif.load(str(save_photo(src, kid, group, image, tmp_path / "p", timezone="UTC")))
     assert ex["GPS"] == {}
     assert ex["0th"][piexif.ImageIFD.Make] == b"Cam"
     assert ex["0th"][piexif.ImageIFD.DateTime] == b"2026:03:07 14:05:09"
-    for t in (
-        piexif.ExifIFD.OffsetTimeOriginal,
-        piexif.ExifIFD.SubSecTimeOriginal,
-        piexif.ExifIFD.OffsetTime,
-    ):
-        assert t not in ex["Exif"]
+    assert piexif.ExifIFD.SubSecTimeOriginal not in ex["Exif"]
+    # stale +03:00 from the camera is replaced by the configured zone's offset
+    assert ex["Exif"][piexif.ExifIFD.OffsetTimeOriginal] == b"+00:00"
+    assert ex["Exif"][piexif.ExifIFD.OffsetTime] == b"+00:00"
 
 
 def test_gps_kept_when_disabled(tmp_path: Path) -> None:
     src = tmp_path / "g.jpg"
     gps_jpeg(src)
     kid, group, image = mk()
-    out = save_photo(src, kid, group, image, tmp_path / "p", strip_gps=False)
+    out = save_photo(src, kid, group, image, tmp_path / "p", strip_gps=False, timezone="UTC")
     assert piexif.load(str(out))["GPS"][piexif.GPSIFD.GPSLatitudeRef] == b"N"
 
 
 def test_file_mode(jpg: Path, tmp_path: Path) -> None:
-    out = save_photo(jpg, *mk()[0:3], tmp_path / "p")
+    out = save_photo(jpg, *mk()[0:3], tmp_path / "p", timezone="UTC")
     umask = os.umask(0)
     os.umask(umask)
     assert out.stat().st_mode & 0o777 == 0o644 & ~umask
@@ -285,4 +283,25 @@ def test_file_mode(jpg: Path, tmp_path: Path) -> None:
 def test_missing_sent_at(jpg: Path, tmp_path: Path) -> None:
     kid, group, image = mk(sent=None)
     with pytest.raises(ValueError, match="sent_at missing"):
-        save_photo(jpg, kid, group, image, tmp_path / "p")
+        save_photo(jpg, kid, group, image, tmp_path / "p", timezone="UTC")
+
+
+def test_timezone_local_date_folder_and_exif(jpg: Path, tmp_path: Path) -> None:
+    # 23:30 UTC on 31 March is 02:30 on 1 April in Israel (IDT, +03:00)
+    kid, group, image = mk(sent=datetime(2026, 3, 31, 23, 30, 0))
+    out = save_photo(jpg, kid, group, image, tmp_path / "p", timezone="Asia/Jerusalem")
+    assert out == tmp_path / "p/noa/2026/04/2026-04-01_023000_class_00000042.jpg"
+    ex = piexif.load(str(out))
+    assert ex["Exif"][piexif.ExifIFD.DateTimeOriginal] == b"2026:04:01 02:30:00"
+    assert ex["0th"][piexif.ImageIFD.DateTime] == b"2026:04:01 02:30:00"
+    assert ex["Exif"][piexif.ExifIFD.OffsetTimeOriginal] == b"+03:00"
+    assert ex["Exif"][piexif.ExifIFD.OffsetTime] == b"+03:00"
+
+
+def test_timezone_winter_offset_and_siblings(jpg: Path, tmp_path: Path) -> None:
+    _, group, image = mk(sent=datetime(2026, 1, 15, 21, 0, 0))
+    k1 = SimpleNamespace(id=1, slug="noa")
+    k2 = SimpleNamespace(id=2, slug="itai")
+    res = save_for_kids(jpg, [k1, k2], group, image, tmp_path / "p", timezone="Asia/Jerusalem")
+    assert res[2].name == "2026-01-15_230000_class_00000042.jpg"
+    assert piexif.load(str(res[1]))["Exif"][piexif.ExifIFD.OffsetTimeOriginal] == b"+02:00"
