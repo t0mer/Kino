@@ -9,6 +9,7 @@ margin) and never applies the +/- group threshold adjustments.
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,11 +46,17 @@ class KidInfo:
     threshold_offset: float
 
 
+F64 = NDArray[np.float64]
+
+
 @dataclass
 class _Gallery:
-    refs: Vec  # (n, d)
-    weights: Vec  # (n,)
-    negatives: Vec | None  # (m, d)
+    """Stored float64 so batched and single-face scoring agree (float32 BLAS rounding in a
+    batch differs from a single row by ~1e-7, enough to flip a decision at a threshold)."""
+
+    refs: F64  # (n, d)
+    weights: F64  # (n,)
+    negatives: F64 | None  # (m, d)
 
 
 class Matcher:
@@ -96,9 +103,9 @@ class Matcher:
         for kid_id, items in refs.items():
             neg = negs.get(kid_id)
             galleries[kid_id] = _Gallery(
-                np.stack([e for e, _ in items]).astype(np.float32),
-                np.array([w for _, w in items], dtype=np.float32),
-                np.stack(neg).astype(np.float32) if neg else None,
+                np.stack([e for e, _ in items]).astype(np.float64),
+                np.array([w for _, w in items], dtype=np.float64),
+                np.stack(neg).astype(np.float64) if neg else None,
             )
         self._galleries = galleries
         self._version = self._read_version(session)
@@ -128,16 +135,16 @@ class Matcher:
         del group_id
         return self.score_many(np.asarray(face_emb, dtype=np.float32)[None, :])[0]
 
-    def score_many(self, faces: NDArray[np.float32]) -> list[list[KidScore]]:
+    def score_many(self, faces: NDArray[np.floating[Any]]) -> list[list[KidScore]]:
         """Vectorised :meth:`score` for an (n, d) matrix of face embeddings: one best-first
-        list per row. ``score`` is this function on one row, so both share one code path
-        (a batch may differ from a single row only by float32 BLAS rounding, ~1e-7)."""
-        mat = np.asarray(faces, dtype=np.float32)
+        list per row. ``score`` is this function on one row, so both share one code path;
+        the math is float64, so a batch and a single row agree to ~1e-15."""
+        mat = np.asarray(faces, dtype=np.float64)
         n = mat.shape[0]
         kid_ids = sorted(k for k in self._galleries if k in self._kids)  # skip inactive kids
         if n == 0 or not kid_ids:
             return [[] for _ in range(n)]
-        cols: list[NDArray[np.float64]] = []
+        cols: list[F64] = []
         for kid_id in kid_ids:
             g = self._galleries[kid_id]
             sims = mat @ g.refs.T  # (n, refs)
@@ -146,10 +153,10 @@ class Matcher:
             top = np.take_along_axis(sims, idx, axis=1)
             w = g.weights[idx]
             wsum = w.sum(axis=1)
-            safe = np.where(wsum > 0, wsum, np.float32(1.0))
-            score = np.where(wsum > 0, (top * w).sum(axis=1) / safe, 0.0).astype(np.float64)
+            safe = np.where(wsum > 0, wsum, 1.0)
+            score = np.where(wsum > 0, (top * w).sum(axis=1) / safe, 0.0)
             if g.negatives is not None:
-                neg = (mat @ g.negatives.T).max(axis=1).astype(np.float64)
+                neg = (mat @ g.negatives.T).max(axis=1)
                 score = np.where(neg >= score, score - NEGATIVE_PENALTY, score)
             cols.append(score)
         scores = np.stack(cols, axis=1)  # (n, kids), columns in ascending kid id
