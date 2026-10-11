@@ -4,8 +4,10 @@ Removing a photo from a kid deletes that kid's file and ``saved_photos`` row, ta
 out of any unsent forward (a forward that also names siblings keeps going for them, one
 that names only this kid is cancelled; already-sent messages stay in WhatsApp), and marks
 the kid's saved match(es) on that image ``rejected`` / ``decided_by=user``, so a later
-re-score never saves the photo for the kid again. References are left alone (manage them
-in the gallery), so ``gallery_version`` is not bumped.
+re-score never saves the photo for the kid again. The kid's references that were learned
+from that photo (``source`` ``review`` or ``auto`` with a ``face_id`` of the image) are
+retired, and ``gallery_version`` is bumped when any were; uploaded and cluster references
+are left alone.
 
 Listing is newest saved first (descending ``saved_photos.id``); ``cursor`` is the last id
 seen. ``from``/``to`` filter on the message's ``sent_at`` (naive UTC).
@@ -21,7 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from kino import metrics
-from kino.db.models import Face, Forward, Group, Image, Kid, Match, SavedPhoto
+from kino.db.models import Face, Forward, Group, Image, Kid, Match, ReferenceFace, SavedPhoto
 from kino.services import NotFoundError
 
 
@@ -74,6 +76,7 @@ class PhotoRemoval:
     files: list[Path] = field(default_factory=list)  # delete after the commit
     cancelled_forwards: int = 0
     rejected_matches: int = 0
+    retired_references: int = 0
 
 
 def remove_photo(
@@ -115,6 +118,22 @@ def remove_photo(
         execution_options={"synchronize_session": False},
     )
     out.rejected_matches = int(res.rowcount)  # type: ignore[attr-defined]
+    retired = session.execute(
+        update(ReferenceFace)
+        .where(
+            ReferenceFace.kid_id == sp.kid_id,
+            ReferenceFace.face_id.in_(face_ids),
+            ReferenceFace.source.in_(("review", "auto")),
+            ReferenceFace.status == "active",
+        )
+        .values(status="retired"),
+        execution_options={"synchronize_session": False},
+    )
+    out.retired_references = int(retired.rowcount)  # type: ignore[attr-defined]
+    if out.retired_references:
+        from kino.tasks import bump_gallery_version
+
+        bump_gallery_version(session)
     session.delete(sp)
     session.flush()
     return out

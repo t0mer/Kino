@@ -79,4 +79,5 @@ def remove_photo(request: Request, saved_photo_id: int) -> PhotoRemoved:
         removed_files=removed,
         cancelled_forwards=res.cancelled_forwards,
         rejected_matches=res.rejected_matches,
+        retired_references=res.retired_references,
     )

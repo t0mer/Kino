@@ -685,13 +685,16 @@ def test_delete_photo_keeps_sibling_forward_and_rejects_match(world, enqueued):
     assert sorted(fw.kid_ids) == sorted([world["noa"], world["itai"]])
     noa_sp = rows(SavedPhoto, SavedPhoto.kid_id == world["noa"])[0]
     itai_sp = rows(SavedPhoto, SavedPhoto.kid_id == world["itai"])[0]
+    v0 = gallery_version()
     r = api.delete(f"/api/photos/{noa_sp.id}")
     assert r.status_code == 200, r.text
+    assert gallery_version() != v0
     assert r.json() == {
         "id": noa_sp.id,
         "removed_files": 1,
         "cancelled_forwards": 0,
         "rejected_matches": 1,
+        "retired_references": 1,
     }
     assert not Path(noa_sp.path).exists() and Path(itai_sp.path).exists()
     fw = get(Forward, fw.id)
@@ -700,6 +703,10 @@ def test_delete_photo_keeps_sibling_forward_and_rejects_match(world, enqueued):
     m = get(Match, world["m"])
     assert (m.decision, m.decided_by) == ("rejected", "user")
     assert api.delete(f"/api/photos/{noa_sp.id}").status_code == 404
+    # Noa's review reference from this photo is retired (Itai's face duplicated his upload ref)
+    [ref] = rows(ReferenceFace, ReferenceFace.source == "review")
+    assert (ref.kid_id, ref.status) == (world["noa"], "retired")
+    assert all(r.status == "active" for r in rows(ReferenceFace, ReferenceFace.source == "upload"))
     r = api.delete(f"/api/photos/{itai_sp.id}")
     assert r.json()["cancelled_forwards"] == 1
     assert get(Forward, fw.id).status == "cancelled"

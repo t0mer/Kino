@@ -493,3 +493,4 @@ class PhotoRemoved(BaseModel):
     removed_files: int
     cancelled_forwards: int
     rejected_matches: int
+    retired_references: int
