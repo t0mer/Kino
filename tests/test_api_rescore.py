@@ -353,7 +353,10 @@ def forwards(monkeypatch):
 def rescore(api, days=7):
     r = api.post("/api/rescore", json={"days": days})
     assert r.status_code == 200, r.text
-    return r.json()
+    out = r.json()
+    # every face counts in exactly one category
+    assert out["created"] + out["updated"] + out["unchanged"] + out["protected"] == out["examined"]
+    return out
 
 
 def by_kid(face_id: int) -> dict[int, Match]:
@@ -370,6 +373,7 @@ def test_rescore_creates_matches_and_saves_auto(world, forwards):
         "unchanged": 0,
         "protected": 0,
         "saved": 1,
+        "retired": 0,
     }
     a = by_kid(world["A"])[world["noa"]]
     assert a.decision == "auto_saved" and a.decided_by == "system"
@@ -425,7 +429,8 @@ def test_rescore_moves_a_stale_system_match_to_the_new_best_kid(world, forwards)
     api = world["api"]
     stale = seed_match(world["D"], world["noa"], "review")  # was suggested as Noa
     out = rescore(api)
-    assert out["updated"] == 1  # the Noa suggestion leaves the review queue
+    assert out["created"] == 4 and out["updated"] == 0  # D: a new Itai match
+    assert out["retired"] == 1  # the Noa suggestion leaves the review queue
     got = by_kid(world["D"])
     assert got[world["noa"]].id == stale and got[world["noa"]].decision == "dropped"
     assert got[world["itai"]].decision == "review"
@@ -582,3 +587,60 @@ def test_flag_errors(world):
     noemb = seed_face(world["gid"], None)
     assert flag(api, noemb, world["noa"], "negative").status_code == 422
     assert count(NegativeFace) == 0 and count(Match) == 0
+
+
+def test_rescore_reloads_the_gallery_between_batches(world, forwards, monkeypatch):
+    """A teaching change made while a long re-score runs is used by the later batches."""
+    monkeypatch.setattr(rescore_svc, "RESCORE_BATCH", 1)
+    real = rescore_svc._rescore_batch
+    calls = []
+
+    def batch(*args, **kwargs):
+        out = real(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:  # after A's photo: B's face becomes a reference of Noa
+            from kino.tasks import bump_gallery_version
+
+            with dbs.get_session() as s:
+                face = s.get(Face, world["B"])
+                assert face is not None
+                s.add(
+                    ReferenceFace(
+                        kid_id=world["noa"],
+                        embedding=face.embedding,
+                        source="review",
+                        quality=1.0,
+                        status="active",
+                    )
+                )
+                bump_gallery_version(s)
+        return out
+
+    monkeypatch.setattr(rescore_svc, "_rescore_batch", batch)
+    rescore(world["api"])
+    assert len(calls) == 4
+    assert by_kid(world["B"])[world["noa"]].decision == "auto_saved"  # (0.42 + 1.0) / 2
+
+
+def test_rescore_saves_in_short_per_photo_transactions(world, forwards, monkeypatch):
+    """A failing save rolls back only that photo; the batch's other decisions are kept."""
+    from kino.services import review as review_svc
+
+    looser = thresholds(world["api"], L={"auto": 0.40, "review": 0.10})
+    assert world["api"].put("/api/settings/thresholds", json=looser).status_code == 200
+    noa_b = seed_face(world["gid"], mix(0, 0.95, 170))  # a second auto-save photo
+    real = review_svc.save_file
+    seen: list[int] = []
+
+    def save_file(s, settings, image, kid, group, fx):
+        seen.append(image.id)
+        if image.id == image_of(noa_b):
+            raise RuntimeError("disk on fire")
+        return real(s, settings, image, kid, group, fx)
+
+    monkeypatch.setattr(review_svc, "save_file", save_file)
+    with pytest.raises(RuntimeError):
+        rescore_svc.rescore(get_settings(), 7)
+    assert sorted(seen) == sorted([image_of(world["A"]), image_of(noa_b)])
+    assert by_kid(world["C"])[world["noa"]].decision == "review"  # batch committed
+    assert matches(noa_b) == []  # the failed photo's transaction rolled back

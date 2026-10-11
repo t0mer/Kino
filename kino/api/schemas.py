@@ -651,6 +651,7 @@ class RescoreOut(BaseModel):
     unchanged: int
     protected: int
     saved: int
+    retired: int  # stale system matches of other kids set to dropped
 
 
 class FlagIn(In):

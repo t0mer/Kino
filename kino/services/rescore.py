@@ -260,19 +260,26 @@ def score_preview(
 
 # --- re-score (writes matches) ----------------------------------------------------------
 
-RESCORE_BATCH = 100  # images per transaction
+RESCORE_BATCH = 100  # photos per matching transaction (no file I/O inside it)
 _DECISION = {"auto_save": "auto_saved", "review": "review", "drop": "dropped"}
 _SCORE_TOL = 1e-6
 
 
 @dataclass
 class RescoreResult:
+    """Each examined face counts in exactly one of created / updated / unchanged / protected."""
+
     examined: int = 0  # faces with an embedding on `done` images in the window
-    created: int = 0
-    updated: int = 0
+    created: int = 0  # a new match row was written for the face
+    updated: int = 0  # the face's match changed (decision, kid or score)
     unchanged: int = 0
-    protected: int = 0  # faces left alone: the user decided, or the photo was saved
+    protected: int = 0  # faces left alone: a user decision, a saved photo or a burst match
     saved: int = 0  # photos newly saved for a kid (new auto-save outcomes)
+    retired: int = 0  # stale system matches of other kids set to `dropped`
+
+    def add(self, other: RescoreResult) -> None:
+        for name, value in vars(other).items():
+            setattr(self, name, getattr(self, name) + value)
 
 
 def is_protected(m: Match, saved: set[tuple[int, int]], image_id: int) -> bool:
@@ -287,33 +294,39 @@ def is_protected(m: Match, saved: set[tuple[int, int]], image_id: int) -> bool:
     )
 
 
+@dataclass
+class _PendingSave:
+    face: FaceRow
+    decision: Decision
+
+
 def rescore(settings: Settings, days: int, now: datetime | None = None) -> RescoreResult:
     """Re-run matching and decisions on the stored faces of `done` photos from the last
     ``days`` days, with the current gallery, thresholds and kid settings (CLAUDE.md §11).
 
     Per face, the worker's outcome is recomputed and written to its ``matches`` (one active
     match per face, for its best kid): a new row is created, or the existing system match
-    for that kid is updated; system matches of the face for other kids become ``dropped``.
-    Faces with a protected match (:func:`is_protected`) are skipped entirely, so a user
-    decision is never overwritten. Running it twice changes nothing the second time.
+    for that kid is updated; system matches of the face for other kids become ``dropped``
+    (counted as ``retired``). Faces with a protected match (:func:`is_protected`) are skipped
+    entirely, so a user decision is never overwritten. Running it twice changes nothing the
+    second time.
 
-    A new auto-save outcome saves the photo and plans its forward like the worker (only for
-    kids with auto-save enabled; ``decide`` handles that). When the original is gone, the
-    kid is already saved from another face of the photo, or saving fails, the face goes to
-    review instead. Unlike the worker it does not auto-enrich the gallery, so
-    ``gallery_version`` is untouched.
+    Transactions: matching runs in batches of RESCORE_BATCH photos with no file I/O. A new
+    auto-save outcome is deferred and applied afterwards in its own short per-photo
+    transaction (re-checked there): it saves the photo and plans its forward like the worker
+    (only for kids with auto-save enabled; ``decide`` handles that). When the original is gone,
+    the kid is already saved from another face of the photo, or saving fails with a service
+    error, the face goes to review instead. Unlike the worker it does not auto-enrich the
+    gallery, so ``gallery_version`` is untouched. The matcher is reloaded between batches
+    when ``gallery_version`` changed (teaching during a long run).
 
-    Runs synchronously in batches of RESCORE_BATCH photos, one transaction each; the
-    background jobs mechanism (Task 8) will take it over.
+    Runs synchronously for now; Task 8 moves it to the background jobs mechanism.
     """
-    from kino.tasks import cleanup_raw
-
     if not 1 <= days <= 365:
         raise InvalidError("days must be between 1 and 365")
     now = now or _utcnow()
     with get_session() as s:
         matcher = build_matcher(s)
-        thresholds = Thresholds.from_settings(s)
         image_ids = list(
             s.scalars(
                 select(Image.id)
@@ -323,66 +336,53 @@ def rescore(settings: Settings, days: int, now: datetime | None = None) -> Resco
         )
     res = RescoreResult()
     for i in range(0, len(image_ids), RESCORE_BATCH):
-        fx = review.Effects()
-        saved_images: set[int] = set()
-        part = RescoreResult()
-        try:
-            with get_session() as s:
-                _rescore_batch(
-                    s,
-                    settings,
-                    matcher,
-                    thresholds,
-                    image_ids[i : i + RESCORE_BATCH],
-                    part,
-                    fx,
-                    saved_images,
-                    now,
-                )
-        except BaseException:
-            review.undo_effects(fx, settings)
-            raise
-        for name in vars(res):
-            setattr(res, name, getattr(res, name) + getattr(part, name))
-        for fid in fx.forward_ids:
-            try:
-                review.enqueue_forward(fid)
-            except Exception as e:  # the retry_forwards sweep picks the row up later
-                logger.error("enqueue of forward {} failed: {}", fid, type(e).__name__)
-        for image_id in saved_images:
-            try:
-                cleanup_raw(image_id)
-            except Exception as e:
-                logger.warning("raw cleanup for image {} failed: {}", image_id, type(e).__name__)
+        with get_session() as s:
+            matcher.maybe_reload(s)
+            thresholds = Thresholds.from_settings(s)
+            part = RescoreResult()
+            pending = _rescore_batch(
+                s, matcher, thresholds, image_ids[i : i + RESCORE_BATCH], part, now
+            )
+        res.add(part)  # only once the batch committed
+        by_image: dict[int, list[_PendingSave]] = {}
+        for ps in pending:
+            by_image.setdefault(ps.face.image_id, []).append(ps)
+        for image_id, saves in by_image.items():
+            res.add(_save_photo(settings, image_id, saves, now))
     logger.info("re-score of the last {} day(s): {}", days, vars(res))
     return res
 
 
-def _rescore_batch(
-    s: Session,
-    settings: Settings,
-    matcher: Matcher,
-    thresholds: Thresholds,
-    image_ids: list[int],
-    res: RescoreResult,
-    fx: review.Effects,
-    saved_images: set[int],
-    now: datetime,
-) -> None:
-    rows = _face_rows(
-        s.execute(_face_query().where(Face.image_id.in_(image_ids)).order_by(Face.id))
-    )
-    existing: dict[int, list[Match]] = {}
-    for m in s.scalars(
-        select(Match).where(Match.face_id.in_([r.face_id for r in rows])).order_by(Match.id)
-    ):
-        existing.setdefault(m.face_id, []).append(m)
-    saved = {
+def _matches_of(s: Session, face_ids: list[int]) -> dict[int, list[Match]]:
+    out: dict[int, list[Match]] = {}
+    for m in s.scalars(select(Match).where(Match.face_id.in_(face_ids)).order_by(Match.id)):
+        out.setdefault(m.face_id, []).append(m)
+    return out
+
+
+def _saved_pairs(s: Session, image_ids: list[int]) -> set[tuple[int, int]]:
+    return {
         (img, kid)
         for img, kid in s.execute(
             select(SavedPhoto.image_id, SavedPhoto.kid_id).where(SavedPhoto.image_id.in_(image_ids))
         )
     }
+
+
+def _rescore_batch(
+    s: Session,
+    matcher: Matcher,
+    thresholds: Thresholds,
+    image_ids: list[int],
+    res: RescoreResult,
+    now: datetime,
+) -> list[_PendingSave]:
+    """Write every outcome of the batch except new auto-saves, which are returned."""
+    rows = _face_rows(
+        s.execute(_face_query().where(Face.image_id.in_(image_ids)).order_by(Face.id))
+    )
+    existing = _matches_of(s, [r.face_id for r in rows])
+    saved = _saved_pairs(s, image_ids)
     res.examined += len(rows)
     taken = set(saved)  # (image, kid) already saved, or confirmed from another face
     todo: list[FaceRow] = []
@@ -390,67 +390,67 @@ def _rescore_batch(
         ms = existing.get(r.face_id, [])
         if any(is_protected(m, saved, r.image_id) for m in ms):
             res.protected += 1
-            taken.update(
-                (r.image_id, m.kid_id) for m in ms if m.decision in ("confirmed", "auto_saved")
-            )
+            taken.update((r.image_id, m.kid_id) for m in ms if m.decision == "confirmed")
         else:
             todo.append(r)
+    pending: list[_PendingSave] = []
     for ev in evaluate(matcher, thresholds, todo):
         f, dec = ev.face, ev.decision
-        ms = existing.get(f.face_id, [])
-        changed = False
-        if dec.kid_id is None:  # no kid has references: retire stale suggestions
-            for m in ms:
-                changed |= _set(m, decision="dropped", decided_at=now)
-            _count(res, changed)
-            continue
-        action = dec.action
-        if action == "auto_save":
-            if (f.image_id, dec.kid_id) in taken or not _save(
-                s, settings, f.image_id, dec.kid_id, fx
-            ):
-                action = "review"
-            else:
+        if dec.action == "auto_save" and dec.kid_id is not None:
+            if (f.image_id, dec.kid_id) not in taken:
                 taken.add((f.image_id, dec.kid_id))
-                saved_images.add(f.image_id)
-                res.saved += 1
-        decision = _DECISION[action]
-        target = next((m for m in ms if m.kid_id == dec.kid_id), None)
-        for m in ms:
-            if m is not target:
-                changed |= _set(m, decision="dropped", decided_at=now)
-        if target is None:
-            s.add(
-                Match(
-                    face_id=f.face_id,
-                    kid_id=dec.kid_id,
-                    score=dec.score,
-                    margin=dec.margin,
-                    method="face",
-                    decision=decision,
-                    decided_by="system",
-                    decided_at=now,
-                )
-            )
-            res.created += 1
-            if changed:  # also retired another kid's suggestion
-                res.updated += 1
-            continue
-        if (
-            target.decision != decision
-            or target.method != "face"
-            or abs(target.score - dec.score) > _SCORE_TOL
-            or target.margin is None
-            or abs(target.margin - dec.margin) > _SCORE_TOL
-        ):
-            target.decision = decision
-            target.method = "face"
-            target.score = dec.score
-            target.margin = dec.margin
-            target.decided_at = now
-            changed = True
-        _count(res, changed)
+                pending.append(_PendingSave(f, dec))
+                continue
+            dec.action = "review"
+            dec.reason = "kid already saved from another face of this photo"
+        _write(s, res, f.face_id, dec, existing.get(f.face_id, []), now)
     s.flush()
+    return pending
+
+
+def _write(
+    s: Session, res: RescoreResult, face_id: int, dec: Decision, ms: list[Match], now: datetime
+) -> None:
+    """Make ``dec`` the face's one active match; count the face once."""
+    target = next((m for m in ms if m.kid_id == dec.kid_id), None)
+    retired = 0
+    for m in ms:
+        if m is not target and m.decision != "dropped":
+            m.decision = "dropped"
+            m.decided_at = now
+            retired += 1
+    res.retired += retired
+    if dec.kid_id is None:  # no kid has references: the worker would store no match
+        _count(res, retired > 0)
+        return
+    decision = _DECISION[dec.action]
+    if target is None:
+        s.add(
+            Match(
+                face_id=face_id,
+                kid_id=dec.kid_id,
+                score=dec.score,
+                margin=dec.margin,
+                method="face",
+                decision=decision,
+                decided_by="system",
+                decided_at=now,
+            )
+        )
+        res.created += 1
+        return
+    changed = (
+        target.decision != decision
+        or abs(target.score - dec.score) > _SCORE_TOL
+        or target.margin is None
+        or abs(target.margin - dec.margin) > _SCORE_TOL
+    )
+    if changed:
+        target.decision = decision
+        target.score = dec.score
+        target.margin = dec.margin
+        target.decided_at = now
+    _count(res, changed or retired > 0)
 
 
 def _set(m: Match, *, decision: str, decided_at: datetime) -> bool:
@@ -466,6 +466,59 @@ def _count(res: RescoreResult, changed: bool) -> None:
         res.updated += 1
     else:
         res.unchanged += 1
+
+
+def _save_photo(
+    settings: Settings, image_id: int, saves: list[_PendingSave], now: datetime
+) -> RescoreResult:
+    """Apply one photo's deferred auto-saves in a short transaction of their own. The
+    faces' matches are re-read, so a decision the user made since the batch wins."""
+    from kino.tasks import cleanup_raw
+
+    res = RescoreResult()
+    fx = review.Effects()
+    try:
+        with get_session() as s:
+            existing = _matches_of(s, [ps.face.face_id for ps in saves])
+            saved = _saved_pairs(s, [image_id])
+            confirmed = {
+                (image_id, kid)
+                for kid in s.scalars(
+                    select(Match.kid_id)
+                    .join(Face, Face.id == Match.face_id)
+                    .where(Face.image_id == image_id, Match.decision == "confirmed")
+                )
+            }
+            taken = saved | confirmed
+            for ps in saves:
+                dec = ps.decision
+                assert dec.kid_id is not None
+                ms = existing.get(ps.face.face_id, [])
+                if any(is_protected(m, saved, image_id) for m in ms):
+                    res.protected += 1
+                    continue
+                if (image_id, dec.kid_id) in taken or not _save(
+                    s, settings, image_id, dec.kid_id, fx
+                ):
+                    dec.action = "review"
+                else:
+                    taken.add((image_id, dec.kid_id))
+                    res.saved += 1
+                _write(s, res, ps.face.face_id, dec, ms, now)
+    except BaseException:
+        review.undo_effects(fx, settings)
+        raise
+    for fid in fx.forward_ids:
+        try:
+            review.enqueue_forward(fid)
+        except Exception as e:  # the retry_forwards sweep picks the row up later
+            logger.error("enqueue of forward {} failed: {}", fid, type(e).__name__)
+    if res.saved:
+        try:
+            cleanup_raw(image_id)
+        except Exception as e:
+            logger.warning("raw cleanup for image {} failed: {}", image_id, type(e).__name__)
+    return res
 
 
 def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review.Effects) -> bool:
