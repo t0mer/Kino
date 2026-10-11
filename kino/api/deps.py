@@ -13,9 +13,18 @@ from loguru import logger
 
 from kino.api import auth
 from kino.api.auth import AuthInfo
+from kino.api.errors import OpenWANotConfigured
 from kino.config import Settings
+from kino.openwa.client import OpenWAClient
 
-__all__ = ["AuthInfo", "get_auth", "protected_router", "require_auth", "require_csrf"]
+__all__ = [
+    "AuthInfo",
+    "get_auth",
+    "openwa_client",
+    "protected_router",
+    "require_auth",
+    "require_csrf",
+]
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -92,3 +101,14 @@ def protected_router(**kwargs: Any) -> APIRouter:
     methods, the CSRF token. Use it for every router outside ``/api/auth`` and the webhook."""
     deps = [Depends(require_auth), Depends(require_csrf), *kwargs.pop("dependencies", [])]
     return APIRouter(dependencies=deps, **kwargs)
+
+
+def openwa_client(request: Request) -> OpenWAClient:
+    """The app's shared OpenWA client; 503 when OpenWA is not configured."""
+    client: OpenWAClient | None = request.app.state.openwa
+    if client is None:
+        raise OpenWANotConfigured(
+            "OpenWA is not configured (KINO_OPENWA_URL, KINO_OPENWA_API_KEY, "
+            "KINO_OPENWA_SESSION_ID)"
+        )
+    return client

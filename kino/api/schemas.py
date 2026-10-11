@@ -62,3 +62,28 @@ class KidDeleted(BaseModel):
     id: int
     removed_files: int
     cancelled_forwards: int
+
+
+# --- groups -------------------------------------------------------------------------------
+
+
+class GroupUpdate(In):
+    watched: bool | None = None
+    kid_ids: list[int] | None = Field(default=None, max_length=500)
+
+
+class GroupOut(BaseModel):
+    id: int
+    chat_id: str
+    name: str | None
+    slug: str | None
+    watched: bool
+    kid_ids: list[int]
+    is_forward_destination: bool
+    created_at: datetime
+    last_seen_at: datetime | None
+
+
+class GroupsRefreshed(BaseModel):
+    imported: int
+    total: int

@@ -14,6 +14,7 @@ from kino.api import auth
 from kino.api.deps import get_auth
 from kino.api.errors import install_error_handlers
 from kino.api.routes.auth import router as auth_router
+from kino.api.routes.groups import router as groups_router
 from kino.api.routes.kids import router as kids_router
 from kino.api.webhook import router as webhook_router
 from kino.config import Settings, get_settings
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(auth_router)
     app.include_router(kids_router)
+    app.include_router(groups_router)
     install_error_handlers(app)
 
     @app.get("/healthz")
