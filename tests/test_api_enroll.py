@@ -585,3 +585,139 @@ def test_coverage_hints(api, faces):
     assert c["left"] == 6 and c["right"] == 6 and c["older_than_year"] == 10
     assert c["hints"] == []
     assert api.get("/api/kids/999/coverage").status_code == 404
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+
+def test_upload_mpo_accepted(api, faces):
+    kid = make_kid()
+    faces({400: [det(100, 100, 120)]})
+    rng = np.random.default_rng(9)
+    ims = [
+        PILImage.fromarray(rng.integers(0, 255, (300, 400, 3), dtype=np.uint8)) for _ in range(2)
+    ]
+    buf = io.BytesIO()
+    ims[0].save(buf, "MPO", save_all=True, append_images=ims[1:])
+    r = upload(api, kid, ("samsung.jpg", buf.getvalue()))
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["error"] is None and len(r.json()[0]["faces"]) == 1
+
+
+def test_upload_without_content_length_is_411(api, faces):
+    kid = make_kid()
+    faces({})
+
+    def body():
+        yield b"--x\r\n"
+
+    r = api.post(
+        f"/api/kids/{kid}/uploads",
+        content=body(),
+        headers={"content-type": "multipart/form-data; boundary=x"},
+    )
+    assert r.status_code == 411
+
+
+def test_upload_request_cap_is_100_mb(api, faces):
+    from kino.api.routes import uploads
+
+    assert uploads.MAX_REQUEST_BYTES == 100 * 1024 * 1024
+    kid = make_kid()
+    faces({})
+    r = api.post(
+        f"/api/kids/{kid}/uploads",
+        content=b"x",
+        headers={
+            "content-type": "multipart/form-data; boundary=x",
+            "content-length": str(100 * 1024 * 1024 + 1),
+        },
+    )
+    assert r.status_code == 413
+
+
+def test_upload_processes_files_one_at_a_time(api, faces, monkeypatch):
+    """Each file is read, processed and released before the next is read."""
+    from kino.api.routes import uploads
+
+    kid = make_kid()
+    faces({400: [], 410: []})
+    calls: list[int] = []
+    real = uploads.svc.process_upload
+
+    def spy(session, kid_id, name, data, *a, **kw):
+        calls.append(len(data))
+        return real(session, kid_id, name, data, *a, **kw)
+
+    monkeypatch.setattr(uploads.svc, "process_upload", spy)
+    real_process = uploads._process
+    batches: list[int] = []
+
+    def one(kid_id, files, settings):
+        batches.append(len(files))
+        return real_process(kid_id, files, settings)
+
+    monkeypatch.setattr(uploads, "_process", one)
+    r = upload(api, kid, ("a.jpg", photo(400)), ("b.jpg", photo(410)))
+    assert r.status_code == 200, r.text
+    assert len(calls) == 2 and batches == [1, 1]
+
+
+def test_temp_crops_survive_a_failed_confirm(api, faces, monkeypatch):
+    from kino.api.routes import references
+
+    kid = make_kid()
+    [f] = _uploaded(api, kid, {400: [det(100, 100, 120)]}, 400)
+    with dbs.get_session() as s:
+        crop = Path(s.get(TempFace, f["temp_face_id"]).crop_path)
+
+    def boom(_r):
+        raise RuntimeError("late failure")
+
+    monkeypatch.setattr(references, "_out", boom)
+    with pytest.raises(RuntimeError):
+        api.post(f"/api/kids/{kid}/references", json={"temp_face_ids": [f["temp_face_id"]]})
+    assert crop.exists() and count(TempFace) == 1 and count(ReferenceFace) == 0
+
+
+def test_reference_crop_survives_a_failed_to_negative(api, faces, tmp_path, monkeypatch):
+    from kino.api.routes import references
+
+    faces({})
+    kid = make_kid()
+    fid = _pipeline_face(tmp_path)
+    [ref] = api.post(f"/api/kids/{kid}/references", json={"face_ids": [fid]}).json()["created"]
+    with dbs.get_session() as s:
+        crop = Path(s.get(ReferenceFace, ref["id"]).crop_path)
+
+    def boom(**_kw):
+        raise RuntimeError("late failure")
+
+    monkeypatch.setattr(references, "NegativeOut", boom)
+    with pytest.raises(RuntimeError):
+        api.post(f"/api/references/{ref['id']}/to-negative")
+    assert crop.exists() and count(NegativeFace) == 0 and count(ReferenceFace) == 1
+
+
+def test_tz_aware_photo_dates_are_stored_as_utc(api, faces, tmp_path):
+    kid = make_kid()
+    [f] = _uploaded(api, kid, {400: [det(100, 100, 120)]}, 400)
+    r = api.post(
+        f"/api/kids/{kid}/references",
+        json={"temp_face_ids": [f["temp_face_id"]], "photo_date": "2023-07-01T23:30:00+02:00"},
+    )
+    ref = r.json()["created"][0]
+    assert ref["photo_date"] == "2023-07-01T21:30:00"
+    r = api.patch(f"/api/references/{ref['id']}", json={"photo_date": "2023-01-01T00:30:00+01:00"})
+    assert r.json()["photo_date"] == "2022-12-31T23:30:00"
+
+
+def test_move_reference_conflicts_with_same_face(api, faces, tmp_path):
+    faces({})
+    noa, itai = make_kid(), make_kid("Itai", "itai")
+    fid = _pipeline_face(tmp_path)
+    a = api.post(f"/api/kids/{noa}/references", json={"face_ids": [fid]}).json()["created"][0]
+    api.post(f"/api/kids/{itai}/references", json={"face_ids": [fid]})
+    r = api.patch(f"/api/references/{a['id']}", json={"kid_id": itai})
+    assert r.status_code == 409
+    assert api.get(f"/api/references/{a['id']}").json()["kid_id"] == noa

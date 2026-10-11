@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Query, Request, Response
@@ -27,6 +28,13 @@ router = protected_router(tags=["references"])
 def _settings(request: Request) -> Settings:
     settings: Settings = request.app.state.settings
     return settings
+
+
+def _naive_utc(value: datetime | None) -> datetime | None:
+    """DB datetimes are naive UTC; an offset-aware input is converted, a naive one kept."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _out(r: ReferenceFace) -> ReferenceOut:
@@ -55,9 +63,12 @@ def add_references(request: Request, kid_id: int, body: ReferencesIn) -> Referen
             temp_face_ids=body.temp_face_ids,
             face_ids=body.face_ids,
             source=body.source,
-            photo_date=body.photo_date.replace(tzinfo=None) if body.photo_date else None,
+            photo_date=_naive_utc(body.photo_date),
         )
-        return ReferencesAdded(created=[_out(r) for r in res.created], duplicates=res.duplicates)
+        out = ReferencesAdded(created=[_out(r) for r in res.created], duplicates=res.duplicates)
+    for p in res.remove_after_commit:  # consumed temp crops, only once the commit succeeded
+        svc.remove_file(p)
+    return out
 
 
 @router.get("/api/kids/{kid_id}/references", response_model=list[ReferenceOut])
@@ -89,7 +100,7 @@ def get_reference(ref_id: int) -> ReferenceOut:
 def update_reference(ref_id: int, body: ReferenceUpdate) -> ReferenceOut:
     with get_session() as s:
         if "photo_date" in body.model_fields_set:  # explicit null clears the date
-            pd = body.photo_date.replace(tzinfo=None) if body.photo_date else None
+            pd = _naive_utc(body.photo_date)
             ref = svc.update_reference(s, ref_id, body.status, body.kid_id, pd)
         else:
             ref = svc.update_reference(s, ref_id, body.status, body.kid_id)
@@ -107,10 +118,12 @@ def delete_reference(request: Request, ref_id: int) -> Response:
 @router.post("/api/references/{ref_id}/to-negative", response_model=NegativeOut)
 def to_negative(request: Request, ref_id: int) -> NegativeOut:
     with get_session() as s:
-        neg = svc.reference_to_negative(s, _settings(request), ref_id)
-        return NegativeOut(
+        neg, old = svc.reference_to_negative(s, _settings(request), ref_id)
+        out = NegativeOut(
             id=neg.id, kid_id=neg.kid_id, source_face_id=neg.source_face_id, added_at=neg.added_at
         )
+    svc.remove_file(old)  # only after the commit
+    return out
 
 
 @router.get("/api/references/{ref_id}/crop")

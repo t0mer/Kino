@@ -20,8 +20,10 @@ from kino.services import kids as kids_svc
 
 router = protected_router(tags=["enroll"])
 
-# Whole-request cap, checked from Content-Length before the body is read.
-MAX_REQUEST_BYTES = svc.MAX_UPLOAD_FILES * svc.MAX_UPLOAD_BYTES + 1024 * 1024
+# Whole-request cap, checked from Content-Length before the body is read. 100 MB holds a
+# typical batch (5 full-size phone photos at the 20 MB per-file cap, or 20 ordinary ones)
+# while bounding the temporary disk a single request can make the server spool.
+MAX_REQUEST_BYTES = 100 * 1024 * 1024
 TempFaceId = Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")]
 
 
@@ -73,34 +75,45 @@ def _process(kid_id: int, files: list[tuple[str, bytes]], settings: Settings) ->
 
 @router.post("/api/kids/{kid_id}/uploads", response_model=list[UploadOut])
 async def upload_photos(request: Request, kid_id: int) -> list[UploadOut]:
-    """Detect faces in up to 20 photos (20 MB each). Per-file problems are reported in the
-    file's entry; the request fails only when no file could be used."""
+    """Detect faces in up to 20 photos (20 MB each, 100 MB per request). Per-file problems
+    are reported in the file's entry; the request fails only when no file could be used.
+
+    Starlette spools the parts to temporary files (1 MB in memory each); files are then
+    read, decoded and detected one at a time, so at most one file's bytes and pixels are in
+    memory at once."""
+    raw_length = request.headers.get("content-length")
+    if raw_length is None:
+        raise HTTPException(411, "Content-Length is required")
     try:
-        length = int(request.headers.get("content-length", "0"))
+        length = int(raw_length)
     except ValueError:
         raise HTTPException(400, "invalid Content-Length") from None
     if length > MAX_REQUEST_BYTES:
-        raise HTTPException(413, "upload is too large")
-    with get_session() as s:
-        kids_svc.get_kid(s, kid_id)
+        raise HTTPException(413, f"upload is larger than {MAX_REQUEST_BYTES // (1024 * 1024)} MB")
     try:
         form = await request.form(max_files=svc.MAX_UPLOAD_FILES, max_fields=20)
     except StarletteHTTPException as e:
         if "files" in str(e.detail).lower():
             raise HTTPException(413, f"at most {svc.MAX_UPLOAD_FILES} files per upload") from None
         raise HTTPException(400, "malformed upload") from None
+    settings = _settings(request)
+    out: list[UploadOut] = []
     try:
-        files: list[tuple[str, bytes]] = []
-        for item in form.getlist("files"):
-            if not isinstance(item, UploadFile):
-                raise HTTPException(422, "'files' must be file parts")
+        items = form.getlist("files")
+        if not items:
+            raise HTTPException(422, "add at least one photo in the 'files' field")
+        if not all(isinstance(item, UploadFile) for item in items):
+            raise HTTPException(422, "'files' must be file parts")
+        for item in items:
+            assert isinstance(item, UploadFile)
             # Read at most one byte past the limit; the service rejects the oversize file.
-            files.append((item.filename or "", await item.read(svc.MAX_UPLOAD_BYTES + 1)))
+            data = await item.read(svc.MAX_UPLOAD_BYTES + 1)
+            name = item.filename or ""
+            await item.close()
+            out += await run_in_threadpool(_process, kid_id, [(name, data)], settings)
+            del data
     finally:
         await form.close()
-    if not files:
-        raise HTTPException(422, "add at least one photo in the 'files' field")
-    out = await run_in_threadpool(_process, kid_id, files, _settings(request))
     failed = [o for o in out if o.error is not None]
     if len(failed) == len(out):
         detail = "; ".join(f"{o.filename}: {o.error}" for o in failed)
