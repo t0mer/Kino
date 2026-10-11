@@ -1,12 +1,17 @@
 """Authentication: local login, Cloudflare Access JWT, CSRF and first-run setup (§13.1, R2)."""
 
+import base64
+import hashlib
+import hmac
 import json
+import threading
 import time
 from typing import Annotated
 
 import jwt
 import pytest
 from argon2 import PasswordHasher
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -268,7 +273,7 @@ def test_cf_invalid_jwt_is_401_without_cookie_fallback(client, token):
     r = client.get("/api/auth/me", headers=cf(token()))
     assert r.status_code == 401
     assert client.post("/api/_probe", headers={**cf(token()), **csrf(client)}).status_code == 401
-    assert auth_count("cloudflare", "invalid") >= before + 1
+    assert auth_count("cloudflare", "invalid") == before + 2
 
 
 def test_cf_unknown_kid_refreshes_jwks(client, jwks_calls, monkeypatch):
@@ -440,3 +445,188 @@ def test_password_change_invalidates_sessions(env, jwks_calls):
     with _make_client() as c2:
         c2.cookies.set("kino_session", cookie)
         assert c2.get("/api/auth/me").status_code == 401
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------
+
+
+def _parallel(n: int, fn) -> list:
+    barrier = threading.Barrier(n)
+    out: list = [None] * n
+
+    def run(i: int) -> None:
+        barrier.wait()
+        out[i] = fn()
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return out
+
+
+def test_concurrent_wrong_logins_respect_lockout(client):
+    headers = csrf(client)
+    body = {"username": "admin", "password": "wrong"}
+    codes = _parallel(20, lambda: client.post("/api/auth/login", json=body, headers=headers))
+    codes = [r.status_code for r in codes]
+    assert codes.count(401) <= 5
+    assert codes.count(401) + codes.count(429) == 20
+    assert login(client).status_code == 429
+
+
+def test_status_hides_setup_through_proxy(fresh):
+    assert fresh.get("/api/auth/status").json() == {"setup_required": True}
+    r = fresh.get("/api/auth/status", headers={"Cf-Ray": "abc"})
+    assert r.json() == {"setup_required": False}
+
+
+def _route_auth_map(app) -> dict[str, bool]:
+    """Effective path -> whether require_auth is in its dependant tree (router-level
+    dependencies included; FastAPI keeps those on the include context, not the route)."""
+    from fastapi.routing import iter_route_contexts
+
+    from kino.api.deps import require_auth
+
+    def calls(dependant) -> set:
+        found = {dependant.call}
+        for d in dependant.dependencies:
+            found |= calls(d)
+        return found
+
+    out: dict[str, bool] = {}
+    for ctx in iter_route_contexts(app.routes):
+        dependant = getattr(ctx, "dependant", None)
+        out[str(ctx.path)] = dependant is not None and require_auth in calls(dependant)
+    return out
+
+
+EXEMPT = {"/api/webhook/openwa", "/healthz", "/readyz", "/metrics"}
+
+
+def test_every_route_requires_auth_unless_exempt(env, jwks_calls):
+    from kino.api.app import create_app
+    from kino.api.deps import protected_router
+
+    app = create_app()
+    r = protected_router(prefix="/api/x")
+
+    @r.post("/y")
+    def y() -> None:
+        return None
+
+    app.include_router(r)
+    routes = _route_auth_map(app)
+    assert "/api/x/y" in routes and "/api/auth/me" in routes
+    unprotected = [
+        p
+        for p, ok in routes.items()
+        if not ok and p not in EXEMPT and not p.startswith("/api/auth/")
+    ]
+    assert unprotected == []
+    assert routes["/api/auth/me"] is True
+
+
+def test_protected_router_enforces_auth_and_csrf(env, jwks_calls):
+    from kino.api.app import create_app
+    from kino.api.deps import protected_router
+
+    app = create_app()
+    r = protected_router(prefix="/api/x")
+
+    @r.post("/y")
+    def y() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.include_router(r)
+    with TestClient(app) as c:
+        assert c.post("/api/x/y", headers=csrf(c)).status_code == 401
+        login(c)
+        c.cookies.delete("kino_csrf")
+        assert c.post("/api/x/y").status_code == 403
+        assert c.post("/api/x/y", headers=csrf(c)).status_code == 200
+
+
+def test_logout_revokes_copied_cookie(client):
+    login(client)
+    copied = client.cookies.get("kino_session")
+    r = client.post("/api/auth/logout", headers=csrf(client))
+    assert r.status_code == 204
+    deleted = [v for k, v in r.headers.multi_items() if k == "set-cookie"]
+    assert any(v.startswith("kino_csrf=") for v in deleted)
+    client.cookies.clear()
+    client.cookies.set("kino_session", copied)
+    assert client.get("/api/auth/me").status_code == 401
+    # a new login right away (same second) works again
+    client.cookies.clear()
+    assert login(client).status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+
+
+def test_unauthenticated_logout_does_not_revoke(env, jwks_calls):
+    with _make_client() as admin, _make_client() as stranger:
+        login(admin)
+        assert stranger.post("/api/auth/logout", headers=csrf(stranger)).status_code == 204
+        assert admin.get("/api/auth/me").status_code == 200
+
+
+def test_cf_401_detail_is_generic(client):
+    r = client.get("/api/auth/me", headers=cf(cf_token(aud="other-aud")))
+    assert r.json() == {"detail": "invalid Cloudflare Access token"}
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _claims(**over) -> dict:
+    now = int(time.time())
+    c = {"aud": [AUD], "iss": f"https://{TEAM}", "email": "parent@example.com", "iat": now}
+    c["exp"] = now + 600
+    c.update(over)
+    return {k: v for k, v in c.items() if v is not None}
+
+
+def _alg_none() -> str:
+    head = _b64(json.dumps({"alg": "none", "typ": "JWT", "kid": "k1"}).encode())
+    return f"{head}.{_b64(json.dumps(_claims()).encode())}."
+
+
+def _hs256_with_public_key() -> str:
+    pem = KEY.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    head = _b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "k1"}).encode())
+    signing_input = f"{head}.{_b64(json.dumps(_claims()).encode())}"
+    sig = hmac.new(pem, signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{_b64(sig)}"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        pytest.param(_alg_none, id="alg-none"),
+        pytest.param(_hs256_with_public_key, id="hs256-public-key-as-secret"),
+        pytest.param(lambda: jwt.encode(_claims(), KEY, algorithm="RS256"), id="no-kid"),
+        pytest.param(
+            lambda: jwt.encode(_claims(exp=None), KEY, algorithm="RS256", headers={"kid": "k1"}),
+            id="missing-exp",
+        ),
+    ],
+)
+def test_cf_forged_tokens_rejected(client, token):
+    assert client.get("/api/auth/me", headers=cf(token())).status_code == 401
+
+
+def test_concurrent_setup_only_one_wins(fresh):
+    headers = csrf(fresh)
+
+    def go(i: int):
+        return fresh.post(
+            "/api/auth/setup", json={"password": f"password-{i}-long"}, headers=headers
+        ).status_code
+
+    counter = iter(range(2))
+    codes = _parallel(2, lambda: go(next(counter)))
+    assert sorted(codes) == [200, 409]
