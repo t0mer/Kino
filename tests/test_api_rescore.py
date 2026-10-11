@@ -564,6 +564,16 @@ def test_flagged_review_survives_rescore(world, forwards):
     assert count(SavedPhoto) == 0  # A was not auto-saved as Noa behind the user's back
 
 
+def test_rescore_never_touches_burst_matches(world, forwards):
+    api = world["api"]
+    burst = seed_match(world["C"], world["itai"], "review", method="burst")
+    out = rescore(api)
+    assert out["protected"] == 1
+    [m] = matches(world["C"])
+    assert m.id == burst and m.method == "burst" and m.decision == "review"
+    assert flag(api, world["C"], world["noa"], "review").status_code == 409
+
+
 def test_flag_errors(world):
     api = world["api"]
     assert flag(api, 9999, world["noa"], "review").status_code == 404

@@ -277,10 +277,11 @@ class RescoreResult:
 
 def is_protected(m: Match, saved: set[tuple[int, int]], image_id: int) -> bool:
     """A match re-scoring must never change: decided by the user (including a Test page
-    "flag for review"), confirmed or rejected, or auto-saved with its photo still saved for
-    the kid."""
+    "flag for review"), confirmed or rejected, auto-saved with its photo still saved for the
+    kid, or found by burst propagation (M4; re-scoring only knows face matches)."""
     return (
         m.decided_by == "user"
+        or m.method == "burst"
         or m.decision in ("confirmed", "rejected")
         or (m.decision == "auto_saved" and (image_id, m.kid_id) in saved)
     )
