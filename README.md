@@ -183,7 +183,7 @@ Run `kino --help` or `kino <command> --help` for all options. In the container t
 ## Privacy and retention
 
 - Other children appear in group photos. Kino stores raw images, face crops and embeddings of every detected face in `/data` while it processes them. **Automatic cleanup (retention) is not implemented in M1**, so those files stay until you delete them; the `*_RETENTION_DAYS` settings do not act yet.
-- Saved photos keep the original image bytes; only EXIF is rewritten (date, group name as description, sender as artist). GPS data is removed by default (`KINO_STRIP_GPS`), and forwarded photos are these GPS-stripped saved copies.
+- Saved photos keep the original image bytes; only EXIF is rewritten (date, group name as description, sender as artist). GPS and other location-bearing metadata segments (Exif, XMP, IPTC, MPF, including any between scans or after the image end) are removed by default (`KINO_STRIP_GPS`), and forwarded photos are these stripped saved copies.
 - Folder names and dates use `KINO_TIMEZONE`.
 - No photo or embedding is sent anywhere except the saved photo forwarded to your chosen chat through OpenWA.
 - Logs do not include image bytes or embeddings.
