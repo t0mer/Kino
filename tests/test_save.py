@@ -439,13 +439,29 @@ def _save_out(tmp_path: Path, raw: bytes) -> bytes:
     return save_photo(src, kid, group, image, tmp_path / "p", timezone="UTC").read_bytes()
 
 
+def _markers(b: bytes) -> list[int]:
+    """Every marker outside entropy-coded data, in file order, up to the first EOI."""
+    out, i = [], 0
+    while i < len(b) - 1:
+        if b[i] != 0xFF or b[i + 1] in (0, 0xFF) or 0xD0 <= b[i + 1] <= 0xD7:
+            i += 1
+            continue
+        out.append(b[i + 1])
+        if b[i + 1] == 0xD9:
+            break
+        i += 2 if b[i + 1] == 0xD8 else 2 + int.from_bytes(b[i + 2 : i + 4], "big")
+    return out
+
+
 def _assert_clean(out: bytes, size: tuple[int, int]) -> None:
     with Image.open(io.BytesIO(out)) as im:
         im.load()
         assert im.size == size
-    assert out.endswith(b"\xff\xd9")
-    assert out.count(b"\xff\xd8") == 1  # no second SOI after the primary EOI
-    assert out.find(b"\xff\xd9") == len(out) - 2
+    marks = _markers(out)
+    assert marks.count(0xD8) == 1 and marks.count(0xD9) == 1 and marks[-1] == 0xD9
+    assert out.endswith(b"\xff\xd9")  # nothing after the primary EOI
+    assert not {0xFE, 0xED} & set(marks)
+    assert not {m for m in marks if 0xE3 <= m <= 0xEC or m == 0xEF}
     assert b"GPS" not in out
     assert out.count(b"Exif\x00\x00") == 1  # only the Kino block
     ex = piexif.load(out)
@@ -485,12 +501,34 @@ def test_trailing_garbage_after_eoi_stripped(tmp_path: Path) -> None:
     _assert_clean(out, (96, 80))
 
 
-def test_truncated_jpeg_falls_back_to_reencode(tmp_path: Path) -> None:
+def _gps_baseline() -> bytes:
     buf = io.BytesIO()
     noisy(96, 80).save(buf, "JPEG", quality=90, exif=_gps_exif_payload())
-    full = buf.getvalue()
-    # complete scan data but the EOI is cut off and junk with GPS follows: not walkable
-    raw = full[:-2] + b"GPS"
-    assert raw.find(b"\xff\xd9") < 0
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("cut", ["mid-scan", "missing-eoi"])
+def test_truncated_jpeg_falls_back_to_reencode(tmp_path: Path, cut: str) -> None:
+    full = _gps_baseline()
+    raw = full[: len(full) // 2] if cut == "mid-scan" else full[:-2]
+    assert b"\xff\xd9" not in raw[-2:]
     out = _save_out(tmp_path, raw)
     _assert_clean(out, (96, 80))
+
+
+def test_com_and_unknown_app_segments_stripped(tmp_path: Path) -> None:
+    junk = [
+        _seg(0xFE, b"lat=32.1,34.8"),
+        _seg(0xE3, b"Meta\x00GPSLatitude 32.1"),
+        _seg(0xEC, b"Ducky GPS"),
+    ]
+    raw = _prog_jpeg()
+    scans = _split_scans(raw)
+    at = raw.index(b"\xff\xdb")
+    raw = raw[:at] + b"".join(junk) + raw[at:]
+    scans = _split_scans(raw)
+    raw = raw[: scans[1]] + b"".join(junk) + raw[scans[1] :]
+    assert raw.count(b"GPS") == 4 and raw.count(b"lat=32.1") == 2
+    out = _save_out(tmp_path, raw)
+    _assert_clean(out, (96, 80))
+    assert b"lat=32.1" not in out
