@@ -62,7 +62,9 @@ def _start_session(request: Request, response: Response, user: str, stored_hash:
 @router.get("/status", response_model=StatusOut)
 def status(request: Request, response: Response) -> Any:
     ensure_csrf_cookie(request, response)
-    return {"setup_required": auth.setup_required(_settings(request))}
+    # Same rule as POST /setup: never offered through the tunnel/proxy.
+    required = not auth.from_proxy(request.headers) and auth.setup_required(_settings(request))
+    return {"setup_required": required}
 
 
 @router.get("/me", response_model=MeOut)
@@ -101,10 +103,19 @@ def login(body: LoginBody, request: Request, response: Response) -> Any:
 
 @router.post("/logout", status_code=204, dependencies=[Depends(require_csrf)])
 def logout(request: Request) -> Response:
+    """Ends the session everywhere: issued session cookies stop working (single admin).
+
+    Only a request carrying a valid local session can revoke, so an unauthenticated caller
+    cannot log the admin out."""
+    cookie = request.cookies.get(auth.SESSION_COOKIE)
+    if cookie and auth.read_session(request.app.state.secret_key, cookie, _settings(request)):
+        auth.revoke_sessions()
     response = Response(status_code=204)
+    secure = is_https(request)
     response.delete_cookie(
-        auth.SESSION_COOKIE, path="/", secure=is_https(request), httponly=True, samesite="lax"
+        auth.SESSION_COOKIE, path="/", secure=secure, httponly=True, samesite="lax"
     )
+    response.delete_cookie(auth.CSRF_COOKIE, path="/", secure=secure, samesite="lax")
     return response
 
 
@@ -112,7 +123,7 @@ def logout(request: Request) -> Response:
 def setup(body: SetupBody, request: Request, response: Response) -> Any:
     """One-time admin password for a fresh install, allowed only directly on the LAN."""
     settings = _settings(request)
-    if any(h in request.headers for h in auth.PROXY_HEADERS):
+    if auth.from_proxy(request.headers):
         raise HTTPException(403, "first-run setup is only allowed from the local network")
     if not auth.setup_required(settings) or not auth.store_first_password(body.password):
         raise HTTPException(409, "the admin password is already set")

@@ -20,6 +20,7 @@ import hmac
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -47,6 +48,7 @@ MIN_PASSWORD_LENGTH = 8
 
 K_PASSWORD_HASH = "auth.password_hash"
 K_SECRET_KEY = "auth.secret_key"
+K_SESSION_EPOCH = "auth.session_epoch"
 
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW = 15 * 60.0
@@ -156,8 +158,26 @@ def _serializer(secret: str) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt="kino-session")
 
 
+def session_epoch() -> int:
+    value = _get_setting(K_SESSION_EPOCH)
+    return value if isinstance(value, int) else 0
+
+
+def revoke_sessions() -> None:
+    """Invalidate every issued session cookie (logout). A counter rather than a "not before"
+    timestamp: itsdangerous timestamps have one-second resolution, which would either keep a
+    cookie issued just before logout or reject a login made in the same second after it."""
+    with get_session() as s:
+        row = s.get(Setting, K_SESSION_EPOCH)
+        if row is None:
+            s.add(Setting(key=K_SESSION_EPOCH, value=1))
+        else:
+            row.value = (row.value if isinstance(row.value, int) else 0) + 1
+
+
 def make_session(secret: str, user: str, stored_hash: str) -> str:
-    return _serializer(secret).dumps({"u": user, "h": _hash_fingerprint(stored_hash)})
+    payload = {"u": user, "h": _hash_fingerprint(stored_hash), "e": session_epoch()}
+    return _serializer(secret).dumps(payload)
 
 
 def read_session(secret: str, cookie: str, settings: Settings) -> AuthInfo | None:
@@ -173,7 +193,14 @@ def read_session(secret: str, cookie: str, settings: Settings) -> AuthInfo | Non
         return None
     if not hmac.compare_digest(str(data.get("h", "")), _hash_fingerprint(stored)):
         return None
+    if data.get("e") != session_epoch():
+        return None  # revoked by a logout
     return AuthInfo(method="local", user=user)
+
+
+def from_proxy(headers: Mapping[str, str]) -> bool:
+    """True when the request came through a proxy/tunnel (first-run setup is LAN-only)."""
+    return any(h in headers for h in PROXY_HEADERS)
 
 
 def new_csrf_token() -> str:
