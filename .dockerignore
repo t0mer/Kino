@@ -21,3 +21,6 @@ CLAUDE.md
 /data
 *.db
 *.onnx
+web/node_modules
+web/dist
+web/.env*
