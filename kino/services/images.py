@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from kino.config import Settings
 from kino.db.models import Face, Forward, Group, Image, Kid, Match, SavedPhoto
+from kino.openwa.client import mask_path
 from kino.pipeline.quality import tier_for
 from kino.services import NotFoundError
 from kino.services.files import existing_file
@@ -19,11 +20,30 @@ MAX_ERROR = 300
 _PATH = re.compile(r"(?:[A-Za-z]:)?[/\\][^\s'\"]+")
 
 
+_JID = re.compile(r"[\w.+-]+@(?:c|g)\.us\b")
+_DIGITS = re.compile(r"\b\d{7,}\b")
+
+
+def _mask_digits(m: re.Match[str]) -> str:
+    d = m.group(0)
+    return f"{d[:4]}****{d[-3:]}" if len(d) >= 9 else "****"
+
+
+def mask_ids(text: str | None) -> str | None:
+    """Phone numbers and WhatsApp JIDs masked, e.g. 9725****123@c.us."""
+    if not text:
+        return text
+    text = _JID.sub(
+        lambda m: mask_path(m.group(0)) if re.search(r"\d", m.group(0)) else "****@c.us", text
+    )
+    return _DIGITS.sub(_mask_digits, text)
+
+
 def sanitize_error(text: str | None) -> str | None:
-    """The error with filesystem paths masked, capped to MAX_ERROR characters."""
+    """The error with filesystem paths and phone numbers/JIDs masked, capped to MAX_ERROR."""
     if not text:
         return None
-    return _PATH.sub("<path>", text)[:MAX_ERROR]
+    return mask_ids(_PATH.sub("<path>", text))[:MAX_ERROR]  # type: ignore[index]
 
 
 def _has_file(image: Image, saved: dict[int, list[str]], settings: Settings) -> bool:
@@ -153,6 +173,7 @@ __all__ = [
     "ImageDetail",
     "ImageRow",
     "get_image",
+    "mask_ids",
     "image_detail",
     "list_images",
     "sanitize_error",

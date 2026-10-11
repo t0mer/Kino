@@ -23,11 +23,20 @@ from kino.config import Settings
 from kino.db.session import get_session
 from kino.services import images as svc
 from kino.services import review as review_svc
-from kino.services.images import sanitize_error
+from kino.services.images import mask_ids, sanitize_error
 
 router = protected_router(tags=["images"])
 
-_PRIVATE = {"Cache-Control": "private", "Content-Disposition": "inline"}
+_PRIVATE = {
+    "Cache-Control": "private",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+}
+_INLINE = {**_PRIVATE, "Content-Disposition": "inline"}
+_ATTACHMENT = {**_PRIVATE, "Content-Disposition": "attachment"}
+_SAFE_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}
+)
 _PHONEISH = re.compile(r"^[\d+\s().-]{6,}$|@")
 
 
@@ -35,7 +44,7 @@ def _sender(name: str | None) -> str | None:
     """The sender's display name; anything that looks like a phone number or JID is hidden."""
     if not name or _PHONEISH.search(name.strip()):
         return None
-    return name
+    return mask_ids(name)
 
 
 def _media_type(path: Path) -> str:
@@ -66,7 +75,7 @@ def list_images(
             ImageListItem(
                 id=r.image.id,
                 group_id=r.image.group_id,
-                group_name=r.group_name,
+                group_name=mask_ids(r.group_name),
                 sender=_sender(r.image.sender_name),
                 sent_at=r.image.sent_at,
                 received_at=r.image.received_at,
@@ -91,7 +100,7 @@ def image_detail(request: Request, image_id: int) -> ImageDetailOut:
         return ImageDetailOut(
             id=im.id,
             group_id=im.group_id,
-            group_name=d.group_name,
+            group_name=mask_ids(d.group_name),
             sender=_sender(im.sender_name),
             sent_at=im.sent_at,
             received_at=im.received_at,
@@ -154,11 +163,13 @@ def image_file(request: Request, image_id: int) -> Response:
         path = review_svc.image_file(s, image, _settings(request))
     if path is None:
         return JSONResponse({"detail": "original no longer stored"}, 404, headers=_PRIVATE)
-    return FileResponse(path, media_type=_media_type(path), headers=_PRIVATE)
+    media = _media_type(path)
+    headers = _INLINE if media in _SAFE_TYPES else _ATTACHMENT
+    return FileResponse(path, media_type=media, headers=headers)
 
 
 @router.get("/api/crops/{face_id}")
 def face_crop(request: Request, face_id: int) -> FileResponse:
     with get_session() as s:
         path = review_svc.face_crop(s, _settings(request), face_id)
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private"})
+    return FileResponse(path, media_type="image/jpeg", headers=_INLINE)

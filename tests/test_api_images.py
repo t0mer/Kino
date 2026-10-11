@@ -67,6 +67,54 @@ def test_file_serves_raw(world):
     assert r.content[:2] == b"\xff\xd8"
 
 
+def test_headers_nosniff_and_csp(world):
+    for path in (f"/api/images/{world['img']}/file", f"/api/crops/{world['face']}"):
+        r = world["api"].get(path)
+        assert r.headers["x-content-type-options"] == "nosniff", path
+        assert "sandbox" in r.headers["content-security-policy"], path
+        assert r.headers["content-disposition"].startswith("inline"), path
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"<html><script>alert(1)</script></html>", b"<svg xmlns='http://www.w3.org/2000/svg'/>"],
+)
+def test_html_or_svg_bytes_never_served_as_active_type(world, body):
+    p = data_dir() / "raw" / "evil.jpg"
+    p.write_bytes(body)
+    set_raw(world["img"], str(p))
+    r = world["api"].get(f"/api/images/{world['img']}/file")
+    ctype = r.headers["content-type"]
+    assert "html" not in ctype and "svg" not in ctype
+    assert ctype.startswith("application/octet-stream")
+    assert r.headers["content-disposition"].startswith("attachment")
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_errors_sender_group_mask_phone_numbers(world):
+    jid = "972501234567@c.us"
+    with dbs.get_session() as s:
+        im = s.get(Image, world["img"])
+        im.error = f"send to {jid} failed, also 9725012345 and 1234567"
+        im.sender_name = "Dana 972501234567"
+        s.add(
+            Forward(
+                image_id=world["img"],
+                dest_chat_id=jid,
+                kid_ids=[],
+                status="failed",
+                last_error=f"bad chat {jid}",
+            )
+        )
+    api = world["api"]
+    for text in (api.get("/api/images").text, api.get(f"/api/images/{world['img']}").text):
+        assert "972501234567" not in text and "9725012345" not in text and "1234567" not in text
+    d = api.get(f"/api/images/{world['img']}").json()
+    assert "9725****567@c.us" in d["error"]
+    assert "9725****567@c.us" in d["forwards"][0]["last_error"]
+    assert "****" in d["sender"]
+
+
 def test_file_prefers_saved_copy(world):
     p = photos_dir() / "noa" / "saved.jpg"
     p.parent.mkdir(parents=True)
@@ -167,9 +215,6 @@ def test_list_pagination_filters_and_order(world):
 
 
 def test_list_has_no_n_plus_one(world):
-    for i in range(2, 12):
-        im = seed_image(world["gid"], msg=f"m{i}")
-        seed_match(seed_face(im, unit(0)), world["noa"])
     n = 0
 
     def count(*_a, **_k):
@@ -177,13 +222,27 @@ def test_list_has_no_n_plus_one(world):
         n += 1
 
     eng = dbs.get_engine()
-    event.listen(eng, "before_cursor_execute", count)
-    try:
-        r = world["api"].get("/api/images")
-    finally:
-        event.remove(eng, "before_cursor_execute", count)
+
+    def run():
+        nonlocal n
+        n = 0
+        event.listen(eng, "before_cursor_execute", count)
+        try:
+            return world["api"].get("/api/images")
+        finally:
+            event.remove(eng, "before_cursor_execute", count)
+
+    for i in range(2, 4):
+        im = seed_image(world["gid"], msg=f"m{i}")
+        seed_match(seed_face(im, unit(0)), world["noa"])
+    assert len(run().json()["items"]) == 3
+    small = n
+    for i in range(4, 12):
+        im = seed_image(world["gid"], msg=f"m{i}")
+        seed_match(seed_face(im, unit(0)), world["noa"])
+    r = run()
     assert len(r.json()["items"]) == 11
-    assert n <= 12  # fixed number of queries (auth/session overhead included)
+    assert n == small  # same number of queries for 3 rows and 11 rows
 
 
 # --- detail -----------------------------------------------------------------------------
