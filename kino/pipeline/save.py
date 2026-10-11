@@ -5,9 +5,10 @@ Policy:
   before SOS are rewritten (:func:`rewrite_jpeg_metadata`): EVERY ``Exif`` APP1
   block is removed (wherever it sits) and exactly one new one is inserted after a
   leading JFIF APP0. Other segments (JFIF, ICC APP2, DQT, SOF, ...) and the scans
-  stay byte-identical. With ``strip_gps`` the scans are walked too: location
-  segments between scans and everything after the primary EOI (MPF secondary
-  images, trailers) are dropped; a JPEG that cannot be walked is re-encoded.
+  stay byte-identical. With ``strip_gps`` the scans are walked too: everything
+  outside a whitelist (JFIF, ICC, Adobe, structural segments) is dropped wherever it
+  sits, and so is everything after the primary EOI (MPF secondary images, trailers);
+  a JPEG that cannot be walked is re-encoded.
 * PNG/WebP/HEIC input is the ONLY case where pixels are re-encoded: converted to
   JPEG at quality 95 with EXIF orientation applied to the pixels.
 * Dates use ``image.sent_at`` converted to the configured local time zone
@@ -48,7 +49,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import piexif
-from PIL import Image, ImageOps
+from PIL import Image, ImageFile, ImageOps
 
 from kino.slug import slugify
 
@@ -220,8 +221,8 @@ def _write_atomic(dst: Path, write: Any, finalize: bool = True) -> None:
 
 
 _EXIF_HDR = b"Exif\x00\x00"
-_MPF_HDR = b"MPF\x00"
-_APP0, _APP1, _APP2, _APP13, _SOS, _EOI = 0xE0, 0xE1, 0xE2, 0xED, 0xDA, 0xD9
+_JFIF_HDR, _ICC_HDR, _ADOBE_HDR = b"JFIF\x00", b"ICC_PROFILE\x00", b"Adobe"
+_APP0, _APP1, _APP2, _APP14, _SOS, _EOI = 0xE0, 0xE1, 0xE2, 0xEE, 0xDA, 0xD9
 _MAX_SEGMENT_PAYLOAD = 65533
 
 
@@ -251,9 +252,17 @@ def _jpeg_segments(data: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
         i += 2 + n
 
 
-def _is_location_segment(marker: int, payload: bytes) -> bool:
-    """Segments that can carry location: Exif/XMP APP1, Photoshop/IPTC APP13, MPF APP2."""
-    return marker in (_APP1, _APP13) or (marker == _APP2 and payload.startswith(_MPF_HDR))
+def _keep_segment(marker: int, payload: bytes) -> bool:
+    """Whitelist for strip mode: JFIF APP0, ICC APP2, Adobe APP14 and the structural
+    segments (SOFn, DHT, DAC, DQT, DRI, DNL, SOS). Every other APPn and COM can carry
+    location, so it is dropped."""
+    if marker == _APP0:
+        return payload.startswith(_JFIF_HDR)
+    if marker == _APP2:
+        return payload.startswith(_ICC_HDR)
+    if marker == _APP14:
+        return payload.startswith(_ADOBE_HDR)
+    return 0xC0 <= marker <= 0xCF or marker in (0xDA, 0xDB, 0xDC, 0xDD)
 
 
 def _strip_scans(tail: bytes) -> bytes:
@@ -271,15 +280,14 @@ def _strip_scans(tail: bytes) -> bytes:
         marker = tail[i + 1]
         if marker == _EOI:
             return bytes(out) + b"\xff\xd9"
-        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # standalone markers carry no length
-            out += tail[i : i + 2]
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # standalone, no length: dropped
             i += 2
             continue
         n = int.from_bytes(tail[i + 2 : i + 4], "big")
         if n < 2 or i + 2 + n > len(tail):
             raise ValueError("malformed JPEG segment length")
         end = i + 2 + n
-        if not _is_location_segment(marker, tail[i + 4 : end]):
+        if _keep_segment(marker, tail[i + 4 : end]):
             out += tail[i:end]
         i = end
         if marker == _SOS:  # entropy-coded data: skip stuffed 0xFF00 and RSTn
@@ -298,10 +306,16 @@ def _strip_scans(tail: bytes) -> bytes:
 
 def _reencode_without_metadata(data: bytes) -> bytes:
     """Last resort for JPEGs that cannot be walked: decode and re-encode, which drops
-    every metadata segment (orientation is applied to the pixels first)."""
-    with Image.open(io.BytesIO(data)) as im:
-        im.load()
-        rgb = ImageOps.exif_transpose(im).convert("RGB")
+    every metadata segment (orientation is applied to the pixels first). A truncated
+    image is decoded as far as it goes rather than lost."""
+    previous = ImageFile.LOAD_TRUNCATED_IMAGES
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im.load()
+            rgb = ImageOps.exif_transpose(im).convert("RGB")
+    finally:
+        ImageFile.LOAD_TRUNCATED_IMAGES = previous
     buf = io.BytesIO()
     rgb.save(buf, "JPEG", quality=95)
     return buf.getvalue()
@@ -320,7 +334,7 @@ def rewrite_jpeg_metadata(
         try:
             segs, tail = _jpeg_segments(data)
             tail = _strip_scans(tail)
-        except ValueError:
+        except (ValueError, OSError):
             data = _reencode_without_metadata(data)
             segs, tail = _jpeg_segments(data)
             tail = _strip_scans(tail)
@@ -334,7 +348,7 @@ def rewrite_jpeg_metadata(
             if existing is None:
                 existing = payload
             continue
-        if strip_gps and _is_location_segment(marker, payload):
+        if strip_gps and not _keep_segment(marker, payload):
             continue
         kept.append((marker, seg))
     exif: bytes = build_exif(existing)
