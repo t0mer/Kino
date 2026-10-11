@@ -23,4 +23,8 @@ class InvalidError(ServiceError):
     """An input value is out of range or malformed."""
 
 
-__all__ = ["ConflictError", "InvalidError", "NotFoundError", "ServiceError"]
+class GoneError(ServiceError):
+    """The referenced item existed but has expired (e.g. an enrollment upload past its TTL)."""
+
+
+__all__ = ["ConflictError", "GoneError", "InvalidError", "NotFoundError", "ServiceError"]

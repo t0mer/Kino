@@ -16,19 +16,23 @@ from sqlalchemy.orm import Session
 from kino.config import Settings
 from kino.db.models import Kid, ReferenceFace
 from kino.db.session import blob_to_embedding, embedding_to_blob
-from kino.pipeline.detect import Detection, Detector, detect_image
+from kino.pipeline.detect import Detection, Detector
 from kino.pipeline.embed import Embedder, align_face, make_crop
 from kino.pipeline.prefilter import load_for_pipeline
-from kino.pipeline.quality import Tier, face_quality, tier_for
+from kino.services.enroll_web import (
+    DUPLICATE_COSINE,
+    MIN_QUALITY,
+    RECOMMENDED_REFS,
+    AnalyzedFace,
+    analyze_faces,
+    exif_datetime,
+)
 from kino.tasks import bump_gallery_version
 
 EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".heic"})
-MIN_QUALITY = 0.4
 DOMINANCE = 1.5  # the chosen face must have this many times the area of any other face
-DUPLICATE_COSINE = 0.98
-RECOMMENDED_REFS = 10
-_EXIF_DATETIME_ORIGINAL = 36867
-_EXIF_IFD = 0x8769
+
+__all__ = ["DUPLICATE_COSINE", "MIN_QUALITY", "RECOMMENDED_REFS", "enroll_directory"]
 
 
 @dataclass
@@ -46,9 +50,9 @@ def photo_date(path: Path) -> datetime:
     """EXIF DateTimeOriginal (naive, as written by the camera), else the file mtime in UTC."""
     try:
         with Image.open(path) as im:
-            raw = im.getexif().get_ifd(_EXIF_IFD).get(_EXIF_DATETIME_ORIGINAL)
-        if raw:
-            return datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S")
+            taken = exif_datetime(im)
+        if taken is not None:
+            return taken
     except (OSError, ValueError, SyntaxError):
         pass
     return datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None)
@@ -59,20 +63,16 @@ def _area(d: Detection) -> float:
     return max(x2 - x1, 0.0) * max(y2 - y1, 0.0)
 
 
-def _pick_face(dets: list[Detection], img: np.ndarray) -> tuple[Detection | None, float, str]:
-    """The one usable, clearly dominant face of a photo, or (None, 0, reason)."""
-    usable: list[tuple[Detection, float]] = []
-    for d in dets:
-        fq = face_quality(d, align_face(img, d))
-        if tier_for(fq.size_px) in (Tier.L, Tier.M) and fq.quality >= MIN_QUALITY:
-            usable.append((d, fq.quality))
+def _pick_face(faces: list[AnalyzedFace]) -> tuple[AnalyzedFace | None, str]:
+    """The one usable, clearly dominant face of a photo, or (None, reason)."""
+    usable = [f for f in faces if f.reason is None]
     if not usable:
-        return None, 0.0, "no usable face (too small, blurry or off-angle)"
-    best, quality = max(usable, key=lambda u: _area(u[0]))
-    for other in dets:
-        if other is not best and _area(best) < DOMINANCE * _area(other):
-            return None, 0.0, "several comparable faces; use a photo of this kid alone"
-    return best, quality, ""
+        return None, "no usable face (too small, blurry or off-angle)"
+    best = max(usable, key=lambda f: _area(f.det))
+    for other in faces:
+        if other is not best and _area(best.det) < DOMINANCE * _area(other.det):
+            return None, "several comparable faces; use a photo of this kid alone"
+    return best, ""
 
 
 def _is_duplicate(emb: np.ndarray, existing: list[np.ndarray]) -> bool:
@@ -126,9 +126,10 @@ def _enroll_one(
     if loaded.bgr is None:
         return FileResult(path.name, "skipped", loaded.skip_reason or "skipped")
     img = loaded.bgr
-    det, quality, reason = _pick_face(detect_image(detector, img, settings), img)
-    if det is None:
+    face, reason = _pick_face(analyze_faces(img, detector, embedder, settings, embed=False))
+    if face is None:
         return FileResult(path.name, "skipped", reason)
+    det, quality = face.det, face.fq.quality
     emb = embedder.embed(align_face(img, det))
     if _is_duplicate(emb, existing):
         return FileResult(path.name, "duplicate", "already enrolled")
@@ -144,6 +145,7 @@ def _enroll_one(
             quality=quality,
             photo_date=photo_date(path),
             status="active",
+            yaw=face.fq.yaw,
         )
     )
     existing.append(emb)

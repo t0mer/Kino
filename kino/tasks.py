@@ -753,3 +753,22 @@ def sweep_images() -> None:
         sweep_stale_images()
     except Exception as e:
         logger.error("image sweeper failed: {}", type(e).__name__)
+
+
+def purge_expired_temp_faces() -> int:
+    """Delete enrollment temp faces past their 1 h TTL, with their crops."""
+    from kino.services.enroll_web import purge_temp_faces
+
+    with get_session() as s:
+        n = purge_temp_faces(s, get_settings())
+    if n:
+        logger.info("purged {} expired upload face(s)", n)
+    return n
+
+
+@huey.periodic_task(crontab(minute="*/10"))  # type: ignore[untyped-decorator]
+def purge_temp_faces_task() -> None:
+    try:
+        purge_expired_temp_faces()
+    except Exception as e:
+        logger.error("temp face purge failed: {}", type(e).__name__)

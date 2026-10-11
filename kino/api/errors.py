@@ -9,7 +9,13 @@ from loguru import logger
 from kino.forward import ForwardError
 from kino.openwa.client import OpenWAError
 from kino.openwa.register import RegisterError
-from kino.services import ConflictError, InvalidError, NotFoundError, ServiceError
+from kino.services import (
+    ConflictError,
+    GoneError,
+    InvalidError,
+    NotFoundError,
+    ServiceError,
+)
 
 
 class OpenWANotConfigured(Exception):
@@ -20,6 +26,7 @@ _STATUS: list[tuple[type[Exception], int]] = [
     (NotFoundError, 404),
     (ConflictError, 409),
     (InvalidError, 422),
+    (GoneError, 410),
     (ServiceError, 400),
     (ForwardError, 409),  # destination guard (watched group <-> forward destination)
     (OpenWANotConfigured, 503),
