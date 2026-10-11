@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from huey import crontab
@@ -298,3 +298,98 @@ class StatsOut(BaseModel):
     forwards: dict[str, int]
     forward_queue_depth: int
     kids: list[KidStat]
+
+
+# --- enrollment: uploads, references, coverage --------------------------------------------
+
+TempFaceId = Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class BBox(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class UploadFaceOut(BaseModel):
+    temp_face_id: str
+    bbox: BBox
+    quality: float
+    tier: str
+    selectable: bool
+    reason: str | None  # "too small" | "too blurry" | "profile too extreme"
+    crop_url: str
+
+
+class UploadOut(BaseModel):
+    upload_id: str
+    filename: str
+    width: int | None
+    height: int | None
+    photo_date: datetime | None
+    faces: list[UploadFaceOut]
+    error: str | None = None
+    status: int = 200  # per-file outcome: 200, or 413/415/422 for a rejected file
+
+
+class ReferencesIn(In):
+    temp_face_ids: list[TempFaceId] = Field(default_factory=list, max_length=200)
+    face_ids: list[int] = Field(default_factory=list, max_length=200)
+    source: Literal["upload", "cluster", "review"] = "upload"
+    photo_date: datetime | None = None
+
+    @model_validator(mode="after")
+    def _some(self) -> ReferencesIn:
+        if not self.temp_face_ids and not self.face_ids:
+            raise ValueError("pick at least one face (temp_face_ids or face_ids)")
+        return self
+
+
+class ReferenceOut(BaseModel):
+    id: int
+    kid_id: int
+    face_id: int | None
+    source: str
+    status: str
+    quality: float | None
+    photo_date: datetime | None
+    added_at: datetime
+    weight: float
+    yaw: float | None
+    crop_url: str | None
+
+
+class ReferencesAdded(BaseModel):
+    created: list[ReferenceOut]
+    duplicates: int
+
+
+class ReferenceUpdate(In):
+    status: Literal["active", "retired"] | None = None
+    kid_id: int | None = None
+    photo_date: datetime | None = None
+
+
+class NegativeOut(BaseModel):
+    id: int
+    kid_id: int
+    source_face_id: int | None
+    added_at: datetime
+
+
+class CoverageOut(BaseModel):
+    kid_id: int
+    count: int
+    recommended: int
+    yaw_known: int
+    yaw_min: float | None
+    yaw_max: float | None
+    left: int
+    frontal: int
+    right: int
+    dated: int
+    older_than_year: int
+    oldest: datetime | None
+    newest: datetime | None
+    hints: list[str]
