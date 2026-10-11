@@ -37,7 +37,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     run_migrations()
     kino_metrics.setup(settings.metrics_path)
 
-    app = FastAPI(title="Kino", version=kino.__version__, docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Kino", version=kino.__version__, docs_url=None, redoc_url=None, openapi_url=None
+    )
     app.state.settings = settings
     app.state.openwa = _make_client(settings)
     app.state.secret_key = auth.load_secret_key(settings)

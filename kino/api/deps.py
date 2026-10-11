@@ -6,13 +6,16 @@ Routers protect routes with ``Depends(require_auth)`` and, for state-changing me
 
 from __future__ import annotations
 
-from fastapi import HTTPException, Request, Response
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from loguru import logger
 
 from kino.api import auth
 from kino.api.auth import AuthInfo
 from kino.config import Settings
 
-__all__ = ["AuthInfo", "get_auth", "require_auth", "require_csrf"]
+__all__ = ["AuthInfo", "get_auth", "protected_router", "require_auth", "require_csrf"]
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -35,7 +38,8 @@ def get_auth(request: Request) -> AuthInfo | None:
             info = auth.verify_cf_jwt(settings, token)
         except auth.AuthError as e:
             auth.record("cloudflare", "invalid")
-            raise HTTPException(401, f"Cloudflare Access: {e}") from None
+            logger.debug("Cloudflare Access token rejected: {}", e)
+            raise HTTPException(401, "invalid Cloudflare Access token") from None
         auth.record("cloudflare", "ok")
         return info
     cookie = request.cookies.get(auth.SESSION_COOKIE)
@@ -81,3 +85,10 @@ def ensure_csrf_cookie(request: Request, response: Response) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def protected_router(**kwargs: Any) -> APIRouter:
+    """An APIRouter whose every route requires authentication and, for state-changing
+    methods, the CSRF token. Use it for every router outside ``/api/auth`` and the webhook."""
+    deps = [Depends(require_auth), Depends(require_csrf), *kwargs.pop("dependencies", [])]
+    return APIRouter(dependencies=deps, **kwargs)
