@@ -393,3 +393,103 @@ class CoverageOut(BaseModel):
     oldest: datetime | None
     newest: datetime | None
     hints: list[str]
+
+
+# --- review queue and saved photos ----------------------------------------------------------
+
+
+class NearRefOut(BaseModel):
+    reference_id: int
+    similarity: float
+    crop_url: str | None
+
+
+class ReviewItemOut(BaseModel):
+    match_id: int
+    face_id: int
+    image_id: int
+    kid_id: int
+    kid_name: str
+    score: float
+    margin: float | None
+    tier: str
+    method: str
+    group_id: int | None
+    group_name: str | None
+    sent_at: datetime | None
+    bbox: BBox
+    crop_url: str | None
+    image_url: str | None  # R4: None when neither a saved copy nor the raw file exists
+    nearest_refs: list[NearRefOut]
+
+
+class ReviewPage(BaseModel):
+    items: list[ReviewItemOut]
+    next_cursor: int | None
+
+
+class ReviewCount(BaseModel):
+    total: int
+    by_kid: dict[int, int]
+
+
+class ReviewActionIn(In):
+    action: Literal["confirm", "reject", "someone_else", "reassign"]
+    kid_id: int | None = None
+
+    @model_validator(mode="after")
+    def _kid(self) -> ReviewActionIn:
+        if (self.action == "reassign") != (self.kid_id is not None):
+            raise ValueError("kid_id is required for reassign and only allowed there")
+        return self
+
+
+class ReviewResult(BaseModel):
+    match_id: int
+    decision: str
+    kid_id: int
+    changed: bool  # False: the same action had already been applied (idempotent repeat)
+    saved_photo_id: int | None = None
+    reference_ids: list[int] = Field(default_factory=list)
+    negative_id: int | None = None
+    forward_ids: list[int] = Field(default_factory=list)
+
+
+class ReviewBulkIn(In):
+    match_ids: list[int] = Field(min_length=1, max_length=200)
+    action: Literal["confirm", "reject"]
+
+
+class ReviewBulkItem(BaseModel):
+    match_id: int
+    status: int  # HTTP-like per-item status: 200 ok, 404/409/422/502 on failure
+    detail: str | None = None
+    result: ReviewResult | None = None
+
+
+class ReviewBulkOut(BaseModel):
+    results: list[ReviewBulkItem]
+
+
+class PhotoOut(BaseModel):
+    id: int
+    image_id: int
+    kid_id: int
+    kid_name: str
+    group_id: int | None
+    group_name: str | None
+    sent_at: datetime | None
+    saved_at: datetime
+    file_url: str
+
+
+class PhotoPage(BaseModel):
+    items: list[PhotoOut]
+    next_cursor: int | None
+
+
+class PhotoRemoved(BaseModel):
+    id: int
+    removed_files: int
+    cancelled_forwards: int
+    rejected_matches: int
