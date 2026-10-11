@@ -38,7 +38,7 @@ from kino.config import Settings, get_settings
 from kino.db.models import Face, Group, Image, Kid, Match, ReferenceFace, SavedPhoto, Setting
 from kino.db.session import embedding_to_blob, get_session
 from kino.pipeline import save as save_mod
-from kino.pipeline.decide import Decision, Thresholds, decide
+from kino.pipeline.decide import Decision, Thresholds, decide, one_face_per_kid
 from kino.pipeline.detect import Detector, detect_image
 from kino.pipeline.embed import Embedder, align_face, make_crop, should_embed
 from kino.pipeline.matcher import Matcher
@@ -259,23 +259,13 @@ def bump_gallery_version(s: Session) -> None:
 
 
 def _one_face_per_kid(decided: list[tuple[_FaceWork, Decision]], image_id: int) -> None:
-    """A kid appears at most once per photo: per kid, only the highest-scoring face keeps its
-    auto_save/review decision; every other auto_save for that kid is demoted to review (a
-    lookalike, sibling or classmate must never be saved or enrolled as the kid). Drops stay."""
-    top: dict[int, tuple[_FaceWork, Decision]] = {}
-    for w, dec in decided:
-        if dec.action == "drop" or dec.kid_id is None:
-            continue
-        cur = top.get(dec.kid_id)
-        if cur is None or dec.score > cur[1].score:
-            top[dec.kid_id] = (w, dec)
-    for w, dec in decided:
-        if dec.kid_id is None or dec.action == "drop" or top[dec.kid_id][0] is w:
-            continue
-        if dec.action == "auto_save":
-            dec.action = "review"
-            dec.reason = "kid already matched by a higher-scoring face in this photo"
-            logger.info("image {}: face demoted to review ({})", image_id, dec.reason)
+    """See :func:`kino.pipeline.decide.one_face_per_kid`."""
+    for _ in one_face_per_kid(decided):
+        logger.info(
+            "image {}: face demoted to review (kid already matched by a higher-scoring face "
+            "in this photo)",
+            image_id,
+        )
 
 
 def _auto_enrich(s: Session, image: Image, by_kid: dict[int, _FaceWork], now: datetime) -> bool:
@@ -320,7 +310,7 @@ def _auto_enrich(s: Session, image: Image, by_kid: dict[int, _FaceWork], now: da
     return changed
 
 
-def _upsert_saved(s: Session, image_id: int, kid_id: int, path: Path) -> None:
+def upsert_saved(s: Session, image_id: int, kid_id: int, path: Path) -> None:
     row = s.scalar(
         select(SavedPhoto).where(SavedPhoto.image_id == image_id, SavedPhoto.kid_id == kid_id)
     )
@@ -482,7 +472,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                             continue
                         run.created_photos[p] = (ident.st_dev, ident.st_ino)
                 for kid_id, path in paths.items():
-                    _upsert_saved(s, image_id, kid_id, path)
+                    upsert_saved(s, image_id, kid_id, path)
                 out.saved_any = True
             with run.step("forward"):
                 rows = fwd.plan_forwards(s, image, kids, paths, group)
@@ -502,7 +492,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
         return out
 
 
-def _cleanup_raw(image_id: int) -> None:
+def cleanup_raw(image_id: int) -> None:
     """Delete the raw file once every matched kid is saved and nothing is pending review.
     Called only after a successful commit. Pending forwards do not keep it: they send the
     saved (EXIF-rewritten, GPS-stripped) file, never the raw one."""
@@ -652,7 +642,7 @@ def run_pipeline(image_id: int) -> str:
             logger.error("enqueue of forward {} failed: {}", fid, type(e).__name__)
     if outcome.saved_any:
         try:
-            _cleanup_raw(image_id)
+            cleanup_raw(image_id)
         except Exception as e:
             logger.warning("raw cleanup for image {} failed: {}", image_id, type(e).__name__)
     logger.info(
@@ -753,3 +743,22 @@ def sweep_images() -> None:
         sweep_stale_images()
     except Exception as e:
         logger.error("image sweeper failed: {}", type(e).__name__)
+
+
+def purge_expired_temp_faces() -> int:
+    """Delete enrollment temp faces past their 1 h TTL, with their crops."""
+    from kino.services.enroll_web import purge_temp_faces
+
+    with get_session() as s:
+        n = purge_temp_faces(s, get_settings())
+    if n:
+        logger.info("purged {} expired upload face(s)", n)
+    return n
+
+
+@huey.periodic_task(crontab(minute="*/10"))  # type: ignore[untyped-decorator]
+def purge_temp_faces_task() -> None:
+    try:
+        purge_expired_temp_faces()
+    except Exception as e:
+        logger.error("temp face purge failed: {}", type(e).__name__)

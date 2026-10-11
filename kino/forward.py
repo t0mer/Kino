@@ -52,12 +52,12 @@ class ForwardConfig(BaseModel):
     include_review_confirmed: bool = True
 
 
-def _get(session: Session, key: str, default: Any) -> Any:
+def get_setting(session: Session, key: str, default: Any) -> Any:
     row = session.get(Setting, key)
     return default if row is None or row.value is None else row.value
 
 
-def _put(session: Session, key: str, value: Any) -> None:
+def put_setting(session: Session, key: str, value: Any) -> None:
     row = session.get(Setting, key)
     if row is None:
         session.add(Setting(key=key, value=value))
@@ -66,7 +66,7 @@ def _put(session: Session, key: str, value: Any) -> None:
 
 
 def get_forward_config(session: Session) -> ForwardConfig:
-    raw_map = _get(session, K_PER_KID, {})
+    raw_map = get_setting(session, K_PER_KID, {})
     per_kid: dict[int, str] = {}
     if isinstance(raw_map, dict):
         for k, v in raw_map.items():
@@ -75,14 +75,14 @@ def get_forward_config(session: Session) -> ForwardConfig:
                     per_kid[int(k)] = str(v)
             except (TypeError, ValueError):
                 continue
-    default = _get(session, K_DEFAULT, None)
-    template = _get(session, K_TEMPLATE, DEFAULT_CAPTION)
+    default = get_setting(session, K_DEFAULT, None)
+    template = get_setting(session, K_TEMPLATE, DEFAULT_CAPTION)
     return ForwardConfig(
-        enabled=bool(_get(session, K_ENABLED, False)),
+        enabled=bool(get_setting(session, K_ENABLED, False)),
         default_chat_id=str(default) if default else None,
         per_kid=per_kid,
         caption_template=template if isinstance(template, str) and template else DEFAULT_CAPTION,
-        include_review_confirmed=bool(_get(session, K_REVIEW, True)),
+        include_review_confirmed=bool(get_setting(session, K_REVIEW, True)),
     )
 
 
@@ -123,6 +123,17 @@ def _cap_utf16(text: str, limit: int) -> str:
     return text
 
 
+def image_caption(template: str, kids: list[str], image: Image, group: Group | None) -> str:
+    """Caption for a forwarded photo, in local time (KINO_TIMEZONE)."""
+    return render_caption(
+        template,
+        kids,
+        (group.name if group else None) or "",
+        image.sender_name or "",
+        to_local(image.sent_at or datetime(1970, 1, 1), get_settings().timezone),
+    )
+
+
 def validate_destination(chat_id: str | None, session: Session) -> None:
     """Reject empty destinations and watched groups (their photos would be re-ingested)."""
     if not chat_id or not chat_id.strip():
@@ -137,8 +148,8 @@ def validate_destination(chat_id: str | None, session: Session) -> None:
 def set_default_destination(session: Session, chat_id: str) -> None:
     chat_id = chat_id.strip()
     validate_destination(chat_id, session)
-    _put(session, K_DEFAULT, chat_id)
-    _put(session, K_ENABLED, True)
+    put_setting(session, K_DEFAULT, chat_id)
+    put_setting(session, K_ENABLED, True)
 
 
 def ensure_not_destination(session: Session, chat_id: str) -> None:
@@ -150,7 +161,7 @@ def ensure_not_destination(session: Session, chat_id: str) -> None:
 
 
 def disable_forwarding(session: Session) -> None:
-    _put(session, K_ENABLED, False)
+    put_setting(session, K_ENABLED, False)
 
 
 def plan_forwards(
@@ -188,13 +199,7 @@ def plan_forwards(
             rows.append(existing)
             continue
         first = next((saved_paths[k.id] for k in kids if k.id in saved_paths), None)
-        caption = render_caption(
-            cfg.caption_template,
-            [k.display_name for k in kids],
-            group.name or "",
-            image.sender_name or "",
-            to_local(image.sent_at or datetime(1970, 1, 1), get_settings().timezone),
-        )
+        caption = image_caption(cfg.caption_template, [k.display_name for k in kids], image, group)
         row = Forward(
             image_id=image.id,
             dest_chat_id=dest,

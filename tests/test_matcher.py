@@ -239,3 +239,72 @@ def test_kid_info_and_mapping(db):
     assert m.group_mapped(k.id, g.id) is True
     assert m.group_mapped(k.id, 999) is False
     assert m.group_mapped(k.id, None) is False
+
+
+def _reference_score(m: Matcher, face: np.ndarray) -> list[tuple[int, float]]:
+    """The pre-vectorisation per-kid loop, kept here as an oracle for ``score_many``."""
+    out = []
+    for kid_id, g in m._galleries.items():
+        if kid_id not in m._kids:
+            continue
+        sims = g.refs @ face
+        idx = np.argsort(-sims, kind="stable")[: min(3, len(sims))]
+        wsum = float(g.weights[idx].sum())
+        score = float((sims[idx] * g.weights[idx]).sum() / wsum) if wsum > 0 else 0.0
+        if g.negatives is not None and float((g.negatives @ face).max()) >= score:
+            score -= 0.1
+        out.append((kid_id, score))
+    out.sort(key=lambda t: (-t[1], t[0]))
+    return out
+
+
+def test_score_many_matches_single_face_scoring(db):
+    rng = np.random.default_rng(7)
+
+    def rand() -> np.ndarray:
+        v = rng.normal(size=DIM).astype(np.float32)
+        return v / np.linalg.norm(v)
+
+    with session.get_session() as s:
+        kids = [add_kid(s, slug) for slug in "abcd"]
+        for n, k in enumerate(kids):
+            for j in range(n + 1):  # 1..4 refs: exercises k < TOP_K
+                add_ref(s, k, rand(), quality=0.5 + 0.1 * j, date=NOW - timedelta(days=100 * j))
+        s.add(models.NegativeFace(kid_id=kids[0].id, embedding=embedding_to_blob(rand())))
+        kids[3].active = False
+        m = make(s)
+    faces = np.stack([rand() for _ in range(50)])
+    batch = m.score_many(faces)
+    assert len(batch) == 50
+    for face, got in zip(faces, batch, strict=True):
+        single = m.score(face, None)  # float64: batch and single row agree to ~1e-15
+        assert [x.kid_id for x in got] == [x.kid_id for x in single]
+        assert [x.score for x in got] == pytest.approx([x.score for x in single], abs=1e-12)
+        want = _reference_score(m, face)
+        assert [x.kid_id for x in got] == [k for k, _ in want]
+        assert [x.score for x in got] == pytest.approx([v for _, v in want], abs=1e-6)
+        assert got[0].margin == pytest.approx(want[0][1] - want[1][1], abs=1e-6)
+    assert m.score_many(np.zeros((0, DIM), dtype=np.float32)) == []
+
+
+def test_batch_and_single_scores_give_identical_decisions_at_threshold_edges(db):
+    """The Test page scores in batches, the worker one face at a time: a face exactly on a
+    threshold must get the same decision both ways."""
+    from kino.pipeline.decide import Thresholds, decide
+    from kino.pipeline.quality import Tier
+
+    rng = np.random.default_rng(11)
+    with session.get_session() as s:
+        k = add_kid(s, "a", auto_save_enabled=True)
+        add_ref(s, k, unit(0))
+        m = make(s)
+    t = Thresholds()
+    # cosines on (and one float32 ulp around) the effective L thresholds (unmapped group)
+    edges = [t.L_auto + t.unmapped_penalty, t.L_review + t.unmapped_penalty]
+    cos = [c + d for c in edges for d in (-1e-7, 0.0, 1e-7)]
+    faces = np.stack([mix(unit(0), unit(1 + n % 7), c) for n, c in enumerate(cos)])
+    faces = np.concatenate([faces, rng.normal(size=(40, DIM)).astype(np.float32)])
+    for face, batch in zip(faces, m.score_many(faces), strict=True):
+        single = m.score(face, None)
+        kid = m.kid(single[0].kid_id)
+        assert decide(Tier.L, batch, kid, t, False) == decide(Tier.L, single, kid, t, False)

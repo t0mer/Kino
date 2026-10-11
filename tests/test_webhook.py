@@ -445,7 +445,7 @@ def test_concurrent_same_message_one_row(client, enqueued):
 def test_health_ready_metrics(client):
     assert client.get("/healthz").json()["status"] == "ok"
     assert client.get("/readyz").status_code == 200
-    assert client.get("/metrics").status_code == 403  # gated until KINO_METRICS_PUBLIC
+    assert client.get("/metrics").status_code == 401  # needs auth unless KINO_METRICS_PUBLIC
 
 
 def test_metrics_public(env, monkeypatch, enqueued):

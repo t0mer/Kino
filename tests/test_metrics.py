@@ -93,7 +93,7 @@ def test_metrics_still_gated(env, monkeypatch):
     monkeypatch.setenv("KINO_METRICS_PUBLIC", "false")
     get_settings.cache_clear()
     with TestClient(create_app()) as c:
-        assert c.get("/metrics").status_code == 403
+        assert c.get("/metrics").status_code == 401  # needs a login unless public
 
 
 def test_dead_process_files_removed_on_setup(env):

@@ -4,8 +4,11 @@ Policy:
 * JPEG input keeps its original pixel/entropy bytes; only the header segments
   before SOS are rewritten (:func:`rewrite_jpeg_metadata`): EVERY ``Exif`` APP1
   block is removed (wherever it sits) and exactly one new one is inserted after a
-  leading JFIF APP0. Other segments (JFIF, ICC APP2, DQT, SOF, ...) and everything
-  from SOS on stay byte-identical.
+  leading JFIF APP0. Other segments (JFIF, ICC APP2, DQT, SOF, ...) and the scans
+  stay byte-identical. With ``strip_gps`` the scans are walked too: everything
+  outside a whitelist (JFIF, ICC, Adobe, structural segments) is dropped wherever it
+  sits, and so is everything after the primary EOI (MPF secondary images, trailers);
+  a JPEG that cannot be walked is re-encoded.
 * PNG/WebP/HEIC input is the ONLY case where pixels are re-encoded: converted to
   JPEG at quality 95 with EXIF orientation applied to the pixels.
 * Dates use ``image.sent_at`` converted to the configured local time zone
@@ -46,7 +49,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import piexif
-from PIL import Image, ImageOps
+from PIL import Image, ImageFile, ImageOps
 
 from kino.slug import slugify
 
@@ -218,8 +221,8 @@ def _write_atomic(dst: Path, write: Any, finalize: bool = True) -> None:
 
 
 _EXIF_HDR = b"Exif\x00\x00"
-_XMP_HDRS = (b"http://ns.adobe.com/xap/1.0/\x00", b"http://ns.adobe.com/xmp/extension/\x00")
-_APP0, _APP1, _APP13, _SOS = 0xE0, 0xE1, 0xED, 0xDA
+_JFIF_HDR, _ICC_HDR, _ADOBE_HDR = b"JFIF\x00", b"ICC_PROFILE\x00", b"Adobe"
+_APP0, _APP1, _APP2, _APP14, _SOS, _EOI = 0xE0, 0xE1, 0xE2, 0xEE, 0xDA, 0xD9
 _MAX_SEGMENT_PAYLOAD = 65533
 
 
@@ -249,6 +252,90 @@ def _jpeg_segments(data: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
         i += 2 + n
 
 
+class UnreadableJpeg(ValueError):
+    """A JPEG that cannot be walked or decoded, so its metadata cannot be sanitised."""
+
+
+def _trim_segment(marker: int, seg: bytes) -> bytes:
+    """Cut JFIF APP0 / Adobe APP14 to their standard length so no extra bytes ride along
+    (ICC is kept as is: it is a colour profile, not free-form text)."""
+    size = {_APP0: 14, _APP14: 12}.get(marker)
+    if size is None or len(seg) <= 4 + size:
+        return seg
+    return seg[:2] + (size + 2).to_bytes(2, "big") + seg[4 : 4 + size]
+
+
+def _keep_segment(marker: int, payload: bytes) -> bool:
+    """Whitelist for strip mode: JFIF APP0, ICC APP2, Adobe APP14 and the structural
+    segments (SOFn, DHT, DAC, DQT, DRI, DNL, SOS). Every other APPn and COM can carry
+    location, so it is dropped."""
+    if marker == _APP0:
+        return payload.startswith(_JFIF_HDR)
+    if marker == _APP2:
+        return payload.startswith(_ICC_HDR)
+    if marker == _APP14:
+        return payload.startswith(_ADOBE_HDR)
+    return 0xC0 <= marker <= 0xCF or marker in (0xDA, 0xDB, 0xDC, 0xDD)
+
+
+def _strip_scans(tail: bytes) -> bytes:
+    """Walk ``tail`` (starting at the first SOS) scan by scan and return it without
+    location segments found between scans, ending at exactly one EOI: MPF secondary
+    images and trailer bytes after the primary EOI are dropped. Raises ValueError if
+    the data is malformed or truncated."""
+    out = bytearray()
+    i = 0
+    while True:
+        while tail[i : i + 2] == b"\xff\xff":
+            i += 1  # fill bytes
+        if i + 2 > len(tail) or tail[i] != 0xFF:
+            raise ValueError("malformed JPEG scan data")
+        marker = tail[i + 1]
+        if marker == _EOI:
+            return bytes(out) + b"\xff\xd9"
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # standalone, no length: dropped
+            i += 2
+            continue
+        n = int.from_bytes(tail[i + 2 : i + 4], "big")
+        if n < 2 or i + 2 + n > len(tail):
+            raise ValueError("malformed JPEG segment length")
+        end = i + 2 + n
+        if _keep_segment(marker, tail[i + 4 : end]):
+            out += _trim_segment(marker, tail[i:end])
+        i = end
+        if marker == _SOS:  # entropy-coded data: skip stuffed 0xFF00 and RSTn
+            while True:
+                i = tail.find(b"\xff", i)
+                if i < 0 or i + 1 >= len(tail):
+                    raise ValueError("truncated JPEG scan data")
+                if tail[i + 1] == 0 or 0xD0 <= tail[i + 1] <= 0xD7:
+                    i += 2
+                elif tail[i + 1] == 0xFF:
+                    i += 1
+                else:
+                    break
+            out += tail[end:i]
+
+
+def _reencode_without_metadata(data: bytes) -> bytes:
+    """Last resort for JPEGs that cannot be walked: decode and re-encode, which drops
+    every metadata segment (orientation is applied to the pixels first). A truncated
+    image is decoded as far as it goes rather than lost."""
+    previous = ImageFile.LOAD_TRUNCATED_IMAGES
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im.load()
+            rgb = ImageOps.exif_transpose(im).convert("RGB")
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+        raise UnreadableJpeg("JPEG cannot be parsed or decoded") from None
+    finally:
+        ImageFile.LOAD_TRUNCATED_IMAGES = previous
+    buf = io.BytesIO()
+    rgb.save(buf, "JPEG", quality=95)
+    return buf.getvalue()
+
+
 def rewrite_jpeg_metadata(
     data: bytes, build_exif: Callable[[bytes | None], bytes], *, strip_gps: bool
 ) -> bytes:
@@ -258,7 +345,16 @@ def rewrite_jpeg_metadata(
     None and returns the new ``piexif.dump`` bytes. With ``strip_gps`` XMP APP1 and
     Photoshop/IPTC APP13 segments are dropped as well (they can hold location).
     """
-    segs, tail = _jpeg_segments(data)
+    if strip_gps:
+        try:
+            segs, tail = _jpeg_segments(data)
+            tail = _strip_scans(tail)
+        except (ValueError, OSError):
+            data = _reencode_without_metadata(data)
+            segs, tail = _jpeg_segments(data)
+            tail = _strip_scans(tail)
+    else:
+        segs, tail = _jpeg_segments(data)
     existing: bytes | None = None
     kept: list[tuple[int, bytes]] = []
     for marker, seg in segs:
@@ -267,9 +363,9 @@ def rewrite_jpeg_metadata(
             if existing is None:
                 existing = payload
             continue
-        if strip_gps and ((marker == _APP1 and payload.startswith(_XMP_HDRS)) or marker == _APP13):
+        if strip_gps and not _keep_segment(marker, payload):
             continue
-        kept.append((marker, seg))
+        kept.append((marker, _trim_segment(marker, seg) if strip_gps else seg))
     exif: bytes = build_exif(existing)
     if not exif.startswith(_EXIF_HDR):
         exif = _EXIF_HDR + exif

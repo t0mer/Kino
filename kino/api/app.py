@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -10,6 +10,23 @@ from sqlalchemy import text
 
 import kino
 from kino import metrics as kino_metrics
+from kino.api import auth
+from kino.api.deps import get_auth
+from kino.api.errors import install_error_handlers
+from kino.api.routes.auth import router as auth_router
+from kino.api.routes.forwards import router as forwards_router
+from kino.api.routes.groups import router as groups_router
+from kino.api.routes.images import router as images_router
+from kino.api.routes.kids import router as kids_router
+from kino.api.routes.openwa import router as openwa_router
+from kino.api.routes.photos import router as photos_router
+from kino.api.routes.references import router as references_router
+from kino.api.routes.review import router as review_router
+from kino.api.routes.settings import router as settings_router
+from kino.api.routes.stats import router as stats_router
+from kino.api.routes.test import rescore_router
+from kino.api.routes.test import router as test_router
+from kino.api.routes.uploads import router as uploads_router
 from kino.api.webhook import router as webhook_router
 from kino.config import Settings, get_settings
 from kino.db.session import get_engine, init_engine, run_migrations
@@ -34,10 +51,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     run_migrations()
     kino_metrics.setup(settings.metrics_path)
 
-    app = FastAPI(title="Kino", version=kino.__version__, docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Kino", version=kino.__version__, docs_url=None, redoc_url=None, openapi_url=None
+    )
     app.state.settings = settings
     app.state.openwa = _make_client(settings)
+    app.state.secret_key = auth.load_secret_key(settings)
     app.include_router(webhook_router)
+    app.include_router(auth_router)
+    app.include_router(kids_router)
+    app.include_router(groups_router)
+    app.include_router(settings_router)
+    app.include_router(openwa_router)
+    app.include_router(forwards_router)
+    app.include_router(stats_router)
+    app.include_router(uploads_router)
+    app.include_router(references_router)
+    app.include_router(review_router)
+    app.include_router(photos_router)
+    app.include_router(images_router)
+    app.include_router(test_router)
+    app.include_router(rescore_router)
+    install_error_handlers(app)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -54,9 +89,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/metrics")
     def metrics(request: Request) -> Response:
-        # Until session auth lands (M2), scraping is only open when explicitly enabled.
-        if not request.app.state.settings.metrics_public:
-            return Response("metrics are not public", status_code=403)
+        # Open for scraping only when explicitly enabled; otherwise like any other route.
+        if not request.app.state.settings.metrics_public and get_auth(request) is None:
+            raise HTTPException(401, "not authenticated")
         # Merges the counters of every Kino process plus DB-derived gauges.
         return Response(
             generate_latest(kino_metrics.scrape_registry()), media_type=CONTENT_TYPE_LATEST

@@ -475,6 +475,21 @@ def test_exception_in_save_fails_image(world, monkeypatch):
     assert [p for p in (env / "crops").rglob("*.jpg")] == []
 
 
+def test_unreadable_jpeg_in_save_fails_image_permanently(world, monkeypatch):
+    env, gid, *_ = world
+    _, _, q = pipeline([det(100, 80, 120)], [unit(0)])
+    from kino.pipeline import save
+
+    def boom(*a, **k):
+        raise save.UnreadableJpeg("JPEG cannot be parsed or decoded")
+
+    monkeypatch.setattr(save, "save_photo", boom)
+    iid, _ = seed_image(env, group_id=gid)
+    img = run(iid)
+    assert img.status == "failed" and "UnreadableJpeg" in img.error
+    assert rows(SavedPhoto) == [] and rows(Forward) == []
+
+
 # --- raw retention -----------------------------------------------------------------------
 
 

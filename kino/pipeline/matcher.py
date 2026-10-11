@@ -9,6 +9,7 @@ margin) and never applies the +/- group threshold adjustments.
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,11 +46,17 @@ class KidInfo:
     threshold_offset: float
 
 
+F64 = NDArray[np.float64]
+
+
 @dataclass
 class _Gallery:
-    refs: Vec  # (n, d)
-    weights: Vec  # (n,)
-    negatives: Vec | None  # (m, d)
+    """Stored float64 so batched and single-face scoring agree (float32 BLAS rounding in a
+    batch differs from a single row by ~1e-7, enough to flip a decision at a threshold)."""
+
+    refs: F64  # (n, d)
+    weights: F64  # (n,)
+    negatives: F64 | None  # (m, d)
 
 
 class Matcher:
@@ -96,9 +103,9 @@ class Matcher:
         for kid_id, items in refs.items():
             neg = negs.get(kid_id)
             galleries[kid_id] = _Gallery(
-                np.stack([e for e, _ in items]).astype(np.float32),
-                np.array([w for _, w in items], dtype=np.float32),
-                np.stack(neg).astype(np.float32) if neg else None,
+                np.stack([e for e, _ in items]).astype(np.float64),
+                np.array([w for _, w in items], dtype=np.float64),
+                np.stack(neg).astype(np.float64) if neg else None,
             )
         self._galleries = galleries
         self._version = self._read_version(session)
@@ -126,21 +133,40 @@ class Matcher:
         """Raw per-kid scores, best first. ``group_id`` is accepted for API symmetry
         but the group prior is applied in ``decide`` only (see module docstring)."""
         del group_id
-        face = np.asarray(face_emb, dtype=np.float32)
-        raw: list[tuple[int, float]] = []
-        for kid_id, g in self._galleries.items():
-            if kid_id not in self._kids:  # inactive or deleted kid
-                continue
-            sims = g.refs @ face
-            k = min(TOP_K, len(sims))
-            idx = np.argsort(-sims, kind="stable")[:k]
-            wsum = float(g.weights[idx].sum())
-            score = float((sims[idx] * g.weights[idx]).sum() / wsum) if wsum > 0 else 0.0
-            if g.negatives is not None and float((g.negatives @ face).max()) >= score:
-                score -= NEGATIVE_PENALTY
-            raw.append((kid_id, score))
-        if not raw:
-            return []
-        raw.sort(key=lambda t: (-t[1], t[0]))
-        margin = raw[0][1] - (raw[1][1] if len(raw) > 1 else 0.0)
-        return [KidScore(k, s, margin) for k, s in raw]
+        return self.score_many(np.asarray(face_emb, dtype=np.float32)[None, :])[0]
+
+    def score_many(self, faces: NDArray[np.floating[Any]]) -> list[list[KidScore]]:
+        """Vectorised :meth:`score` for an (n, d) matrix of face embeddings: one best-first
+        list per row. ``score`` is this function on one row, so both share one code path;
+        the math is float64, so a batch and a single row agree to ~1e-15."""
+        mat = np.asarray(faces, dtype=np.float64)
+        n = mat.shape[0]
+        kid_ids = sorted(k for k in self._galleries if k in self._kids)  # skip inactive kids
+        if n == 0 or not kid_ids:
+            return [[] for _ in range(n)]
+        cols: list[F64] = []
+        for kid_id in kid_ids:
+            g = self._galleries[kid_id]
+            sims = mat @ g.refs.T  # (n, refs)
+            k = min(TOP_K, sims.shape[1])
+            idx = np.argsort(-sims, axis=1, kind="stable")[:, :k]
+            top = np.take_along_axis(sims, idx, axis=1)
+            w = g.weights[idx]
+            wsum = w.sum(axis=1)
+            safe = np.where(wsum > 0, wsum, 1.0)
+            score = np.where(wsum > 0, (top * w).sum(axis=1) / safe, 0.0)
+            if g.negatives is not None:
+                neg = (mat @ g.negatives.T).max(axis=1)
+                score = np.where(neg >= score, score - NEGATIVE_PENALTY, score)
+            cols.append(score)
+        scores = np.stack(cols, axis=1)  # (n, kids), columns in ascending kid id
+        # Stable sort on -score keeps ascending kid id among equal scores.
+        order = np.argsort(-scores, axis=1, kind="stable")
+        out: list[list[KidScore]] = []
+        for i in range(n):
+            row = scores[i]
+            ranked = order[i]
+            best = float(row[ranked[0]])
+            margin = best - (float(row[ranked[1]]) if len(ranked) > 1 else 0.0)
+            out.append([KidScore(kid_ids[int(j)], float(row[j]), margin) for j in ranked])
+        return out
