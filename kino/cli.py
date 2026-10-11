@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -29,13 +28,14 @@ from kino.admin import (
     require_kid,
 )
 from kino.config import Settings, get_settings
-from kino.db.models import FORWARD_STATUS, Forward, Group, Kid, ReferenceFace
+from kino.db.models import Group, Kid, ReferenceFace
 from kino.db.session import get_engine, get_session, init_engine, run_migrations
 from kino.logging import setup_logging
 from kino.models.download import ModelError, ensure_model
 from kino.models.registry import MODELS
 from kino.openwa.client import OpenWAClient, mask_path
-from kino.slug import slugify
+from kino.services import groups as groups_svc
+from kino.services import kids as kids_svc
 
 app = typer.Typer(help="Kino: find your kids in WhatsApp group photos.", no_args_is_help=True)
 models_app = typer.Typer(help="Model files.", no_args_is_help=True)
@@ -253,32 +253,14 @@ def _fetch_groups() -> list[dict[str, Any]]:
     async def go() -> list[dict[str, Any]]:
         client = _openwa_client()
         try:
-            return await client.list_groups()
+            return await groups_svc.fetch_groups(client)
         finally:
             await client.aclose()
 
     return asyncio.run(go())
 
 
-def _import_groups(session: Session, found: list[dict[str, Any]]) -> int:
-    """Upsert groups from OpenWA (unwatched when new); returns how many were new."""
-    new = 0
-    for item in found:
-        chat_id, name = str(item.get("id") or ""), item.get("name")
-        if not chat_id.endswith("@g.us"):
-            continue
-        group = find_group(session, chat_id)
-        if group is None:
-            session.add(
-                Group(chat_id=chat_id, name=name, slug=slugify(name or "", fallback="group"))
-            )
-            new += 1
-        elif name and group.name != name:
-            group.name = name
-            if not group.slug:  # set once from the first real name; saved paths use it
-                group.slug = slugify(name, fallback="group")
-    session.flush()
-    return new
+_import_groups = groups_svc.import_groups
 
 
 @groups_app.command("list")
@@ -309,16 +291,13 @@ def groups_watch(
     ] = False,
 ) -> None:
     """Start watching a group; --kid replaces its kid mapping."""
-    from kino.forward import ensure_not_destination
-
     found = _fetch_groups() if fetch else []
     with db_session() as s:
         if fetch:
             typer.echo(f"imported {_import_groups(s, found)} new group(s) from OpenWA")
         group = require_group(s, chat_id)
-        ensure_not_destination(s, group.chat_id)
         kids = [require_kid(s, name) for name in kid or []]
-        group.watched = True
+        groups_svc.set_watched(s, group, True)
         if kid:
             map_kids_to_group(s, group, kids, replace=True)
         mapped = ", ".join(group_kid_names(s, group.id)) or "none"
@@ -331,7 +310,7 @@ def groups_unwatch(chat_id: Annotated[str, typer.Argument(help="Group chat id.")
     """Stop watching a group."""
     with db_session() as s:
         group = require_group(s, chat_id)
-        group.watched = False
+        groups_svc.set_watched(s, group, False)
         typer.echo(f"no longer watching {mask_chat_id(group.chat_id)}")
 
 
@@ -364,7 +343,7 @@ def kids_set_auto_save(
     """Turn auto-save on or off for a kid (off sends every match to review)."""
     with db_session() as s:
         kid = require_kid(s, name)
-        kid.auto_save_enabled = on
+        kids_svc.update_kid(s, kid.id, auto_save_enabled=on)
         typer.echo(f"{kid.display_name}: auto-save {'on' if on else 'off'}")
 
 
@@ -375,15 +354,10 @@ def kids_set_offset(
     offset: Annotated[float, typer.Argument(help="Threshold offset (use `--` before negatives).")],
 ) -> None:
     """Shift a kid's decision thresholds (positive = stricter)."""
-    from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN
-
-    if not math.isfinite(offset):
-        raise CliError("offset must be a finite number")
-    if not OFFSET_MIN <= offset <= OFFSET_MAX:
-        raise CliError(f"offset must be between {OFFSET_MIN:+.2f} and {OFFSET_MAX:+.2f}")
+    kids_svc.validate_offset(offset)
     with db_session() as s:
         kid = require_kid(s, name)
-        kid.threshold_offset = offset
+        kids_svc.update_kid(s, kid.id, threshold_offset=offset)
         typer.echo(f"{kid.display_name}: threshold offset {offset:+.2f}")
 
 
@@ -408,7 +382,7 @@ def forward_show() -> None:
 
     with db_session() as s:
         cfg = get_forward_config(s)
-        names = {k.id: k.display_name for k in s.scalars(select(Kid))}
+        names = kids_svc.kid_names(s)
     typer.echo(f"enabled: {'yes' if cfg.enabled else 'no'}")
     typer.echo(f"default destination: {mask_chat_id(cfg.default_chat_id or '-')}")
     for kid_id, dest in sorted(cfg.per_kid.items()):
@@ -432,12 +406,15 @@ def forward_disable() -> None:
 @command
 def forward_retry(forward_id: Annotated[int, typer.Argument(help="Failed forward id.")]) -> None:
     """Retry a failed forward."""
-    from kino.forward import retry_forward, send_forward
+    from kino.services import ServiceError
+    from kino.services import forwards as forwards_svc
 
-    with db_session() as s:
-        if not retry_forward(s, forward_id):
-            raise CliError(f"forward {forward_id} does not exist or has not failed")
-    send_forward(forward_id)
+    try:
+        with db_session() as s:
+            forwards_svc.reset_failed(s, forward_id)
+    except ServiceError:
+        raise CliError(f"forward {forward_id} does not exist or has not failed") from None
+    forwards_svc.enqueue(forward_id)
     typer.echo(f"forward {forward_id} queued for retry")
 
 
@@ -448,13 +425,10 @@ def forward_list(
     limit: Annotated[int, typer.Option(min=1, help="Most recent N.")] = 50,
 ) -> None:
     """List forwards, newest first."""
-    if status is not None and status not in FORWARD_STATUS:
-        raise CliError(f"status must be one of {', '.join(FORWARD_STATUS)}")
+    from kino.services import forwards as forwards_svc
+
     with db_session() as s:
-        q = select(Forward).order_by(Forward.id.desc()).limit(limit)
-        if status:
-            q = q.where(Forward.status == status)
-        rows = list(s.scalars(q))
+        rows = forwards_svc.list_forwards(s, status, limit)
         if not rows:
             typer.echo("no forwards")
         for f in rows:
