@@ -1,3 +1,4 @@
+import io
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -407,3 +408,89 @@ def test_xmp_kept_when_gps_stripping_disabled(tmp_path: Path) -> None:
     assert sum(1 for m, p in segs if m == 0xE1 and p.startswith(_EXIF_HDR)) == 1
     assert any(m == 0xE1 and p.startswith(_XMP_HDR) for m, p in segs)
     assert piexif.load(str(out))["GPS"][piexif.GPSIFD.GPSLatitudeRef] == b"N"
+
+
+def _prog_jpeg() -> bytes:
+    buf = io.BytesIO()
+    noisy(96, 80).save(buf, "JPEG", quality=85, progressive=True, optimize=True)
+    return buf.getvalue()
+
+
+def _split_scans(b: bytes) -> list[int]:
+    """Offsets of every SOS marker, skipping stuffed 0xFF00 and RSTn in entropy data."""
+    out, i = [], 2
+    while i < len(b) - 1:
+        if b[i] != 0xFF or b[i + 1] in (0, 0xFF) or 0xD0 <= b[i + 1] <= 0xD7:
+            i += 1
+        elif b[i + 1] == 0xD9:
+            break
+        else:
+            n = int.from_bytes(b[i + 2 : i + 4], "big")
+            if b[i + 1] == 0xDA:
+                out.append(i)
+            i += 2 + n
+    return out
+
+
+def _save_out(tmp_path: Path, raw: bytes) -> bytes:
+    src = tmp_path / "in.jpg"
+    src.write_bytes(raw)
+    kid, group, image = mk()
+    return save_photo(src, kid, group, image, tmp_path / "p", timezone="UTC").read_bytes()
+
+
+def _assert_clean(out: bytes, size: tuple[int, int]) -> None:
+    with Image.open(io.BytesIO(out)) as im:
+        im.load()
+        assert im.size == size
+    assert out.endswith(b"\xff\xd9")
+    assert out.count(b"\xff\xd8") == 1  # no second SOI after the primary EOI
+    assert out.find(b"\xff\xd9") == len(out) - 2
+    assert b"GPS" not in out
+    assert out.count(b"Exif\x00\x00") == 1  # only the Kino block
+    ex = piexif.load(out)
+    assert ex["GPS"] == {}
+    assert ex["Exif"][piexif.ExifIFD.DateTimeOriginal] == b"2026:03:07 14:05:09"
+    assert ex["0th"][piexif.ImageIFD.ImageDescription] == b"Class A"
+    assert ex["0th"][piexif.ImageIFD.Artist] == b"Dana"
+
+
+def test_gps_between_progressive_scans_stripped(tmp_path: Path) -> None:
+    raw = _prog_jpeg()
+    scans = _split_scans(raw)
+    assert len(scans) > 2
+    gps = _seg(0xE1, _gps_exif_payload())
+    pre = raw[: scans[0]] + gps + raw[scans[0] : scans[2]] + gps + raw[scans[2] :]
+    assert pre.count(b"Exif\x00\x00") == 2
+    out = _save_out(tmp_path, pre)
+    _assert_clean(out, (96, 80))
+    assert len(_split_scans(out)) == len(scans)  # every scan kept
+
+
+def test_mpf_secondary_image_and_trailer_stripped(tmp_path: Path) -> None:
+    primary = _prog_jpeg()
+    second = io.BytesIO()
+    noisy(32, 24).save(second, "JPEG", exif=_gps_exif_payload())
+    mpf = _seg(0xE2, b"MPF\x00" + b"\x00" * 32)
+    at = primary.index(b"\xff\xdb")
+    raw = primary[:at] + mpf + primary[at:] + second.getvalue() + b"trailer-GPS-bytes"
+    assert b"GPS" in raw
+    out = _save_out(tmp_path, raw)
+    _assert_clean(out, (96, 80))
+    assert b"MPF\x00" not in out
+
+
+def test_trailing_garbage_after_eoi_stripped(tmp_path: Path) -> None:
+    out = _save_out(tmp_path, _prog_jpeg() + b"\x00GPS junk" * 5)
+    _assert_clean(out, (96, 80))
+
+
+def test_truncated_jpeg_falls_back_to_reencode(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    noisy(96, 80).save(buf, "JPEG", quality=90, exif=_gps_exif_payload())
+    full = buf.getvalue()
+    # complete scan data but the EOI is cut off and junk with GPS follows: not walkable
+    raw = full[:-2] + b"GPS"
+    assert raw.find(b"\xff\xd9") < 0
+    out = _save_out(tmp_path, raw)
+    _assert_clean(out, (96, 80))
