@@ -23,6 +23,7 @@ from kino.db.models import (
     Image,
     Kid,
     Match,
+    NegativeFace,
     ReferenceFace,
     SavedPhoto,
     Setting,
@@ -217,7 +218,9 @@ def test_routes_require_auth_and_csrf(world):
     api.cookies.clear()
     assert api.post("/api/test/score", json={}).status_code == 401
     assert api.post("/api/rescore", json={"days": 7}).status_code == 401
-    assert count(Match) == 0
+    body = {"face_id": world["A"], "kid_id": world["noa"], "action": "negative"}
+    assert api.post("/api/test/flag", json=body).status_code == 401
+    assert count(Match) == 0 and count(NegativeFace) == 0
 
 
 # --- dry-run scoring --------------------------------------------------------------------
@@ -474,3 +477,67 @@ def test_rescore_validates_days(world):
     for bad in (0, 366, "x"):
         assert api.post("/api/rescore", json={"days": bad}).status_code == 422
     assert api.post("/api/rescore", json={}).status_code == 422
+
+
+# --- flag wrong -------------------------------------------------------------------------
+
+
+def flag(api, face_id, kid_id, action):
+    return api.post("/api/test/flag", json={"face_id": face_id, "kid_id": kid_id, "action": action})
+
+
+def test_flag_negative_adds_negative_and_bumps_gallery(world):
+    api = world["api"]
+    before = score(api)
+    assert world["A"] in ids(before, "would_auto_save")
+    r = flag(api, world["A"], world["noa"], "negative")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["changed"] is True and body["negative_id"] is not None
+    with dbs.get_session() as s:
+        [neg] = s.scalars(select(NegativeFace)).all()
+        assert neg.kid_id == world["noa"] and neg.source_face_id == world["A"]
+        assert neg.crop_path and Path(neg.crop_path).is_file()
+    assert gallery_version() == 1
+    # the negative penalises Noa's score for that face in the next dry run
+    after = score(api)["buckets"]["would_auto_save"]["items"]
+    a = next(it for it in after if it["face_id"] == world["A"])
+    assert a["score"] == pytest.approx(0.8, abs=1e-4)
+    again = flag(api, world["A"], world["noa"], "negative").json()
+    assert again["changed"] is False and again["negative_id"] == body["negative_id"]
+    assert count(NegativeFace) == 1 and gallery_version() == 1
+
+
+def test_flag_review_puts_face_in_review_queue(world):
+    api = world["api"]
+    r = flag(api, world["A"], world["itai"], "review")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["changed"] is True and body["match_id"] is not None
+    [m] = matches(world["A"])
+    assert m.kid_id == world["itai"] and m.decision == "review" and m.decided_by == "system"
+    queue = api.get("/api/review").json()["items"]
+    assert [(i["face_id"], i["kid_id"]) for i in queue] == [(world["A"], world["itai"])]
+    assert flag(api, world["A"], world["itai"], "review").json()["changed"] is False
+    assert gallery_version() is None
+    # flagging for another kid moves the suggestion (one active match per face)
+    flag(api, world["A"], world["noa"], "review")
+    got = by_kid(world["A"])
+    assert got[world["itai"]].decision == "dropped" and got[world["noa"]].decision == "review"
+
+
+def test_flag_review_refuses_decided_faces(world):
+    api = world["api"]
+    seed_match(world["A"], world["noa"], "confirmed", by="user")
+    assert flag(api, world["A"], world["noa"], "review").status_code == 409
+    assert flag(api, world["A"], world["noa"], "negative").status_code == 200
+
+
+def test_flag_errors(world):
+    api = world["api"]
+    assert flag(api, 9999, world["noa"], "review").status_code == 404
+    assert flag(api, world["A"], 9999, "negative").status_code == 404
+    assert flag(api, world["A"], world["noa"], "delete").status_code == 422
+    noemb = seed_face(world["gid"], None)
+    assert flag(api, noemb, world["noa"], "negative").status_code == 422
+    assert count(NegativeFace) == 0 and count(Match) == 0

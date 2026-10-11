@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings
-from kino.db.models import Face, Group, Image, Kid, Match, SavedPhoto
+from kino.db.models import Face, Group, Image, Kid, Match, NegativeFace, SavedPhoto
 from kino.db.session import blob_to_embedding, get_session
 from kino.pipeline.decide import (
     Action,
@@ -33,7 +33,7 @@ from kino.pipeline.decide import (
 )
 from kino.pipeline.matcher import KidInfo, Matcher
 from kino.pipeline.quality import Tier, tier_for
-from kino.services import InvalidError, ServiceError, review
+from kino.services import ConflictError, InvalidError, NotFoundError, ServiceError, review
 from kino.services import enroll_web as enroll
 
 MAX_FACES = 20_000  # faces scored per dry run; the newest photos win
@@ -478,3 +478,109 @@ def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review
     upsert_saved(s, image_id, kid_id, path)
     fx.forward_ids.extend(review.forward_kid(s, image, kid, path, group))
     return True
+
+
+# --- flag wrong (Test page) -------------------------------------------------------------
+
+FLAG_ACTIONS = ("review", "negative")
+
+
+@dataclass
+class FlagResult:
+    face_id: int
+    kid_id: int
+    action: str
+    changed: bool
+    match_id: int | None = None
+    negative_id: int | None = None
+
+
+def flag(
+    session: Session,
+    settings: Settings,
+    face_id: int,
+    kid_id: int,
+    action: str,
+    fx: review._Effects,
+    now: datetime | None = None,
+) -> FlagResult:
+    """The Test page's "this is wrong" on a crop, inside the caller's transaction.
+
+    ``review``: the face becomes a system review item for ``kid_id`` (its other system
+    matches are dropped, one active match per face); refused (409) when the face already has
+    a protected match. ``negative``: the face becomes a negative example for the kid (the
+    same as the review queue's "someone else") and the gallery version is bumped; repeating
+    it is a no-op."""
+    now = now or _utcnow()
+    if action not in FLAG_ACTIONS:
+        raise InvalidError(f"action must be one of {', '.join(FLAG_ACTIONS)}")
+    face = session.get(Face, face_id)
+    if face is None:
+        raise NotFoundError(f"face {face_id} not found")
+    if session.get(Kid, kid_id) is None:
+        raise NotFoundError(f"kid {kid_id} not found")
+    if face.embedding is None:
+        raise InvalidError("this face has no embedding (too small to recognise)")
+    if action == "negative":
+        existing = session.scalar(
+            select(NegativeFace.id).where(
+                NegativeFace.kid_id == kid_id, NegativeFace.source_face_id == face_id
+            )
+        )
+        if existing is not None:
+            return FlagResult(face_id, kid_id, action, changed=False, negative_id=existing)
+        neg_id = review._add_negative(session, settings, kid_id, face, fx, now)
+        review._bump(session)
+        return FlagResult(face_id, kid_id, action, changed=True, negative_id=neg_id)
+    ms = list(session.scalars(select(Match).where(Match.face_id == face_id).order_by(Match.id)))
+    saved = {
+        (face.image_id, k)
+        for k in session.scalars(
+            select(SavedPhoto.kid_id).where(SavedPhoto.image_id == face.image_id)
+        )
+    }
+    if any(is_protected(m, saved, face.image_id) for m in ms):
+        raise ConflictError(
+            "this face was already decided; change it from the photos or review page"
+        )
+    image = session.get(Image, face.image_id)
+    group_id = image.group_id if image is not None else None
+    scores = build_matcher(session).score(blob_to_embedding(face.embedding), group_id)
+    kid_score = next((x.score for x in scores if x.kid_id == kid_id), 0.0)
+    changed = False
+    target = next((m for m in ms if m.kid_id == kid_id), None)
+    for m in ms:
+        if m is not target:
+            changed |= _set(m, decision="dropped", decided_at=now)
+    if target is None:
+        target = Match(
+            face_id=face_id,
+            kid_id=kid_id,
+            score=kid_score,
+            margin=None,
+            method="face",
+            decision="review",
+            decided_by="system",
+            decided_at=now,
+        )
+        session.add(target)
+        changed = True
+    elif target.decision != "review":
+        target.decision = "review"
+        target.score = kid_score
+        target.margin = None
+        target.decided_at = now
+        changed = True
+    session.flush()
+    return FlagResult(face_id, kid_id, action, changed=changed, match_id=target.id)
+
+
+def apply_flag(settings: Settings, face_id: int, kid_id: int, action: str) -> FlagResult:
+    """:func:`flag` in its own transaction; a copied negative crop is removed on failure."""
+    fx = review._Effects()
+    try:
+        with get_session() as s:
+            return flag(s, settings, face_id, kid_id, action, fx)
+    except BaseException:
+        review._undo(fx, settings)
+        raise

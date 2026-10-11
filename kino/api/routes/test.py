@@ -3,6 +3,7 @@
 ``POST /api/test/score`` re-scores stored embeddings in memory with the current gallery and
 either the stored thresholds or an override (same shape and validation as
 ``PUT /api/settings/thresholds``, which is what "Apply thresholds" calls). Nothing is written.
+``POST /api/test/flag`` is the page's "wrong" action on a crop (review or negative).
 
 ``POST /api/rescore`` re-runs matching and decisions on stored faces of the last N days and
 writes ``matches`` (never over a user decision). It runs synchronously in the request's
@@ -15,6 +16,8 @@ from fastapi import Request
 
 from kino.api.deps import protected_router
 from kino.api.schemas import (
+    FlagIn,
+    FlagOut,
     RescoreIn,
     RescoreOut,
     ScoreBucketOut,
@@ -91,6 +94,13 @@ def score(request: Request, body: ScoreIn) -> ScoreOut:
             for kid, c in sorted(p.per_kid.items())
         ],
     )
+
+
+@router.post("/flag", response_model=FlagOut)
+def flag(request: Request, body: FlagIn) -> FlagOut:
+    """ "Flag wrong" on a dry-run crop: send it to review, or make it a negative example."""
+    r = svc.apply_flag(_settings(request), body.face_id, body.kid_id, body.action)
+    return FlagOut(**vars(r))
 
 
 @rescore_router.post("/rescore", response_model=RescoreOut)

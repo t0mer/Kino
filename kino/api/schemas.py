@@ -651,3 +651,18 @@ class RescoreOut(BaseModel):
     unchanged: int
     protected: int
     saved: int
+
+
+class FlagIn(In):
+    face_id: int
+    kid_id: int
+    action: Literal["review", "negative"]
+
+
+class FlagOut(BaseModel):
+    face_id: int
+    kid_id: int
+    action: str
+    changed: bool
+    match_id: int | None
+    negative_id: int | None
