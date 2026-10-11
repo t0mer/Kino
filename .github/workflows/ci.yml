@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+      - name: Ruff lint
+        run: .venv/bin/ruff check .
+      - name: Ruff format
+        run: .venv/bin/ruff format --check .
+      - name: Mypy
+        run: .venv/bin/mypy kino
+      - name: Pytest
+        run: .venv/bin/pytest -q
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install runtime dependencies
+        run: |
+          uv venv
+          uv pip install .
+      - name: Fail on AGPL, ultralytics or unknown licenses
+        env:
+          # Packages whose installed metadata carries no license at all, checked by hand.
+          # Keep this list minimal; every entry needs a reason:
+          #   huey: MIT (LICENSE file in coleifer/huey), but its metadata declares none.
+          LICENSE_UNKNOWN_ALLOW: huey
+        # pip-licenses 5.0 ignores PEP 639 `License-Expression` and reports most modern
+        # packages as UNKNOWN, so the license is read from the metadata directly:
+        # License-Expression, then License, then the `License ::` classifiers.
+        run: |
+          .venv/bin/python -I - <<'PY'
+          import importlib.metadata as md
+          import os
+          import re
+          import sys
+
+          allow = {
+              n.strip().lower()
+              for n in os.environ.get("LICENSE_UNKNOWN_ALLOW", "").split(",")
+              if n.strip()
+          }
+          bad, unknown = [], []
+          for d in sorted(md.distributions(), key=lambda d: (d.metadata["Name"] or "").lower()):
+              name, meta = (d.metadata["Name"] or "").lower(), d.metadata
+              parts = [meta.get("License-Expression") or ""]
+              lic = (meta.get("License") or "").strip()
+              if lic and len(lic) < 200:  # skip full license texts pasted into the field
+                  parts.append(lic)
+              parts += [
+                  c.split("::")[-1].strip()
+                  for c in meta.get_all("Classifier") or []
+                  if c.startswith("License ::")
+              ]
+              text = " | ".join(p for p in parts if p and p.upper() != "UNKNOWN")
+              print(f"{name} {d.version}: {text or 'UNKNOWN'}")
+              if re.search(r"agpl|affero", text, re.I) or name == "ultralytics":
+                  bad.append(name)
+              elif not text and name not in allow:
+                  unknown.append(name)
+          if bad:
+              print("::error::AGPL-licensed or forbidden dependency:", ", ".join(bad))
+          if unknown:
+              print("::error::dependency without a license:", ", ".join(unknown))
+          sys.exit(1 if bad or unknown else 0)
+          PY
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (amd64, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: kino:ci

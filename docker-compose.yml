@@ -1,0 +1,65 @@
+# Kino example stack. Copy .env.example to .env and fill it in first.
+#
+# /data is a NAMED volume (kino-data): it inherits the image's uid 1000 ownership.
+# ./photos is a bind mount for the saved photos; it must be writable by uid 1000:
+#   mkdir -p photos && sudo chown 1000:1000 photos
+x-kino: &kino
+  image: techblog/kino:latest
+  env_file: .env
+  volumes:
+    - kino-data:/data
+    - ./photos:/data/photos
+  restart: unless-stopped
+
+services:
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:latest
+    volumes:
+      - openwa-data:/app/data
+    # Loopback only: the OpenWA API holds your WhatsApp session. Kino reaches it over
+    # the internal Docker network (http://openwa:2785) and needs no published port.
+    ports:
+      - "127.0.0.1:2785:2785"
+    restart: unless-stopped
+
+  kino-api:
+    <<: *kino
+    command: ["api"]
+    # Loopback only by default. M1 has no UI login: the webhook is HMAC-protected and
+    # /metrics answers 403 unless KINO_METRICS_PUBLIC=true, but nothing else is meant
+    # to be reachable from the network. To expose Kino, put a Cloudflare Tunnel or a
+    # reverse proxy in front of it (and keep /api/webhook/openwa unrouted there), or
+    # change this to "8080:8080" on a trusted LAN only.
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - openwa
+    # HEALTHCHECK (GET /healthz) comes from the image.
+
+  kino-worker:
+    <<: *kino
+    command: ["worker"]
+    healthcheck:
+      disable: true   # the image healthcheck targets the HTTP API
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 3g
+
+  # Exactly ONE instance: the forward queue must have a single consumer so
+  # sends stay ordered and rate-limited. Never scale this service.
+  kino-forward-worker:
+    <<: *kino
+    command: ["forward-worker"]
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+
+volumes:
+  openwa-data: {}
+  kino-data: {}

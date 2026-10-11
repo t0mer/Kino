@@ -218,3 +218,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project
+CLAUDE.md
+.claude/
+.cursor/
+.aider*
+/docs/
+docs/*
+*.design.md
+*.implementation.md
+scans/
+/data/
+*.db
+*.db-journal
+.superpowers/
+.env.*
+!.env.example
