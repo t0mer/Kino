@@ -11,6 +11,18 @@ removed by :func:`apply_decision`.
 
 Ordering: the queue is listed oldest first (ascending match id) with ``cursor`` = the last
 match id seen, so new items never shift a page the user is working through.
+
+Locking: the photo save (file I/O) runs while this transaction holds SQLite's write lock.
+It is bounded to one photo per decision (bulk commits per item), so other writers wait at
+most one save, well inside the 30 s busy timeout.
+
+Reassign: the match's stored score is replaced by the face's best cosine similarity to the
+new kid's active references (0.0 when the kid has none) and the margin is cleared, so the
+row never shows a score that was computed for the previously suggested kid.
+
+Forwarding: a confirmed kid joins a still-pending forward of the same image to the same
+destination; if that forward was already sent (or cancelled), the kid is NOT forwarded
+again (``plan_forwards`` reuses the existing row for an (image, destination) pair).
 """
 
 from __future__ import annotations
@@ -133,23 +145,31 @@ class ReviewItem:
     nearest: list[NearRef]
 
 
-def _nearest(
+def _active_refs(
     session: Session, kid_ids: set[int]
 ) -> dict[int, tuple[list[int], list[bool], np.ndarray]]:
-    out: dict[int, tuple[list[int], list[bool], np.ndarray]] = {}
-    for kid_id in kid_ids:
-        rows = session.execute(
-            select(ReferenceFace.id, ReferenceFace.embedding, ReferenceFace.crop_path)
-            .where(ReferenceFace.kid_id == kid_id, ReferenceFace.status == "active")
-            .order_by(ReferenceFace.id)
-        ).all()
-        if rows:
-            out[kid_id] = (
-                [r[0] for r in rows],
-                [bool(r[2]) for r in rows],
-                np.stack([blob_to_embedding(r[1]) for r in rows]),
+    """Active references of the kids, in one query: kid -> (ids, has_crop, embeddings)."""
+    grouped: dict[int, list[tuple[int, bytes, str | None]]] = {}
+    if kid_ids:
+        for ref_id, kid, emb, crop in session.execute(
+            select(
+                ReferenceFace.id,
+                ReferenceFace.kid_id,
+                ReferenceFace.embedding,
+                ReferenceFace.crop_path,
             )
-    return out
+            .where(ReferenceFace.kid_id.in_(kid_ids), ReferenceFace.status == "active")
+            .order_by(ReferenceFace.id)
+        ):
+            grouped.setdefault(kid, []).append((ref_id, emb, crop))
+    return {
+        kid: (
+            [r[0] for r in rows],
+            [bool(r[2]) for r in rows],
+            np.stack([blob_to_embedding(r[1]) for r in rows]),
+        )
+        for kid, rows in grouped.items()
+    }
 
 
 def list_review(
@@ -164,10 +184,11 @@ def list_review(
     if method is not None and method not in MATCH_METHOD:
         raise InvalidError(f"method must be one of {', '.join(MATCH_METHOD)}")
     q = (
-        select(Match, Face, Image, Kid)
+        select(Match, Face, Image, Kid, Group)
         .join(Face, Face.id == Match.face_id)
         .join(Image, Image.id == Face.image_id)
         .join(Kid, Kid.id == Match.kid_id)
+        .outerjoin(Group, Group.id == Image.group_id)
         .where(Match.decision == "review")
     )
     if kid_id is not None:
@@ -179,10 +200,19 @@ def list_review(
     rows = session.execute(q.order_by(Match.id).limit(limit + 1)).all()
     more = len(rows) > limit
     rows = rows[:limit]
-    refs = _nearest(session, {m.kid_id for m, *_ in rows})
+    refs = _active_refs(session, {m.kid_id for m, *_ in rows})
+    saved: dict[int, list[str]] = {}
+    image_ids = {image.id for _, _, image, _, _ in rows}
+    if image_ids:
+        for image_id, path in session.execute(
+            select(SavedPhoto.image_id, SavedPhoto.path)
+            .where(SavedPhoto.image_id.in_(image_ids))
+            .order_by(SavedPhoto.id)
+        ):
+            saved.setdefault(image_id, []).append(path)
     crops = settings.data_dir / "crops"
     items: list[ReviewItem] = []
-    for m, face, image, kid in rows:
+    for m, face, image, kid, group in rows:
         near: list[NearRef] = []
         if face.embedding is not None and m.kid_id in refs:
             ids, has, mat = refs[m.kid_id]
@@ -195,10 +225,13 @@ def list_review(
                 face=face,
                 image=image,
                 kid=kid,
-                group=session.get(Group, image.group_id) if image.group_id else None,
+                group=group,
                 tier=tier_for(face.size_px).value,
                 has_crop=enroll.contained(face.crop_path, crops) is not None,
-                has_image=image_file(session, image, settings) is not None,
+                has_image=any(
+                    enroll.contained(p, settings.photos_dir) for p in saved.get(image.id, [])
+                )
+                or raw_file(image, settings) is not None,
                 nearest=near,
             )
         )
@@ -289,17 +322,24 @@ def decide(
     if m.decision != "review":
         return _settled(session, m, action, target)
     suggested = m.kid_id
-    if session.get(Kid, target) is None:
-        raise NotFoundError(f"kid {target} not found")
+    if not _kid_exists(session, target):
+        raise _kid_gone(target)
+    values: dict[str, object] = {
+        "decision": _FINAL[action],
+        "decided_by": "user",
+        "decided_at": now,
+        "kid_id": target,
+    }
+    if target != suggested:
+        values["score"] = _rescore(session, m.face_id, target)
+        values["margin"] = None
     try:
         res = session.execute(
-            update(Match)
-            .where(Match.id == match_id, Match.decision == "review")
-            .values(decision=_FINAL[action], decided_by="user", decided_at=now, kid_id=target),
+            update(Match).where(Match.id == match_id, Match.decision == "review").values(**values),
             execution_options={"synchronize_session": False},
         )
-    except IntegrityError:  # the target kid was deleted meanwhile (FK)
-        raise NotFoundError(f"kid {target} not found") from None
+    except IntegrityError:  # the target kid was deleted between the check and the UPDATE
+        raise _kid_gone(target) from None
     session.expire(m)
     if res.rowcount != 1:  # type: ignore[attr-defined]  # lost the race
         m2 = session.get(Match, match_id)
@@ -315,15 +355,32 @@ def decide(
     if action in ("confirm", "reassign"):
         kid = session.get(Kid, target)
         if kid is None:
-            raise NotFoundError(f"kid {target} not found")
+            raise _kid_gone(target)
         _confirm(session, settings, m, face, image, kid, result, fx, now)
-    elif action == "someone_else":
+    elif action == "someone_else":  # the negative belongs to the kid that was suggested
         result.negative_id = _add_negative(session, settings, suggested, face, fx, now)
     if action in ("someone_else", "reassign"):
         _bump(session)
     fx.metric = (str(m.kid_id), m.decision, m.method)
     session.flush()
     return result
+
+
+def _kid_exists(session: Session, kid_id: int) -> bool:
+    return session.get(Kid, kid_id) is not None
+
+
+def _kid_gone(kid_id: int) -> ConflictError:
+    return ConflictError(f"kid {kid_id} was deleted; refresh the queue")
+
+
+def _rescore(session: Session, face_id: int, kid_id: int) -> float:
+    """Best cosine similarity of the face to the kid's active references (0.0 if none)."""
+    blob = session.scalar(select(Face.embedding).where(Face.id == face_id))
+    refs = _active_refs(session, {kid_id}).get(kid_id)
+    if blob is None or refs is None:
+        return 0.0
+    return float(np.max(refs[2] @ blob_to_embedding(blob)))
 
 
 def _bump(session: Session) -> None:

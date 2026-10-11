@@ -404,9 +404,26 @@ def test_confirm_for_inactive_kid_is_409(world):
     assert get(Match, world["m"]).decision == "review"
 
 
-def test_confirm_after_kid_deleted_is_404(world):
+def test_confirm_after_kid_deleted_match_gone_is_404(world):
+    """Deleting a kid cascades its matches: the review item itself is gone."""
     assert world["api"].delete(f"/api/kids/{world['noa']}").status_code == 200
     assert act(world["api"], world["m"], "confirm").status_code == 404
+
+
+def test_reassign_to_deleted_kid_is_409(world):
+    gone = seed_kid("gone", "Gone")
+    assert world["api"].delete(f"/api/kids/{gone}").status_code == 200
+    r = act(world["api"], world["m"], "reassign", kid_id=gone)
+    assert r.status_code == 409 and "deleted" in r.json()["detail"]
+    assert get(Match, world["m"]).decision == "review"
+
+
+def test_reassign_kid_deleted_between_check_and_update_is_409(world, monkeypatch):
+    """The FK error of the conditional UPDATE maps to the same 409."""
+    monkeypatch.setattr(review_svc, "_kid_exists", lambda s, kid_id: True)
+    r = act(world["api"], world["m"], "reassign", kid_id=99999)
+    assert r.status_code == 409 and "deleted" in r.json()["detail"]
+    assert get(Match, world["m"]).decision == "review"
 
 
 def test_save_failure_rolls_back_decision(world, monkeypatch):
@@ -483,11 +500,19 @@ def test_reassign_saves_for_other_kid(world):
     assert act(world["api"], world["m"], "confirm").json()["changed"] is False
 
 
+def test_reassign_rescores_for_new_kid(world):
+    assert act(world["api"], world["m"], "reassign", kid_id=world["itai"]).status_code == 200
+    m = get(Match, world["m"])
+    face = np.frombuffer(get(Face, world["face"]).embedding, dtype=np.float32)
+    assert m.score == pytest.approx(float(face @ unit(5)))  # Itai's only reference
+    assert m.margin is None
+
+
 def test_reassign_validation(world):
     api = world["api"]
     assert act(api, world["m"], "reassign").status_code == 422
     assert act(api, world["m"], "confirm", kid_id=world["itai"]).status_code == 422
-    assert act(api, world["m"], "reassign", kid_id=99999).status_code == 404
+    assert act(api, world["m"], "reassign", kid_id=99999).status_code == 409
     assert act(api, world["m"], "maybe").status_code == 422
     assert get(Match, world["m"]).decision == "review"
     assert act(api, 99999, "confirm").status_code == 404
@@ -511,6 +536,46 @@ def test_confirm_joins_sibling_pending_forward(world, enqueued):
     assert act(world["api"], world["m"], "confirm").status_code == 200
     [fw] = rows(Forward)
     assert fw.kid_ids == [world["itai"], world["noa"]] and "Noa" in (fw.caption or "")
+
+
+def test_confirm_after_sibling_forward_sent_is_not_forwarded_again(world, enqueued):
+    enable_forwarding()
+    f2 = seed_face(world["img"], unit(5), n=1)
+    seed_match(f2, world["itai"], decision="auto_saved")
+    with dbs.get_session() as s:
+        s.add(
+            Forward(
+                image_id=world["img"], dest_chat_id=DEST, kid_ids=[world["itai"]], status="sent"
+            )
+        )
+    r = act(world["api"], world["m"], "confirm")
+    assert r.status_code == 200 and r.json()["forward_ids"] == []
+    [fw] = rows(Forward)
+    assert fw.status == "sent" and fw.kid_ids == [world["itai"]] and enqueued == []
+
+
+def test_list_review_query_count_is_constant(world):
+    from sqlalchemy import event
+
+    def queries() -> int:
+        n = [0]
+
+        def hit(*a, **k):
+            n[0] += 1
+
+        engine = dbs.get_engine()
+        event.listen(engine, "before_cursor_execute", hit)
+        try:
+            assert world["api"].get("/api/review").status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", hit)
+        return n[0]
+
+    one = queries()
+    for n in range(6):
+        img = seed_image(world["gid"], msg=f"q{n}")
+        seed_match(seed_face(img, unit(0)), world["noa"])
+    assert queries() == one
 
 
 # --- bulk ---------------------------------------------------------------------------------
