@@ -252,6 +252,19 @@ def _jpeg_segments(data: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
         i += 2 + n
 
 
+class UnreadableJpeg(ValueError):
+    """A JPEG that cannot be walked or decoded, so its metadata cannot be sanitised."""
+
+
+def _trim_segment(marker: int, seg: bytes) -> bytes:
+    """Cut JFIF APP0 / Adobe APP14 to their standard length so no extra bytes ride along
+    (ICC is kept as is: it is a colour profile, not free-form text)."""
+    size = {_APP0: 14, _APP14: 12}.get(marker)
+    if size is None or len(seg) <= 4 + size:
+        return seg
+    return seg[:2] + (size + 2).to_bytes(2, "big") + seg[4 : 4 + size]
+
+
 def _keep_segment(marker: int, payload: bytes) -> bool:
     """Whitelist for strip mode: JFIF APP0, ICC APP2, Adobe APP14 and the structural
     segments (SOFn, DHT, DAC, DQT, DRI, DNL, SOS). Every other APPn and COM can carry
@@ -288,7 +301,7 @@ def _strip_scans(tail: bytes) -> bytes:
             raise ValueError("malformed JPEG segment length")
         end = i + 2 + n
         if _keep_segment(marker, tail[i + 4 : end]):
-            out += tail[i:end]
+            out += _trim_segment(marker, tail[i:end])
         i = end
         if marker == _SOS:  # entropy-coded data: skip stuffed 0xFF00 and RSTn
             while True:
@@ -314,6 +327,8 @@ def _reencode_without_metadata(data: bytes) -> bytes:
         with Image.open(io.BytesIO(data)) as im:
             im.load()
             rgb = ImageOps.exif_transpose(im).convert("RGB")
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+        raise UnreadableJpeg("JPEG cannot be parsed or decoded") from None
     finally:
         ImageFile.LOAD_TRUNCATED_IMAGES = previous
     buf = io.BytesIO()
@@ -350,7 +365,7 @@ def rewrite_jpeg_metadata(
             continue
         if strip_gps and not _keep_segment(marker, payload):
             continue
-        kept.append((marker, seg))
+        kept.append((marker, _trim_segment(marker, seg) if strip_gps else seg))
     exif: bytes = build_exif(existing)
     if not exif.startswith(_EXIF_HDR):
         exif = _EXIF_HDR + exif
