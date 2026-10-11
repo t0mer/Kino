@@ -77,7 +77,7 @@ def me(
 def login(body: LoginBody, request: Request, response: Response) -> Any:
     settings = _settings(request)
     ip = _client_ip(request)
-    wait = auth.limiter.retry_after(ip)
+    wait = auth.limiter.try_acquire(ip)  # counts this attempt before argon2 runs
     if wait:
         auth.record("local", "locked")
         raise HTTPException(
@@ -85,11 +85,11 @@ def login(body: LoginBody, request: Request, response: Response) -> Any:
         )
     stored = auth.password_hash(settings)
     if stored is None:
+        auth.limiter.success(ip)  # not a guess: nothing to guess against yet
         raise HTTPException(409, "no admin password set yet; complete the first-run setup")
     user = auth.admin_user(settings)
     password_ok = auth.verify_password(stored, body.password)  # always run: even timing
     if not (password_ok and hmac.compare_digest(body.username.encode(), user.encode())):
-        auth.limiter.failure(ip)
         auth.record("local", "invalid")
         logger.info("failed login from {}", ip)
         raise HTTPException(401, "invalid username or password")

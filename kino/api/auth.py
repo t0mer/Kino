@@ -191,7 +191,13 @@ def csrf_ok(cookie: str | None, header: str | None) -> bool:
 
 class LoginLimiter:
     """At most ``LOGIN_MAX_FAILURES`` failed logins per IP in ``LOGIN_WINDOW``; then locked
-    until the oldest failure leaves the window. In-memory: the API runs as one process."""
+    until the oldest failure leaves the window. In-memory: the API runs as one process.
+
+    Keyed on the direct peer IP: behind a reverse proxy every client shares one bucket.
+
+    Every attempt is recorded *before* the password is checked (:meth:`try_acquire`), so
+    concurrent guesses cannot all slip past the limit while argon2 runs; a success clears it.
+    """
 
     def __init__(self) -> None:
         self._failures: dict[str, list[float]] = {}
@@ -205,23 +211,19 @@ class LoginLimiter:
             self._failures.pop(ip, None)
         return recent
 
-    def retry_after(self, ip: str) -> int:
-        """Seconds until ``ip`` may try again; 0 when not locked."""
+    def try_acquire(self, ip: str) -> int:
+        """Record an attempt for ``ip`` and return 0, or return the seconds until it may try
+        again (nothing recorded) when it is locked out."""
         now = _now()
         with self._lock:
             recent = self._recent(ip, now)
-            if len(recent) < LOGIN_MAX_FAILURES:
-                return 0
-            return max(1, int(recent[-LOGIN_MAX_FAILURES] + LOGIN_WINDOW - now) + 1)
-
-    def failure(self, ip: str) -> None:
-        now = _now()
-        with self._lock:
-            self._recent(ip, now)
+            if len(recent) >= LOGIN_MAX_FAILURES:
+                return max(1, int(recent[-LOGIN_MAX_FAILURES] + LOGIN_WINDOW - now) + 1)
             self._failures.setdefault(ip, []).append(now)
             if len(self._failures) > 10_000:  # bound memory under a spray of source IPs
                 for k in list(self._failures):
                     self._recent(k, now)  # drops IPs with no failure left in the window
+            return 0
 
     def success(self, ip: str) -> None:
         with self._lock:
