@@ -4,6 +4,10 @@ Sections: ``forward`` (keys ``forward.*``, owned by kino.forward), ``digest``, `
 (read by :meth:`kino.pipeline.decide.Thresholds.from_settings`) and ``retention``. Values are
 validated by the API schemas before they reach these functions; defaults come from the
 environment (KINO_*).
+
+Background jobs (M3: retention cleanup, review digest) must read their values through
+:func:`get_retention` / :func:`get_digest` here, never straight from the environment, so that
+edits made in the UI take effect.
 """
 
 from __future__ import annotations
@@ -111,15 +115,38 @@ def update_digest(
     """Replace the digest section; ``apprise_urls=None`` keeps the stored URLs (they hold
     tokens and are never sent back to the browser)."""
     current = get_digest(session, env)
+    urls = (
+        current.apprise_urls
+        if apprise_urls is None
+        else _resolve_masked(apprise_urls, current.apprise_urls)
+    )
     cfg = DigestConfig(
         chat_id=chat_id.strip() if chat_id else None,
         cron=cron.strip(),
-        apprise_urls=current.apprise_urls if apprise_urls is None else apprise_urls,
+        apprise_urls=urls,
         public_base_url=public_base_url.rstrip("/") if public_base_url else None,
     )
     put_setting(session, K_DIGEST, asdict(cfg))
     session.flush()
     return cfg
+
+
+def _resolve_masked(incoming: list[str], stored: list[str]) -> list[str]:
+    """The UI only ever sees masked URLs and sends them back unchanged. A value equal to the
+    mask of the stored URL at the same index means "keep that URL"; any other masked value
+    cannot be resolved and is rejected (it must never overwrite a real URL)."""
+    out = []
+    for i, url in enumerate(incoming):
+        if i < len(stored) and url == mask_url(stored[i]):
+            out.append(stored[i])
+        elif url.partition("://")[2] == "****":
+            raise InvalidError(
+                f"notification URL {i + 1} is masked and does not match the stored one; "
+                "re-enter it in full"
+            )
+        else:
+            out.append(url)
+    return out
 
 
 def mask_url(url: str) -> str:
@@ -154,7 +181,7 @@ def update_thresholds(session: Session, data: dict[str, Any]) -> dict[str, Any]:
     session.flush()
     got = get_thresholds(session)
     if {k: got[k] for k in data} != data:
-        raise InvalidError("thresholds rejected: each review value must be at most its auto value")
+        raise InvalidError("thresholds were not accepted by the pipeline's threshold parser")
     return got
 
 

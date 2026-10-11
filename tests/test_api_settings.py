@@ -94,7 +94,7 @@ def test_settings_overview_has_sections_models_and_version(api):
 
 def test_unknown_section_is_404(api):
     assert api.get("/api/settings/bogus").status_code == 404
-    assert api.put("/api/settings/bogus", json={}).status_code in (404, 405)
+    assert api.put("/api/settings/bogus", json={}).status_code == 404
 
 
 def test_settings_require_csrf(api):
@@ -187,8 +187,14 @@ def test_caption_preview(api):
         "/api/settings/forward/preview", json={"caption_template": "{kids}|{group}|{sender}|{x}"}
     )
     assert r.status_code == 200, r.text
-    kids, group, sender, unknown = r.json()["caption"].split("|")
-    assert kids and group and sender and unknown == "{x}"
+    assert r.json()["caption"] == "נועה|Class 3B|Dana|{x}"
+
+
+@pytest.mark.parametrize("template", ["{0.__class__}", "{kids!r}", "{kids.__dict__}", "{}"])
+def test_caption_preview_format_tricks_stay_literal(api, template):
+    seed_kid("נועה")
+    r = api.post("/api/settings/forward/preview", json={"caption_template": template})
+    assert r.status_code == 200 and r.json()["caption"] == template
 
 
 # --- thresholds / retention / digest ----------------------------------------------------------
@@ -224,6 +230,8 @@ def test_thresholds_roundtrip_feeds_pipeline(api):
         {"margin_min": -2},
         {"S": {"review": 0.4, "auto": 0.5}},  # tier S never auto-saves
         {"prior_bonus": "x"},
+        {"L": {"auto": 0.25, "review": 0.2}},  # auto below the hard floor (0.30)
+        {"M": {"auto": 0.29, "review": 0.1}},
     ],
 )
 def test_thresholds_invalid(api, patch):
@@ -263,6 +271,31 @@ def test_digest_masks_apprise_urls(api):
         stored = s.get(Setting, "digest").value
     assert stored["apprise_urls"][0].startswith("tgram://123456")
     assert stored["cron"] == ""
+
+
+def test_digest_masked_urls_round_trip_without_clobbering(api):
+    body = {
+        "chat_id": None,
+        "cron": "0 20 * * *",
+        "apprise_urls": ["tgram://123456:SECRETTOKEN/987", "mailto://user:pw@example.com"],
+        "public_base_url": None,
+    }
+    assert api.put("/api/settings/digest", json=body).status_code == 200
+    # The UI sends back what GET returned (masked), plus one new URL.
+    masked = api.get("/api/settings/digest").json()["apprise_urls"]
+    r = api.put("/api/settings/digest", json={**body, "apprise_urls": [*masked, "ntfy://topic-x"]})
+    assert r.status_code == 200, r.text
+    with dbs.get_session() as s:
+        stored = s.get(Setting, "digest").value["apprise_urls"]
+    assert stored == [*body["apprise_urls"], "ntfy://topic-x"]
+    # Removing the first entry: the masked mailto now sits at index 0, where a tgram URL
+    # was stored, so it cannot be resolved and is rejected instead of saved as "****".
+    r = api.put("/api/settings/digest", json={**body, "apprise_urls": [masked[1]]})
+    assert r.status_code == 422
+    r = api.put("/api/settings/digest", json={**body, "apprise_urls": ["json://****"]})
+    assert r.status_code == 422
+    with dbs.get_session() as s:
+        assert s.get(Setting, "digest").value["apprise_urls"][0].startswith("tgram://123456")
 
 
 @pytest.mark.parametrize(

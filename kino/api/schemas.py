@@ -10,7 +10,7 @@ from huey import crontab
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from kino.forward import MAX_CAPTION
-from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN
+from kino.pipeline.decide import AUTO_FLOOR, OFFSET_MAX, OFFSET_MIN
 
 
 class In(BaseModel):
@@ -176,6 +176,8 @@ class TierAutoReview(In):
     def _order(self) -> TierAutoReview:
         if self.auto < self.review:
             raise ValueError("auto must be at least review")
+        if self.auto < AUTO_FLOOR:
+            raise ValueError(f"auto must be at least {AUTO_FLOOR:.2f} (the auto-save floor)")
         return self
 
 
