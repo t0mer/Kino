@@ -637,6 +637,8 @@ def test_register_webhook_creates_then_updates(openwa):
     assert body["events"] == ["message.received"]
     assert body["secret"] == SECRET
     assert {"field": "isGroup", "operator": "is", "value": True} in body["filters"]["conditions"]
+    # OpenWA 0.24.0 rejects a bare string here with 400; `type` takes a list
+    assert {"field": "type", "operator": "is", "value": ["image"]} in body["filters"]["conditions"]
 
     openwa["hooks"] = [{"id": "h-1", "url": HOOK_URL}, {"id": "h-2", "url": "http://other"}]
     openwa["calls"].clear()

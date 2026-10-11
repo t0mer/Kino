@@ -11,14 +11,15 @@ MIN_SECRET_LEN = 16  # documented minimum for the webhook signing secret
 
 # Filter grammar confirmed against the live OpenWA 0.24.0 OpenAPI spec (WebhookFiltersDto):
 # message-family fields include `type` and `isGroup`, operator `is`, and all conditions must
-# match (AND). Not yet exercised by a real delivery. `fromMe` is also filterable, but it is
+# match (AND). `type` takes a list value (a bare string is a 400 live).
+# `fromMe` is also filterable, but it is
 # deliberately NOT used: the user's own photos in a watched group must be processed too;
 # Kino's own forwards are dropped by the webhook echo guard instead.
 # Kino also drops non-image / non-group messages itself, so a wrong filter can only cause
 # missed events (visible as no traffic), never wrong processing.
 FILTERS: dict[str, Any] = {
     "conditions": [
-        {"field": "type", "operator": "is", "value": "image"},
+        {"field": "type", "operator": "is", "value": ["image"]},
         {"field": "isGroup", "operator": "is", "value": True},
     ]
 }
