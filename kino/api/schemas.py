@@ -494,3 +494,81 @@ class PhotoRemoved(BaseModel):
     cancelled_forwards: int
     rejected_matches: int
     retired_references: int
+
+
+# --- images / activity --------------------------------------------------------------------
+
+
+class ImageListItem(BaseModel):
+    id: int
+    group_id: int | None
+    group_name: str | None
+    sender: str | None
+    sent_at: datetime | None
+    received_at: datetime
+    status: str
+    skip_reason: str | None
+    processing_ms: int | None
+    error: str | None
+    face_count: int
+    matches: dict[str, int]
+    has_file: bool
+
+
+class ImagePage(BaseModel):
+    items: list[ImageListItem]
+    next_cursor: int | None
+
+
+class ImageFaceOut(BaseModel):
+    id: int
+    bbox: tuple[float, float, float, float]  # x, y, w, h in upright image pixels
+    det_score: float
+    size_px: float
+    quality: float | None
+    tier: str
+    from_tile: bool
+    crop_url: str | None
+
+
+class ImageMatchOut(BaseModel):
+    id: int
+    face_id: int
+    kid_id: int
+    kid_name: str
+    score: float
+    margin: float | None
+    method: str
+    decision: str
+    decided_by: str
+
+
+class ImageForwardOut(BaseModel):
+    id: int
+    status: str
+    attempts: int
+    kid_ids: list[int]
+    last_error: str | None
+    created_at: datetime
+    sent_at: datetime | None
+
+
+class ImageDetailOut(BaseModel):
+    id: int
+    group_id: int | None
+    group_name: str | None
+    sender: str | None
+    sent_at: datetime | None
+    received_at: datetime
+    width: int | None
+    height: int | None
+    status: str
+    skip_reason: str | None
+    duplicate_of: int | None
+    processing_ms: int | None
+    error: str | None
+    has_file: bool
+    file_url: str | None
+    faces: list[ImageFaceOut]
+    matches: list[ImageMatchOut]
+    forwards: list[ImageForwardOut]
