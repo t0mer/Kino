@@ -22,7 +22,19 @@ MAX_IMAGE_PIXELS = 100_000_000
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 # HEIF covers iPhone HEIC photos (decoded by pillow_heif; save.py converts them to JPEG).
-_EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp", "GIF": "gif", "BMP": "bmp", "HEIF": "heic"}
+# MPO is a JPEG with extra pictures (Samsung/Fuji/3D cameras); its primary image is a JPEG
+# and save.py drops the secondary images when rewriting the metadata.
+_EXT = {
+    "JPEG": "jpg",
+    "MPO": "jpg",
+    "PNG": "png",
+    "WEBP": "webp",
+    "GIF": "gif",
+    "BMP": "bmp",
+    "HEIF": "heic",
+}
+# Containers whose extra frames are not animation: only the primary image is used.
+STILL_MULTI_FORMATS = frozenset({"HEIF", "MPO"})
 
 
 class NotAnImage(ValueError):
@@ -79,13 +91,14 @@ def skip_reason(im: Image.Image) -> str | None:
     """Why the pipeline should skip this image, or None.
 
     * ``animated``: more than one frame (animated GIF/WebP). A HEIF container with several
-      images (bursts, depth/portrait shots) is a still photo: its primary image is used.
+      images (bursts, depth/portrait shots) or an MPO (multi-picture JPEG) is a still
+      photo: its primary image is used.
     * ``sticker``: a WebP with an alpha channel; WhatsApp stickers are transparent WebP,
       photos are not.
     * ``too_small``: smallest side under 200 px.
     """
     multi = getattr(im, "is_animated", False) or getattr(im, "n_frames", 1) > 1
-    if multi and im.format != "HEIF":
+    if multi and im.format not in STILL_MULTI_FORMATS:
         return "animated"
     if im.format == "WEBP" and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info):
         return "sticker"
