@@ -532,3 +532,24 @@ def test_com_and_unknown_app_segments_stripped(tmp_path: Path) -> None:
     out = _save_out(tmp_path, raw)
     _assert_clean(out, (96, 80))
     assert b"lat=32.1" not in out
+
+
+@pytest.mark.parametrize(
+    "raw", [_gps_baseline()[:100], b"\xff\xd8garbage"], ids=["cut-100", "garbage"]
+)
+def test_unreadable_jpeg_raises_clear_error(tmp_path: Path, raw: bytes) -> None:
+    with pytest.raises(save_mod.UnreadableJpeg) as ei:
+        _save_out(tmp_path, raw)
+    assert "GPS" not in str(ei.value) and ei.value.__cause__ is None
+    assert list((tmp_path / "p").rglob("*.jpg")) == []
+
+
+def test_jfif_and_adobe_trailing_bytes_trimmed(tmp_path: Path) -> None:
+    extra = b"lat=32.1" * 125
+    jfif = _seg(0xE0, b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + extra)
+    adobe = _seg(0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x00" + extra)
+    out = _save_out(tmp_path, _layout(tmp_path, [jfif, adobe]).read_bytes())
+    _assert_clean(out, (64, 48))
+    assert b"lat=32.1" not in out
+    segs = dict(_segments(out))
+    assert len(segs[0xE0]) == 14 and len(segs[0xEE]) == 12
