@@ -449,7 +449,7 @@ def test_reference_crop_removed_when_commit_fails(world, monkeypatch):
     def explode(*a, **k):
         raise RuntimeError("late failure")
 
-    monkeypatch.setattr(review, "_bump", explode)  # after files exist: reassign bumps last
+    monkeypatch.setattr(review, "bump_gallery", explode)  # after files exist: reassign bumps last
     refs_before = set((data_dir() / "crops" / "refs").iterdir())
     with pytest.raises(RuntimeError):
         review.apply_decision(get_settings(), world["m"], "reassign", world["itai"])

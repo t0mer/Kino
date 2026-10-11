@@ -267,7 +267,7 @@ class DecisionResult:
 
 
 @dataclass
-class _Effects:
+class Effects:
     """What a decision did outside the DB: undone on rollback, finished after commit."""
 
     photos: dict[Path, tuple[int, int]] = field(default_factory=dict)  # newly created files
@@ -304,11 +304,11 @@ def decide(
     action: str,
     kid_id: int | None = None,
     now: datetime | None = None,
-    fx: _Effects | None = None,
+    fx: Effects | None = None,
 ) -> DecisionResult:
     """Apply one review action inside the caller's transaction (see module docstring)."""
     now = now or _utcnow()
-    fx = fx if fx is not None else _Effects()
+    fx = fx if fx is not None else Effects()
     if action not in ACTIONS:
         raise InvalidError(f"action must be one of {', '.join(ACTIONS)}")
     if action == "reassign" and kid_id is None:
@@ -358,9 +358,9 @@ def decide(
             raise _kid_gone(target)
         _confirm(session, settings, m, face, image, kid, result, fx, now)
     elif action == "someone_else":  # the negative belongs to the kid that was suggested
-        result.negative_id = _add_negative(session, settings, suggested, face, fx, now)
+        result.negative_id = add_negative(session, settings, suggested, face, fx, now)
     if action in ("someone_else", "reassign"):
-        _bump(session)
+        bump_gallery(session)
     fx.metric = (str(m.kid_id), m.decision, m.method)
     session.flush()
     return result
@@ -383,7 +383,7 @@ def _rescore(session: Session, face_id: int, kid_id: int) -> float:
     return float(np.max(refs[2] @ blob_to_embedding(blob)))
 
 
-def _bump(session: Session) -> None:
+def bump_gallery(session: Session) -> None:
     from kino.tasks import bump_gallery_version
 
     bump_gallery_version(session)
@@ -397,7 +397,7 @@ def _confirm(
     image: Image,
     kid: Kid,
     result: DecisionResult,
-    fx: _Effects,
+    fx: Effects,
     now: datetime,
 ) -> None:
     from kino import forward as fwd
@@ -420,7 +420,7 @@ def _confirm(
     group = session.get(Group, image.group_id) if image.group_id is not None else None
     if group is None:
         raise ConflictError("the photo has no group; it cannot be saved")
-    path = _save_file(session, settings, image, kid, group, fx)
+    path = save_file(session, settings, image, kid, group, fx)
     upsert_saved(session, image.id, kid.id, path)
     session.flush()
     result.saved_photo_id = session.scalar(
@@ -471,8 +471,8 @@ def forward_kid(session: Session, image: Image, kid: Kid, path: Path, group: Gro
     return ids
 
 
-def _save_file(
-    session: Session, settings: Settings, image: Image, kid: Kid, group: Group, fx: _Effects
+def save_file(
+    session: Session, settings: Settings, image: Image, kid: Kid, group: Group, fx: Effects
 ) -> Path:
     """Save the photo for ``kid`` from the raw file, else hardlink/copy a sibling's saved copy."""
     tz = settings.timezone
@@ -514,8 +514,8 @@ def _save_file(
     return dest
 
 
-def _add_negative(
-    session: Session, settings: Settings, kid_id: int, face: Face, fx: _Effects, now: datetime
+def add_negative(
+    session: Session, settings: Settings, kid_id: int, face: Face, fx: Effects, now: datetime
 ) -> int:
     if face.embedding is None:
         raise InvalidError("this face has no embedding; it cannot become a negative example")
@@ -536,7 +536,7 @@ def _add_negative(
     return neg.id
 
 
-def _undo(fx: _Effects, settings: Settings) -> None:
+def undo_effects(fx: Effects, settings: Settings) -> None:
     for p in fx.crops:
         p.unlink(missing_ok=True)
     for p, ident in fx.photos.items():
@@ -550,7 +550,7 @@ def _undo(fx: _Effects, settings: Settings) -> None:
             logger.warning("could not remove a partial photo: {}", type(e).__name__)
 
 
-def _after_commit(fx: _Effects) -> None:
+def _after_commit(fx: Effects) -> None:
     from kino.tasks import cleanup_raw
 
     if fx.metric is not None:
@@ -576,12 +576,12 @@ def apply_decision(
     settings: Settings, match_id: int, action: str, kid_id: int | None = None
 ) -> DecisionResult:
     """Run :func:`decide` in its own transaction; undo files on failure, enqueue after commit."""
-    fx = _Effects()
+    fx = Effects()
     try:
         with get_session() as s:
             result = decide(s, settings, match_id, action, kid_id, fx=fx)
     except BaseException:
-        _undo(fx, settings)
+        undo_effects(fx, settings)
         raise
     _after_commit(fx)
     return result
@@ -592,12 +592,18 @@ __all__ = [
     "BULK_ACTIONS",
     "MAX_BULK",
     "DecisionResult",
+    "Effects",
     "OriginalMissing",
     "ReviewItem",
+    "add_negative",
     "apply_decision",
+    "bump_gallery",
     "decide",
     "face_crop",
+    "forward_kid",
     "image_file",
     "list_review",
     "review_count",
+    "save_file",
+    "undo_effects",
 ]

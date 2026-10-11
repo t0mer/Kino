@@ -312,7 +312,7 @@ def rescore(settings: Settings, days: int, now: datetime | None = None) -> Resco
         )
     res = RescoreResult()
     for i in range(0, len(image_ids), RESCORE_BATCH):
-        fx = review._Effects()
+        fx = review.Effects()
         saved_images: set[int] = set()
         part = RescoreResult()
         try:
@@ -329,7 +329,7 @@ def rescore(settings: Settings, days: int, now: datetime | None = None) -> Resco
                     now,
                 )
         except BaseException:
-            review._undo(fx, settings)
+            review.undo_effects(fx, settings)
             raise
         for name in vars(res):
             setattr(res, name, getattr(res, name) + getattr(part, name))
@@ -354,7 +354,7 @@ def _rescore_batch(
     thresholds: Thresholds,
     image_ids: list[int],
     res: RescoreResult,
-    fx: review._Effects,
+    fx: review.Effects,
     saved_images: set[int],
     now: datetime,
 ) -> None:
@@ -457,7 +457,7 @@ def _count(res: RescoreResult, changed: bool) -> None:
         res.unchanged += 1
 
 
-def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review._Effects) -> bool:
+def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review.Effects) -> bool:
     """Save the photo for the kid like the worker (file, saved_photos row, forward plan).
     False when it cannot be saved (original gone, no group, inactive kid, storage error):
     the face then goes to review."""
@@ -471,7 +471,7 @@ def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review
     if group is None:
         return False
     try:
-        path = review._save_file(s, settings, image, kid, group, fx)
+        path = review.save_file(s, settings, image, kid, group, fx)
     except ServiceError as e:  # OriginalMissing, unreadable original, storage failure
         logger.info("re-score: image {} goes to review instead of saving: {}", image_id, e)
         return False
@@ -501,7 +501,7 @@ def flag(
     face_id: int,
     kid_id: int,
     action: str,
-    fx: review._Effects,
+    fx: review.Effects,
     now: datetime | None = None,
 ) -> FlagResult:
     """The Test page's "this is wrong" on a crop, inside the caller's transaction.
@@ -529,8 +529,8 @@ def flag(
         )
         if existing is not None:
             return FlagResult(face_id, kid_id, action, changed=False, negative_id=existing)
-        neg_id = review._add_negative(session, settings, kid_id, face, fx, now)
-        review._bump(session)
+        neg_id = review.add_negative(session, settings, kid_id, face, fx, now)
+        review.bump_gallery(session)
         return FlagResult(face_id, kid_id, action, changed=True, negative_id=neg_id)
     ms = list(session.scalars(select(Match).where(Match.face_id == face_id).order_by(Match.id)))
     saved = {
@@ -577,10 +577,10 @@ def flag(
 
 def apply_flag(settings: Settings, face_id: int, kid_id: int, action: str) -> FlagResult:
     """:func:`flag` in its own transaction; a copied negative crop is removed on failure."""
-    fx = review._Effects()
+    fx = review.Effects()
     try:
         with get_session() as s:
             return flag(s, settings, face_id, kid_id, action, fx)
     except BaseException:
-        review._undo(fx, settings)
+        review.undo_effects(fx, settings)
         raise
