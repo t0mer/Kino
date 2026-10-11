@@ -344,7 +344,7 @@ def _confirm(
     now: datetime,
 ) -> None:
     from kino import forward as fwd
-    from kino.tasks import _upsert_saved
+    from kino.tasks import upsert_saved
 
     if not kid.active:
         raise ConflictError(f"{kid.display_name} is inactive; activate the kid first")
@@ -364,7 +364,7 @@ def _confirm(
     if group is None:
         raise ConflictError("the photo has no group; it cannot be saved")
     path = _save_file(session, settings, image, kid, group, fx)
-    _upsert_saved(session, image.id, kid.id, path)
+    upsert_saved(session, image.id, kid.id, path)
     session.flush()
     result.saved_photo_id = session.scalar(
         select(SavedPhoto.id).where(SavedPhoto.image_id == image.id, SavedPhoto.kid_id == kid.id)
@@ -483,7 +483,7 @@ def _undo(fx: _Effects, settings: Settings) -> None:
 
 
 def _after_commit(fx: _Effects) -> None:
-    from kino.tasks import _cleanup_raw
+    from kino.tasks import cleanup_raw
 
     if fx.metric is not None:
         kid, decision, method = fx.metric
@@ -499,7 +499,7 @@ def _after_commit(fx: _Effects) -> None:
         with get_session() as s:
             saved = s.scalar(select(SavedPhoto.id).where(SavedPhoto.image_id == fx.image_id))
         if saved is not None:  # like the pipeline: raw goes once saved and nothing is pending
-            _cleanup_raw(fx.image_id)
+            cleanup_raw(fx.image_id)
     except Exception as e:
         logger.warning("raw cleanup for image {} failed: {}", fx.image_id, type(e).__name__)
 

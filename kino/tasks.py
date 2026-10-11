@@ -320,7 +320,7 @@ def _auto_enrich(s: Session, image: Image, by_kid: dict[int, _FaceWork], now: da
     return changed
 
 
-def _upsert_saved(s: Session, image_id: int, kid_id: int, path: Path) -> None:
+def upsert_saved(s: Session, image_id: int, kid_id: int, path: Path) -> None:
     row = s.scalar(
         select(SavedPhoto).where(SavedPhoto.image_id == image_id, SavedPhoto.kid_id == kid_id)
     )
@@ -482,7 +482,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
                             continue
                         run.created_photos[p] = (ident.st_dev, ident.st_ino)
                 for kid_id, path in paths.items():
-                    _upsert_saved(s, image_id, kid_id, path)
+                    upsert_saved(s, image_id, kid_id, path)
                 out.saved_any = True
             with run.step("forward"):
                 rows = fwd.plan_forwards(s, image, kids, paths, group)
@@ -502,7 +502,7 @@ def _process(image_id: int, st: Settings, pipe: Pipeline, run: _Run, t0: float) 
         return out
 
 
-def _cleanup_raw(image_id: int) -> None:
+def cleanup_raw(image_id: int) -> None:
     """Delete the raw file once every matched kid is saved and nothing is pending review.
     Called only after a successful commit. Pending forwards do not keep it: they send the
     saved (EXIF-rewritten, GPS-stripped) file, never the raw one."""
@@ -652,7 +652,7 @@ def run_pipeline(image_id: int) -> str:
             logger.error("enqueue of forward {} failed: {}", fid, type(e).__name__)
     if outcome.saved_any:
         try:
-            _cleanup_raw(image_id)
+            cleanup_raw(image_id)
         except Exception as e:
             logger.warning("raw cleanup for image {} failed: {}", image_id, type(e).__name__)
     logger.info(
