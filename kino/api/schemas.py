@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -572,3 +572,69 @@ class ImageDetailOut(BaseModel):
     faces: list[ImageFaceOut]
     matches: list[ImageMatchOut]
     forwards: list[ImageForwardOut]
+
+
+# --- test page / re-score -----------------------------------------------------------------
+
+
+class ScoreIn(In):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kid_ids: Annotated[list[int], Field(max_length=200)] | None = None
+    date_from: datetime | None = Field(default=None, alias="from")
+    date_to: datetime | None = Field(default=None, alias="to")
+    thresholds: ThresholdsIn | None = None
+
+    @model_validator(mode="after")
+    def _range(self) -> ScoreIn:
+        if self.date_from and self.date_to and naive_utc(self.date_from) > naive_utc(self.date_to):
+            raise ValueError("'from' must not be after 'to'")
+        return self
+
+
+def naive_utc(value: datetime) -> datetime:
+    """Naive UTC (the DB convention); naive input is taken as UTC already."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+class ScoreFaceOut(BaseModel):
+    face_id: int
+    image_id: int
+    crop_url: str | None
+    score: float
+    margin: float
+    tier: str
+    kid_id: int | None
+    kid_name: str | None
+    group_id: int | None
+    group_name: str | None
+    sent_at: datetime
+    reason: str
+    auto_save_disabled: bool
+
+
+class ScoreBucketOut(BaseModel):
+    count: int
+    items: list[ScoreFaceOut]
+
+
+class ScoreKidCounts(BaseModel):
+    kid_id: int
+    kid_name: str | None
+    would_auto_save: int
+    would_review: int
+    would_drop: int
+
+
+class ScoreOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    date_from: datetime = Field(serialization_alias="from")
+    date_to: datetime = Field(serialization_alias="to")
+    examined: int
+    truncated: bool  # more faces matched the range than are scored per dry run
+    thresholds: ThresholdsOut
+    buckets: dict[str, ScoreBucketOut]  # would_auto_save / would_review / would_drop
+    per_kid: list[ScoreKidCounts]

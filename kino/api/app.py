@@ -24,6 +24,7 @@ from kino.api.routes.references import router as references_router
 from kino.api.routes.review import router as review_router
 from kino.api.routes.settings import router as settings_router
 from kino.api.routes.stats import router as stats_router
+from kino.api.routes.test import router as test_router
 from kino.api.routes.uploads import router as uploads_router
 from kino.api.webhook import router as webhook_router
 from kino.config import Settings, get_settings
@@ -68,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(review_router)
     app.include_router(photos_router)
     app.include_router(images_router)
+    app.include_router(test_router)
     install_error_handlers(app)
 
     @app.get("/healthz")
