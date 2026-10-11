@@ -235,3 +235,8 @@ scans/
 .superpowers/
 .env.*
 !.env.example
+
+# Web UI
+web/node_modules/
+web/dist/
+!web/src/lib/
