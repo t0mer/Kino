@@ -1,8 +1,12 @@
-"""/api/test: the Test page dry run (CLAUDE.md §11.5, §12).
+"""/api/test and /api/rescore: the Test page dry run and re-score (CLAUDE.md §11, §11.5, §12).
 
 ``POST /api/test/score`` re-scores stored embeddings in memory with the current gallery and
 either the stored thresholds or an override (same shape and validation as
 ``PUT /api/settings/thresholds``, which is what "Apply thresholds" calls). Nothing is written.
+
+``POST /api/rescore`` re-runs matching and decisions on stored faces of the last N days and
+writes ``matches`` (never over a user decision). It runs synchronously in the request's
+threadpool for now; it moves to the background jobs mechanism with Task 8.
 """
 
 from __future__ import annotations
@@ -11,6 +15,8 @@ from fastapi import Request
 
 from kino.api.deps import protected_router
 from kino.api.schemas import (
+    RescoreIn,
+    RescoreOut,
     ScoreBucketOut,
     ScoreFaceOut,
     ScoreIn,
@@ -25,6 +31,7 @@ from kino.services import rescore as svc
 from kino.services.settings_svc import thresholds_dict
 
 router = protected_router(prefix="/api/test", tags=["test"])
+rescore_router = protected_router(prefix="/api", tags=["test"])
 
 
 def _settings(request: Request) -> Settings:
@@ -84,3 +91,8 @@ def score(request: Request, body: ScoreIn) -> ScoreOut:
             for kid, c in sorted(p.per_kid.items())
         ],
     )
+
+
+@rescore_router.post("/rescore", response_model=RescoreOut)
+def rescore(request: Request, body: RescoreIn) -> RescoreOut:
+    return RescoreOut(**vars(svc.rescore(_settings(request), body.days)))

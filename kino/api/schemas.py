@@ -638,3 +638,16 @@ class ScoreOut(BaseModel):
     thresholds: ThresholdsOut
     buckets: dict[str, ScoreBucketOut]  # would_auto_save / would_review / would_drop
     per_kid: list[ScoreKidCounts]
+
+
+class RescoreIn(In):
+    days: Annotated[int, Field(ge=1, le=365, strict=True)]
+
+
+class RescoreOut(BaseModel):
+    examined: int
+    created: int
+    updated: int
+    unchanged: int
+    protected: int
+    saved: int

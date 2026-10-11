@@ -426,24 +426,8 @@ def _confirm(
     result.saved_photo_id = session.scalar(
         select(SavedPhoto.id).where(SavedPhoto.image_id == image.id, SavedPhoto.kid_id == kid.id)
     )
-    cfg = fwd.get_forward_config(session)
-    if cfg.include_review_confirmed:
-        for row in fwd.plan_forwards(session, image, [kid], {kid.id: path}, group):
-            if row.status != "pending":
-                continue
-            if kid.id not in (row.kid_ids or []):  # join a sibling's pending forward
-                row.kid_ids = [*(row.kid_ids or []), kid.id]
-                names = {
-                    k.id: k.display_name
-                    for k in session.scalars(select(Kid).where(Kid.id.in_(row.kid_ids)))
-                }
-                row.caption = fwd.image_caption(
-                    cfg.caption_template,
-                    [names[k] for k in row.kid_ids if k in names],
-                    image,
-                    group,
-                )
-            result.forward_ids.append(row.id)
+    if fwd.get_forward_config(session).include_review_confirmed:
+        result.forward_ids = forward_kid(session, image, kid, path, group)
         fx.forward_ids.extend(result.forward_ids)
     tier = tier_for(face.size_px)
     usable = face.embedding is not None and tier in (Tier.L, Tier.M)
@@ -458,6 +442,33 @@ def _confirm(
         )
         result.reference_ids = [r.id for r in added.created]
         fx.crops.extend(Path(r.crop_path) for r in added.created if r.crop_path)
+
+
+def forward_kid(session: Session, image: Image, kid: Kid, path: Path, group: Group) -> list[int]:
+    """Plan forwarding of a newly saved photo of ``kid``; returns the pending forward ids to
+    enqueue after the commit. The kid joins a still-pending forward of the same image to the
+    same destination (caption re-rendered); a sent or cancelled one is left alone."""
+    from kino import forward as fwd
+
+    cfg = fwd.get_forward_config(session)
+    ids: list[int] = []
+    for row in fwd.plan_forwards(session, image, [kid], {kid.id: path}, group):
+        if row.status != "pending":
+            continue
+        if kid.id not in (row.kid_ids or []):  # join a sibling's pending forward
+            row.kid_ids = [*(row.kid_ids or []), kid.id]
+            names = {
+                k.id: k.display_name
+                for k in session.scalars(select(Kid).where(Kid.id.in_(row.kid_ids)))
+            }
+            row.caption = fwd.image_caption(
+                cfg.caption_template,
+                [names[k] for k in row.kid_ids if k in names],
+                image,
+                group,
+            )
+        ids.append(row.id)
+    return ids
 
 
 def _save_file(

@@ -17,12 +17,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings
-from kino.db.models import Face, Group, Image, Kid
-from kino.db.session import blob_to_embedding
+from kino.db.models import Face, Group, Image, Kid, Match, SavedPhoto
+from kino.db.session import blob_to_embedding, get_session
 from kino.pipeline.decide import (
     Action,
     Decision,
@@ -32,7 +33,7 @@ from kino.pipeline.decide import (
 )
 from kino.pipeline.matcher import KidInfo, Matcher
 from kino.pipeline.quality import Tier, tier_for
-from kino.services import InvalidError
+from kino.services import InvalidError, ServiceError, review
 from kino.services import enroll_web as enroll
 
 MAX_FACES = 20_000  # faces scored per dry run; the newest photos win
@@ -246,3 +247,234 @@ def score_preview(
             ev.face.face_id: enroll.contained(ev.face.crop_path, crops) is not None for ev in shown
         },
     )
+
+
+# --- re-score (writes matches) ----------------------------------------------------------
+
+RESCORE_BATCH = 100  # images per transaction
+_DECISION = {"auto_save": "auto_saved", "review": "review", "drop": "dropped"}
+_SCORE_TOL = 1e-6
+
+
+@dataclass
+class RescoreResult:
+    examined: int = 0  # faces with an embedding on `done` images in the window
+    created: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    protected: int = 0  # faces left alone: the user decided, or the photo was saved
+    saved: int = 0  # photos newly saved for a kid (new auto-save outcomes)
+
+
+def is_protected(m: Match, saved: set[tuple[int, int]], image_id: int) -> bool:
+    """A match re-scoring must never change: decided by the user, confirmed or rejected,
+    or auto-saved with its photo still saved for the kid."""
+    return (
+        m.decided_by == "user"
+        or m.decision in ("confirmed", "rejected")
+        or (m.decision == "auto_saved" and (image_id, m.kid_id) in saved)
+    )
+
+
+def rescore(settings: Settings, days: int, now: datetime | None = None) -> RescoreResult:
+    """Re-run matching and decisions on the stored faces of `done` photos from the last
+    ``days`` days, with the current gallery, thresholds and kid settings (CLAUDE.md §11).
+
+    Per face, the worker's outcome is recomputed and written to its ``matches`` (one active
+    match per face, for its best kid): a new row is created, or the existing system match
+    for that kid is updated; system matches of the face for other kids become ``dropped``.
+    Faces with a protected match (:func:`is_protected`) are skipped entirely, so a user
+    decision is never overwritten. Running it twice changes nothing the second time.
+
+    A new auto-save outcome saves the photo and plans its forward like the worker (only for
+    kids with auto-save enabled; ``decide`` handles that). When the original is gone, the
+    kid is already saved from another face of the photo, or saving fails, the face goes to
+    review instead. Unlike the worker it does not auto-enrich the gallery, so
+    ``gallery_version`` is untouched.
+
+    Runs synchronously in batches of RESCORE_BATCH photos, one transaction each; the
+    background jobs mechanism (Task 8) will take it over.
+    """
+    from kino.tasks import cleanup_raw
+
+    if not 1 <= days <= 365:
+        raise InvalidError("days must be between 1 and 365")
+    now = now or _utcnow()
+    with get_session() as s:
+        matcher = build_matcher(s)
+        thresholds = Thresholds.from_settings(s)
+        image_ids = list(
+            s.scalars(
+                select(Image.id)
+                .where(Image.status == "done", photo_date() >= now - timedelta(days=days))
+                .order_by(Image.id)
+            )
+        )
+    res = RescoreResult()
+    for i in range(0, len(image_ids), RESCORE_BATCH):
+        fx = review._Effects()
+        saved_images: set[int] = set()
+        part = RescoreResult()
+        try:
+            with get_session() as s:
+                _rescore_batch(
+                    s,
+                    settings,
+                    matcher,
+                    thresholds,
+                    image_ids[i : i + RESCORE_BATCH],
+                    part,
+                    fx,
+                    saved_images,
+                    now,
+                )
+        except BaseException:
+            review._undo(fx, settings)
+            raise
+        for name in vars(res):
+            setattr(res, name, getattr(res, name) + getattr(part, name))
+        for fid in fx.forward_ids:
+            try:
+                review.enqueue_forward(fid)
+            except Exception as e:  # the retry_forwards sweep picks the row up later
+                logger.error("enqueue of forward {} failed: {}", fid, type(e).__name__)
+        for image_id in saved_images:
+            try:
+                cleanup_raw(image_id)
+            except Exception as e:
+                logger.warning("raw cleanup for image {} failed: {}", image_id, type(e).__name__)
+    logger.info("re-score of the last {} day(s): {}", days, vars(res))
+    return res
+
+
+def _rescore_batch(
+    s: Session,
+    settings: Settings,
+    matcher: Matcher,
+    thresholds: Thresholds,
+    image_ids: list[int],
+    res: RescoreResult,
+    fx: review._Effects,
+    saved_images: set[int],
+    now: datetime,
+) -> None:
+    rows = _face_rows(
+        s.execute(_face_query().where(Face.image_id.in_(image_ids)).order_by(Face.id))
+    )
+    existing: dict[int, list[Match]] = {}
+    for m in s.scalars(
+        select(Match).where(Match.face_id.in_([r.face_id for r in rows])).order_by(Match.id)
+    ):
+        existing.setdefault(m.face_id, []).append(m)
+    saved = {
+        (img, kid)
+        for img, kid in s.execute(
+            select(SavedPhoto.image_id, SavedPhoto.kid_id).where(SavedPhoto.image_id.in_(image_ids))
+        )
+    }
+    res.examined += len(rows)
+    taken = set(saved)  # (image, kid) already saved, or confirmed from another face
+    todo: list[FaceRow] = []
+    for r in rows:
+        ms = existing.get(r.face_id, [])
+        if any(is_protected(m, saved, r.image_id) for m in ms):
+            res.protected += 1
+            taken.update(
+                (r.image_id, m.kid_id) for m in ms if m.decision in ("confirmed", "auto_saved")
+            )
+        else:
+            todo.append(r)
+    for ev in evaluate(matcher, thresholds, todo):
+        f, dec = ev.face, ev.decision
+        ms = existing.get(f.face_id, [])
+        changed = False
+        if dec.kid_id is None:  # no kid has references: retire stale suggestions
+            for m in ms:
+                changed |= _set(m, decision="dropped", decided_at=now)
+            _count(res, changed)
+            continue
+        action = dec.action
+        if action == "auto_save":
+            if (f.image_id, dec.kid_id) in taken or not _save(
+                s, settings, f.image_id, dec.kid_id, fx
+            ):
+                action = "review"
+            else:
+                taken.add((f.image_id, dec.kid_id))
+                saved_images.add(f.image_id)
+                res.saved += 1
+        decision = _DECISION[action]
+        target = next((m for m in ms if m.kid_id == dec.kid_id), None)
+        for m in ms:
+            if m is not target:
+                changed |= _set(m, decision="dropped", decided_at=now)
+        if target is None:
+            s.add(
+                Match(
+                    face_id=f.face_id,
+                    kid_id=dec.kid_id,
+                    score=dec.score,
+                    margin=dec.margin,
+                    method="face",
+                    decision=decision,
+                    decided_by="system",
+                    decided_at=now,
+                )
+            )
+            res.created += 1
+            if changed:  # also retired another kid's suggestion
+                res.updated += 1
+            continue
+        if (
+            target.decision != decision
+            or target.method != "face"
+            or abs(target.score - dec.score) > _SCORE_TOL
+            or target.margin is None
+            or abs(target.margin - dec.margin) > _SCORE_TOL
+        ):
+            target.decision = decision
+            target.method = "face"
+            target.score = dec.score
+            target.margin = dec.margin
+            target.decided_at = now
+            changed = True
+        _count(res, changed)
+    s.flush()
+
+
+def _set(m: Match, *, decision: str, decided_at: datetime) -> bool:
+    if m.decision == decision:
+        return False
+    m.decision = decision
+    m.decided_at = decided_at
+    return True
+
+
+def _count(res: RescoreResult, changed: bool) -> None:
+    if changed:
+        res.updated += 1
+    else:
+        res.unchanged += 1
+
+
+def _save(s: Session, settings: Settings, image_id: int, kid_id: int, fx: review._Effects) -> bool:
+    """Save the photo for the kid like the worker (file, saved_photos row, forward plan).
+    False when it cannot be saved (original gone, no group, inactive kid, storage error):
+    the face then goes to review."""
+    from kino.tasks import upsert_saved
+
+    image = s.get(Image, image_id)
+    kid = s.get(Kid, kid_id)
+    if image is None or kid is None or not kid.active or image.group_id is None:
+        return False
+    group = s.get(Group, image.group_id)
+    if group is None:
+        return False
+    try:
+        path = review._save_file(s, settings, image, kid, group, fx)
+    except ServiceError as e:  # OriginalMissing, unreadable original, storage failure
+        logger.info("re-score: image {} goes to review instead of saving: {}", image_id, e)
+        return False
+    upsert_saved(s, image_id, kid_id, path)
+    fx.forward_ids.extend(review.forward_kid(s, image, kid, path, group))
+    return True

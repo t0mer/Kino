@@ -24,6 +24,7 @@ from kino.db.models import (
     Kid,
     Match,
     ReferenceFace,
+    SavedPhoto,
     Setting,
 )
 from kino.services import rescore as rescore_svc
@@ -212,8 +213,11 @@ def test_routes_require_auth_and_csrf(world):
     api = world["api"]
     api.headers.pop("X-CSRF-Token")
     assert api.post("/api/test/score", json={}).status_code == 403
+    assert api.post("/api/rescore", json={"days": 7}).status_code == 403
     api.cookies.clear()
     assert api.post("/api/test/score", json={}).status_code == 401
+    assert api.post("/api/rescore", json={"days": 7}).status_code == 401
+    assert count(Match) == 0
 
 
 # --- dry-run scoring --------------------------------------------------------------------
@@ -327,3 +331,146 @@ def test_bucket_caps(world, monkeypatch):
     body = score(world["api"])
     review = body["buckets"]["would_review"]
     assert review["count"] == 2 and len(review["items"]) == 1
+
+
+# --- re-score ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def forwards(monkeypatch):
+    from kino.services import review as review_svc
+
+    calls: list[int] = []
+    monkeypatch.setattr(review_svc, "enqueue_forward", calls.append)
+    return calls
+
+
+def rescore(api, days=7):
+    r = api.post("/api/rescore", json={"days": days})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def by_kid(face_id: int) -> dict[int, Match]:
+    return {m.kid_id: m for m in matches(face_id)}
+
+
+def test_rescore_creates_matches_and_saves_auto(world, forwards):
+    api = world["api"]
+    out = rescore(api)
+    assert out == {
+        "examined": 4,
+        "created": 4,
+        "updated": 0,
+        "unchanged": 0,
+        "protected": 0,
+        "saved": 1,
+    }
+    a = by_kid(world["A"])[world["noa"]]
+    assert a.decision == "auto_saved" and a.decided_by == "system"
+    assert a.score == pytest.approx(0.9, abs=1e-4)
+    assert by_kid(world["B"])[world["noa"]].decision == "review"
+    assert by_kid(world["C"])[world["noa"]].decision == "dropped"
+    assert by_kid(world["D"])[world["itai"]].decision == "review"  # Itai: auto-save off
+    with dbs.get_session() as s:
+        [sp] = s.scalars(select(SavedPhoto)).all()
+        assert sp.kid_id == world["noa"] and sp.image_id == image_of(world["A"])
+        assert Path(sp.path).is_file()
+        img = s.get(Image, image_of(world["A"]))
+        assert img is not None and img.raw_path is None  # cleaned up like the worker
+    assert gallery_version() is None  # re-scoring never touches the gallery
+
+
+def test_rescore_is_idempotent(world, forwards):
+    api = world["api"]
+    rescore(api)
+    n = count(Match)
+    out = rescore(api)
+    assert out["created"] == 0 and out["updated"] == 0
+    assert out["unchanged"] + out["protected"] == 4 and out["saved"] == 0
+    assert count(Match) == n == 4
+    assert count(SavedPhoto) == 1
+
+
+def test_rescore_updates_system_matches_after_threshold_change(world, forwards):
+    api = world["api"]
+    rescore(api)
+    looser = thresholds(api, L={"auto": 0.40, "review": 0.10})
+    assert api.put("/api/settings/thresholds", json=looser).status_code == 200
+    out = rescore(api)
+    assert out["updated"] == 1 and out["created"] == 0  # C: dropped -> review
+    assert by_kid(world["C"])[world["noa"]].decision == "review"
+
+
+def test_rescore_never_overwrites_user_decisions(world, forwards):
+    api = world["api"]
+    rejected = seed_match(world["A"], world["noa"], "rejected", by="user")
+    confirmed = seed_match(world["B"], world["itai"], "confirmed", by="user")
+    out = rescore(api)
+    assert out["protected"] == 2 and out["saved"] == 0
+    assert [m.id for m in matches(world["A"])] == [rejected]
+    assert [m.id for m in matches(world["B"])] == [confirmed]
+    with dbs.get_session() as s:
+        m = s.get(Match, rejected)
+        assert m is not None and m.decision == "rejected" and m.score == 0.3
+    assert count(SavedPhoto) == 0
+
+
+def test_rescore_moves_a_stale_system_match_to_the_new_best_kid(world, forwards):
+    api = world["api"]
+    stale = seed_match(world["D"], world["noa"], "review")  # was suggested as Noa
+    out = rescore(api)
+    assert out["updated"] == 1  # the Noa suggestion leaves the review queue
+    got = by_kid(world["D"])
+    assert got[world["noa"]].id == stale and got[world["noa"]].decision == "dropped"
+    assert got[world["itai"]].decision == "review"
+    queue = api.get("/api/review").json()["items"]
+    assert [(i["face_id"], i["kid_id"]) for i in queue if i["face_id"] == world["D"]] == [
+        (world["D"], world["itai"])
+    ]
+
+
+def test_rescore_auto_save_without_original_goes_to_review(world, forwards):
+    api = world["api"]
+    gone = seed_face(world["gid"], mix(0, 0.95, 140), raw=False)
+    out = rescore(api)
+    assert by_kid(gone)[world["noa"]].decision == "review"
+    assert out["saved"] == 1  # only A
+
+
+def test_rescore_kid_already_saved_on_another_face_goes_to_review(world, forwards):
+    api = world["api"]
+    img = image_of(world["A"])
+    other = seed_face(None, mix(0, 0.99, 150), image_id=img)  # stronger Noa, user-rejected
+    seed_match(other, world["noa"], "rejected", by="user")
+    rescore(api)
+    assert by_kid(world["A"])[world["noa"]].decision == "auto_saved"  # rejected face ignored
+    confirmed = seed_face(None, mix(0, 0.5, 151), image_id=image_of(world["B"]))
+    seed_match(confirmed, world["noa"], "confirmed", by="user")
+    with dbs.get_session() as s:
+        s.add(SavedPhoto(image_id=image_of(world["B"]), kid_id=world["noa"], path="/x.jpg"))
+    looser = thresholds(api, L={"auto": 0.35, "review": 0.10})
+    assert api.put("/api/settings/thresholds", json=looser).status_code == 200
+    rescore(api)
+    assert by_kid(world["B"])[world["noa"]].decision == "review"  # Noa already saved there
+
+
+def test_rescore_skips_images_outside_the_window_or_not_done(world, forwards):
+    api = world["api"]
+    old = seed_face(world["gid"], mix(0, 0.9, 160), sent=NOW - timedelta(days=30))
+    busy = seed_face(world["gid"], mix(0, 0.9, 161))
+    with dbs.get_session() as s:
+        img = s.get(Image, image_of(busy))
+        assert img is not None
+        img.status = "processing"
+    out = rescore(api)
+    assert out["examined"] == 4
+    assert matches(old) == [] and matches(busy) == []
+    assert rescore(api, days=31)["examined"] == 5
+
+
+def test_rescore_validates_days(world):
+    api = world["api"]
+    for bad in (0, 366, "x"):
+        assert api.post("/api/rescore", json={"days": bad}).status_code == 422
+    assert api.post("/api/rescore", json={}).status_code == 422
