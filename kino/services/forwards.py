@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kino.db.models import FORWARD_STATUS, Forward
+from kino.openwa.client import OpenWAClient
 from kino.services import ConflictError, InvalidError, NotFoundError
 
 
@@ -36,3 +37,26 @@ def enqueue(forward_id: int) -> None:
     from kino import forward
 
     forward.send_forward(forward_id)
+
+
+TEST_CAPTION = "Kino test photo: forwarding to this chat works"
+
+
+def make_test_photo() -> bytes:
+    """A small generated JPEG (no real photo ever leaves the host for a test)."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (480, 270), (36, 52, 71))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((24, 24, 456, 246), outline=(242, 201, 76), width=4)
+    draw.text((48, 120), "Kino test photo", fill=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+async def send_test(client: OpenWAClient, chat_id: str) -> str:
+    """Send the generated test photo; returns OpenWA's message id."""
+    return await client.send_image(chat_id, make_test_photo(), "image/jpeg", TEST_CAPTION)
