@@ -29,14 +29,28 @@ class RegisterError(RuntimeError):
     """Registration cannot proceed (bad secret, ...)."""
 
 
-async def register_webhook(client: OpenWAClient, url: str, secret: str) -> tuple[str, str]:
-    """Create or update the webhook for `url`; returns (action, webhook id)."""
+async def register_webhook(
+    client: OpenWAClient, url: str, secret: str, previous_url: str | None = None
+) -> tuple[str, str]:
+    """Create or update the webhook for `url`; returns (action, webhook id).
+
+    When `previous_url` (the URL registered last time) is given and its hook still exists,
+    that hook is moved to `url` in place, so the old endpoint does not stay registered.
+    PUT accepts `url` per the OpenWA notes in kino/openwa/client.py (not yet verified live).
+    """
     if len(secret) < MIN_SECRET_LEN:
         raise RegisterError(f"KINO_WEBHOOK_SECRET must be at least {MIN_SECRET_LEN} characters")
     body: dict[str, Any] = {"events": EVENTS, "secret": secret, "filters": FILTERS}
-    for hook in await client.list_webhooks():
+    hooks = await client.list_webhooks()
+    for hook in hooks:
         if hook.get("url") == url:
             hook_id = str(hook["id"])
             await client.update_webhook(hook_id, {**body, "active": True})
             return "updated", hook_id
+    if previous_url and previous_url != url:
+        for hook in hooks:
+            if hook.get("url") == previous_url:
+                hook_id = str(hook["id"])
+                await client.update_webhook(hook_id, {**body, "url": url, "active": True})
+                return "updated", hook_id
     return "created", await client.create_webhook({"url": url, **body})

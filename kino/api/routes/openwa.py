@@ -93,8 +93,11 @@ async def webhook_register(
         with get_session() as s:
             return settings_svc.default_webhook_url(s, env)
 
+    previous = await run_in_threadpool(_stored_url)
     url = body.url if body.url else await run_in_threadpool(default_url)
-    action, hook_id = await register_webhook(client, url, env.require_webhook_secret())
+    action, hook_id = await register_webhook(
+        client, url, env.require_webhook_secret(), previous_url=previous
+    )
 
     def remember() -> None:
         with get_session() as s:

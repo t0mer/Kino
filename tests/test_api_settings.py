@@ -509,3 +509,33 @@ def test_new_routes_need_auth(api):
     api.cookies.clear()
     for path in ("/api/settings", "/api/openwa/chats", "/api/forwards", "/api/stats"):
         assert api.get(path).status_code == 401, path
+
+
+def test_register_new_url_moves_the_old_hook(api, owa):
+    old, new = "https://old.example/api/webhook/openwa", "https://new.example/api/webhook/openwa"
+    assert api.post("/api/openwa/webhook/register", json={"url": old}).json()["action"] == "created"
+    owa.hooks = [
+        {"id": "h-1", "url": old, "events": ["message.received"], "active": True},
+        {"id": "h-9", "url": "http://other/hook", "events": ["x"], "active": True},
+    ]
+    owa.calls.clear()
+    r = api.post("/api/openwa/webhook/register", json={"url": new})
+    assert r.status_code == 200, r.text
+    assert r.json()["action"] == "updated" and r.json()["id"] == "h-1"
+    writes = [(m, p, b) for m, p, b in owa.calls if m != "GET"]
+    assert len(writes) == 1  # no second hook is created
+    method, path, body = writes[0]
+    assert (method, path) == ("PUT", "webhooks/h-1")
+    assert body["url"] == new and body["active"] is True
+    owa.hooks[0]["url"] = new
+    assert api.get("/api/openwa/webhook").json()["url"] == new
+
+
+def test_register_new_url_creates_when_old_hook_is_gone(api, owa):
+    old = "https://old.example/api/webhook/openwa"
+    api.post("/api/openwa/webhook/register", json={"url": old})
+    owa.hooks = []
+    r = api.post(
+        "/api/openwa/webhook/register", json={"url": "https://n.example/api/webhook/openwa"}
+    )
+    assert r.json()["action"] == "created"
