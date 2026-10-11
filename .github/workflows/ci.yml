@@ -28,7 +28,27 @@ jobs:
       - name: Mypy
         run: .venv/bin/mypy kino
       - name: Pytest
-        run: .venv/bin/pytest -q
+        # `python -m` puts the repo root on sys.path (tests import shared helpers from tests.*)
+        run: .venv/bin/python -m pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"   # same major as the Dockerfile web stage
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build (type-check + bundle)
+        run: npm run build
 
   licenses:
     runs-on: ubuntu-latest
