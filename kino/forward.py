@@ -123,6 +123,17 @@ def _cap_utf16(text: str, limit: int) -> str:
     return text
 
 
+def image_caption(template: str, kids: list[str], image: Image, group: Group | None) -> str:
+    """Caption for a forwarded photo, in local time (KINO_TIMEZONE)."""
+    return render_caption(
+        template,
+        kids,
+        (group.name if group else None) or "",
+        image.sender_name or "",
+        to_local(image.sent_at or datetime(1970, 1, 1), get_settings().timezone),
+    )
+
+
 def validate_destination(chat_id: str | None, session: Session) -> None:
     """Reject empty destinations and watched groups (their photos would be re-ingested)."""
     if not chat_id or not chat_id.strip():
@@ -188,13 +199,7 @@ def plan_forwards(
             rows.append(existing)
             continue
         first = next((saved_paths[k.id] for k in kids if k.id in saved_paths), None)
-        caption = render_caption(
-            cfg.caption_template,
-            [k.display_name for k in kids],
-            group.name or "",
-            image.sender_name or "",
-            to_local(image.sent_at or datetime(1970, 1, 1), get_settings().timezone),
-        )
+        caption = image_caption(cfg.caption_template, [k.display_name for k in kids], image, group)
         row = Forward(
             image_id=image.id,
             dest_chat_id=dest,

@@ -14,7 +14,16 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from kino import metrics
-from kino.db.models import Cluster, Forward, Group, Kid, KidGroup, ReferenceFace, SavedPhoto
+from kino.db.models import (
+    Cluster,
+    Forward,
+    Group,
+    Image,
+    Kid,
+    KidGroup,
+    ReferenceFace,
+    SavedPhoto,
+)
 from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN
 from kino.services import ConflictError, InvalidError, NotFoundError
 from kino.slug import MAX_LEN, slugify
@@ -204,8 +213,9 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     """Delete a kid and everything that is only theirs.
 
     References, negatives, matches, saved-photo rows and group mappings go with the kid via
-    ON DELETE CASCADE. Pending forwards naming the kid are cancelled (as when a photo is
-    removed from a kid), the kid's forward destination override is dropped, labelled clusters
+    ON DELETE CASCADE. A pending forward that names only this kid is cancelled; one that
+    also names siblings keeps going without this kid (caption re-rendered, file switched to
+    a sibling's copy). The kid's forward destination override is dropped, labelled clusters
     become unlabelled again, and the gallery version is bumped so workers reload.
     """
     from kino.forward import K_PER_KID, get_forward_config, put_setting
@@ -220,14 +230,17 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
         )
     )
     result.files = [Path(p) for p in paths if p not in shared]
+    cfg = get_forward_config(session)
     for f in session.scalars(select(Forward).where(Forward.status == "pending")):
-        if kid.id in (f.kid_ids or []):
+        if kid.id in (f.kid_ids or []) and not _drop_kid_from_forward(
+            session, f, kid.id, set(paths), cfg.caption_template
+        ):
             f.status = "cancelled"
             f.last_error = "kid deleted"
             f.next_attempt_at = None
             metrics.forwards.labels(status="cancelled").inc()
             result.cancelled_forwards += 1
-    per_kid = get_forward_config(session).per_kid
+    per_kid = cfg.per_kid
     if kid.id in per_kid:
         del per_kid[kid.id]
         put_setting(session, K_PER_KID, {str(k): v for k, v in per_kid.items()})
@@ -240,6 +253,36 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     session.flush()
     bump_gallery_version(session)
     return result
+
+
+def _drop_kid_from_forward(
+    session: Session, f: Forward, kid_id: int, kid_paths: set[str], template: str
+) -> bool:
+    """Keep a pending forward that also names other kids: drop the deleted kid, re-render the
+    caption and, if it pointed at the deleted kid's file, use a remaining kid's saved file.
+    Returns False when nothing is left to send (the caller cancels it)."""
+    from kino.forward import image_caption
+
+    remaining = [k for k in f.kid_ids or [] if k != kid_id]
+    image = session.get(Image, f.image_id)
+    if not remaining or image is None:
+        return False
+    if f.file_path is None or f.file_path in kid_paths:
+        other = session.scalar(
+            select(SavedPhoto.path)
+            .where(SavedPhoto.image_id == f.image_id, SavedPhoto.kid_id.in_(remaining))
+            .order_by(SavedPhoto.id)
+        )
+        if other is None:
+            return False
+        f.file_path = other
+    names = {
+        k.id: k.display_name for k in session.scalars(select(Kid).where(Kid.id.in_(remaining)))
+    }
+    group = session.get(Group, image.group_id) if image.group_id is not None else None
+    f.kid_ids = remaining
+    f.caption = image_caption(template, [names[k] for k in remaining if k in names], image, group)
+    return True
 
 
 def remove_saved_files(files: list[Path], photos_dir: Path) -> int:

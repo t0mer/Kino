@@ -151,7 +151,7 @@ def test_delete_cascades(api, tmp_path):
     sibling = photos / "itai.jpg"
     sibling.write_bytes(b"jpg")
     with dbs.get_session() as s:
-        img = Image(message_id="m1", status="done")
+        img = Image(message_id="m1", status="done", group_id=gid, sender_name="Dana")
         img2 = Image(message_id="m2", status="done")
         s.add_all([img, img2])
         s.flush()
@@ -170,7 +170,14 @@ def test_delete_cascades(api, tmp_path):
                 SavedPhoto(image_id=img.id, kid_id=noa, path=str(mine)),
                 SavedPhoto(image_id=img2.id, kid_id=noa, path=str(outside)),
                 SavedPhoto(image_id=img.id, kid_id=itai, path=str(sibling)),
-                Forward(image_id=img.id, dest_chat_id="d@c.us", kid_ids=[noa, itai]),
+                Forward(
+                    image_id=img.id,
+                    dest_chat_id="d@c.us",
+                    kid_ids=[noa, itai],
+                    caption="Noa, Itai · Class",
+                    file_path=str(mine),
+                ),
+                Forward(image_id=img2.id, dest_chat_id="f@c.us", kid_ids=[noa]),
                 Forward(image_id=img2.id, dest_chat_id="d@c.us", kid_ids=[noa], status="sent"),
                 Forward(image_id=img2.id, dest_chat_id="e@c.us", kid_ids=[itai]),
                 cluster,
@@ -190,8 +197,15 @@ def test_delete_cascades(api, tmp_path):
             n = s.scalar(select(func.count()).select_from(model).where(model.kid_id == noa))
             assert n == 0, model
         assert s.scalar(select(func.count()).select_from(ReferenceFace)) == 1  # Itai's
-        statuses = {(f.image_id, f.dest_chat_id): f.status for f in s.scalars(select(Forward))}
-        assert sorted(statuses.values()) == ["cancelled", "pending", "sent"]
+        fw = {f.dest_chat_id + str(f.image_id): f for f in s.scalars(select(Forward))}
+        assert sorted(f.status for f in fw.values()) == ["cancelled", "pending", "pending", "sent"]
+        shared = next(f for f in fw.values() if f.dest_chat_id == "d@c.us" and f.status != "sent")
+        # the sibling's photo is still forwarded: Noa dropped, caption re-rendered, file moved
+        assert shared.status == "pending" and shared.kid_ids == [itai]
+        assert shared.caption.startswith("📸 Itai · Class · ") and "Noa" not in shared.caption
+        assert shared.file_path == str(sibling)
+        only_noa = next(f for f in fw.values() if f.dest_chat_id == "f@c.us")
+        assert only_noa.status == "cancelled"
         c = s.scalar(select(Cluster))
         assert (c.kid_id, c.label_status) == (None, "unlabeled")
         assert get_forward_config(s).per_kid == {itai: "y@c.us"}
