@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Annotated
 
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 
@@ -17,6 +19,9 @@ from kino.openwa.client import OpenWAClient, mask_path
 from kino.services import forwards as svc
 
 router = protected_router(tags=["forwards"])
+
+TEST_COOLDOWN = 10.0  # seconds between test sends (WhatsApp ban-risk guard)
+_clock = time.monotonic
 
 
 def _out(f: Forward) -> ForwardOut:
@@ -58,10 +63,21 @@ def _check_destination(chat_id: str) -> None:
 
 @router.post("/api/forward/test", response_model=ForwardTestOut)
 async def send_test(
-    body: ForwardTestIn, client: Annotated[OpenWAClient, Depends(openwa_client)]
+    request: Request,
+    body: ForwardTestIn,
+    client: Annotated[OpenWAClient, Depends(openwa_client)],
 ) -> ForwardTestOut:
-    """Send a generated test photo to a candidate destination (watched groups refused)."""
+    """Send a generated test photo to a candidate destination (watched groups refused).
+
+    At most one send per TEST_COOLDOWN seconds per process; the slot is taken only once the
+    destination passed validation, and checked and taken with no await in between."""
     await run_in_threadpool(_check_destination, body.chat_id)
+    now = _clock()
+    last: float | None = getattr(request.app.state, "forward_test_at", None)
+    if last is not None and now - last < TEST_COOLDOWN:
+        wait = math.ceil(TEST_COOLDOWN - (now - last))
+        raise HTTPException(429, f"please wait {wait} s before sending another test photo")
+    request.app.state.forward_test_at = now
     await svc.send_test(client, body.chat_id)
     logger.info("sent a test photo to {}", mask_path(body.chat_id))
     return ForwardTestOut(sent=True)

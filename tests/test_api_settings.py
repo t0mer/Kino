@@ -539,3 +539,20 @@ def test_register_new_url_creates_when_old_hook_is_gone(api, owa):
         "/api/openwa/webhook/register", json={"url": "https://n.example/api/webhook/openwa"}
     )
     assert r.json()["action"] == "created"
+
+
+def test_forward_test_cooldown(api, owa, monkeypatch):
+    from kino.api.routes import forwards as route
+
+    now = [1000.0]
+    monkeypatch.setattr(route, "_clock", lambda: now[0])
+    seed_group(GID, watched=True)
+    assert api.post("/api/forward/test", json={"chat_id": GID}).status_code == 409  # no slot used
+    assert api.post("/api/forward/test", json={"chat_id": DEST}).status_code == 200
+    now[0] += 9.5
+    r = api.post("/api/forward/test", json={"chat_id": DEST})
+    assert r.status_code == 429 and "wait" in r.json()["detail"]
+    sends = [p for _, p, _ in owa.calls if p == "messages/send-image"]
+    assert len(sends) == 1
+    now[0] += 0.6
+    assert api.post("/api/forward/test", json={"chat_id": DEST}).status_code == 200
