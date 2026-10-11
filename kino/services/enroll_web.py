@@ -49,6 +49,7 @@ from kino.pipeline.quality import (
     tier_for,
 )
 from kino.services import ConflictError, GoneError, InvalidError, NotFoundError, ServiceError
+from kino.services.files import existing_file
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_FILES = 20
@@ -207,16 +208,7 @@ def negatives_dir(settings: Settings) -> Path:
 
 def contained(path: str | Path | None, base: Path) -> Path | None:
     """``path`` resolved, if it is a file inside ``base``; else None (no traversal)."""
-    if not path:
-        return None
-    try:
-        p = Path(path).resolve()
-        root = base.resolve()
-    except (OSError, RuntimeError):
-        return None
-    if p == root or root not in p.parents or not p.is_file():
-        return None
-    return p
+    return existing_file(base, path)
 
 
 @dataclass
