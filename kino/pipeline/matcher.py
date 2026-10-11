@@ -126,21 +126,40 @@ class Matcher:
         """Raw per-kid scores, best first. ``group_id`` is accepted for API symmetry
         but the group prior is applied in ``decide`` only (see module docstring)."""
         del group_id
-        face = np.asarray(face_emb, dtype=np.float32)
-        raw: list[tuple[int, float]] = []
-        for kid_id, g in self._galleries.items():
-            if kid_id not in self._kids:  # inactive or deleted kid
-                continue
-            sims = g.refs @ face
-            k = min(TOP_K, len(sims))
-            idx = np.argsort(-sims, kind="stable")[:k]
-            wsum = float(g.weights[idx].sum())
-            score = float((sims[idx] * g.weights[idx]).sum() / wsum) if wsum > 0 else 0.0
-            if g.negatives is not None and float((g.negatives @ face).max()) >= score:
-                score -= NEGATIVE_PENALTY
-            raw.append((kid_id, score))
-        if not raw:
-            return []
-        raw.sort(key=lambda t: (-t[1], t[0]))
-        margin = raw[0][1] - (raw[1][1] if len(raw) > 1 else 0.0)
-        return [KidScore(k, s, margin) for k, s in raw]
+        return self.score_many(np.asarray(face_emb, dtype=np.float32)[None, :])[0]
+
+    def score_many(self, faces: NDArray[np.float32]) -> list[list[KidScore]]:
+        """Vectorised :meth:`score` for an (n, d) matrix of face embeddings: one best-first
+        list per row. ``score`` is this function on one row, so both share one code path
+        (a batch may differ from a single row only by float32 BLAS rounding, ~1e-7)."""
+        mat = np.asarray(faces, dtype=np.float32)
+        n = mat.shape[0]
+        kid_ids = sorted(k for k in self._galleries if k in self._kids)  # skip inactive kids
+        if n == 0 or not kid_ids:
+            return [[] for _ in range(n)]
+        cols: list[NDArray[np.float64]] = []
+        for kid_id in kid_ids:
+            g = self._galleries[kid_id]
+            sims = mat @ g.refs.T  # (n, refs)
+            k = min(TOP_K, sims.shape[1])
+            idx = np.argsort(-sims, axis=1, kind="stable")[:, :k]
+            top = np.take_along_axis(sims, idx, axis=1)
+            w = g.weights[idx]
+            wsum = w.sum(axis=1)
+            safe = np.where(wsum > 0, wsum, np.float32(1.0))
+            score = np.where(wsum > 0, (top * w).sum(axis=1) / safe, 0.0).astype(np.float64)
+            if g.negatives is not None:
+                neg = (mat @ g.negatives.T).max(axis=1).astype(np.float64)
+                score = np.where(neg >= score, score - NEGATIVE_PENALTY, score)
+            cols.append(score)
+        scores = np.stack(cols, axis=1)  # (n, kids), columns in ascending kid id
+        # Stable sort on -score keeps ascending kid id among equal scores.
+        order = np.argsort(-scores, axis=1, kind="stable")
+        out: list[list[KidScore]] = []
+        for i in range(n):
+            row = scores[i]
+            ranked = order[i]
+            best = float(row[ranked[0]])
+            margin = best - (float(row[ranked[1]]) if len(ranked) > 1 else 0.0)
+            out.append([KidScore(kid_ids[int(j)], float(row[j]), margin) for j in ranked])
+        return out

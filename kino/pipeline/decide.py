@@ -78,8 +78,13 @@ class Thresholds:
         """Read settings key ``thresholds``: {"L": {"auto", "review"}, "M": {...},
         "S": {"review"}, "prior_bonus", "unmapped_penalty", "margin_min"}."""
         row = session.get(models.Setting, "thresholds")
+        return cls.from_dict(row.value if row is not None else None)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "Thresholds":
+        """Parse a thresholds mapping (the shape stored in settings); invalid parts are
+        ignored with a warning and keep their defaults."""
         t = cls()
-        data: Any = row.value if row is not None else None
         if not isinstance(data, dict):
             return t
         for tier in ("L", "M", "S"):
@@ -164,3 +169,27 @@ def decide(
     if not kid.auto_save_enabled:
         return result("review", "auto-save disabled for kid")
     return result("auto_save", "above auto-save threshold")
+
+
+def one_face_per_kid[T](decided: list[tuple[T, Decision]]) -> list[T]:
+    """A kid appears at most once per photo: per kid, only the highest-scoring face keeps its
+    auto_save/review decision; every other auto_save for that kid is demoted to review (a
+    lookalike, sibling or classmate must never be saved or enrolled as the kid). Drops stay.
+    ``decided`` holds one photo's faces; decisions are changed in place. Returns the demoted
+    items."""
+    top: dict[int, tuple[T, Decision]] = {}
+    for item, dec in decided:
+        if dec.action == "drop" or dec.kid_id is None:
+            continue
+        cur = top.get(dec.kid_id)
+        if cur is None or dec.score > cur[1].score:
+            top[dec.kid_id] = (item, dec)
+    demoted: list[T] = []
+    for item, dec in decided:
+        if dec.kid_id is None or dec.action == "drop" or top[dec.kid_id][0] is item:
+            continue
+        if dec.action == "auto_save":
+            dec.action = "review"
+            dec.reason = "kid already matched by a higher-scoring face in this photo"
+            demoted.append(item)
+    return demoted
