@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("/data")
     photos_dir: Path = Path("/data/photos")
+    # Built web UI (index.html + assets/). The Docker image ships it here; when the directory
+    # is missing (dev, tests) the API runs without serving the UI.
+    web_dir: Path = Path("/opt/venv/share/kino/web")
     strip_gps: bool = True
     # IANA zone used for photo folders/filenames and EXIF local time (sent_at is stored in UTC).
     timezone: str = "UTC"

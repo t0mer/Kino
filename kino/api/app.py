@@ -27,6 +27,7 @@ from kino.api.routes.stats import router as stats_router
 from kino.api.routes.test import rescore_router
 from kino.api.routes.test import router as test_router
 from kino.api.routes.uploads import router as uploads_router
+from kino.api.web import install_spa
 from kino.api.webhook import router as webhook_router
 from kino.config import Settings, get_settings
 from kino.db.session import get_engine, init_engine, run_migrations
@@ -97,4 +98,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             generate_latest(kino_metrics.scrape_registry()), media_type=CONTENT_TYPE_LATEST
         )
 
+    # Last: the SPA only answers requests no route above matched (never /api/*).
+    install_spa(app, settings.web_dir)
     return app
