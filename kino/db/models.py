@@ -183,6 +183,33 @@ class ReferenceFace(Base):
     status: Mapped[str] = mapped_column(
         _enum("reference_status", *REF_STATUS), default="active", nullable=False
     )
+    # Estimated head yaw in degrees (coverage meter); None for references made before 0006.
+    yaw: Mapped[float | None] = mapped_column(Float)
+
+
+class TempFace(Base):
+    """A face found in an enrollment upload, waiting for the user to pick it (TTL 1 h)."""
+
+    __tablename__ = "temp_faces"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # random, unguessable
+    upload_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    kid_id: Mapped[int] = mapped_column(ForeignKey("kids.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    bbox_x: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_y: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_w: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_h: Mapped[float] = mapped_column(Float, nullable=False)
+    size_px: Mapped[float] = mapped_column(Float, nullable=False)
+    quality: Mapped[float] = mapped_column(Float, nullable=False)
+    blur_score: Mapped[float | None] = mapped_column(Float)
+    tier: Mapped[str] = mapped_column(String(4), nullable=False)
+    yaw: Mapped[float | None] = mapped_column(Float)
+    pitch: Mapped[float | None] = mapped_column(Float)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)  # None for tier XS
+    crop_path: Mapped[str | None] = mapped_column(String)
+    photo_date: Mapped[datetime | None] = mapped_column(DateTime)  # EXIF DateTimeOriginal
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False, index=True)
 
 
 class NegativeFace(Base):
