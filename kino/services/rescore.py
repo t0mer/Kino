@@ -22,7 +22,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings
-from kino.db.models import Face, Group, Image, Kid, Match, NegativeFace, SavedPhoto
+from kino.db.models import (
+    Face,
+    Group,
+    Image,
+    Kid,
+    Match,
+    NegativeFace,
+    ReferenceFace,
+    SavedPhoto,
+)
 from kino.db.session import blob_to_embedding, get_session
 from kino.pipeline.decide import (
     Action,
@@ -267,8 +276,9 @@ class RescoreResult:
 
 
 def is_protected(m: Match, saved: set[tuple[int, int]], image_id: int) -> bool:
-    """A match re-scoring must never change: decided by the user, confirmed or rejected,
-    or auto-saved with its photo still saved for the kid."""
+    """A match re-scoring must never change: decided by the user (including a Test page
+    "flag for review"), confirmed or rejected, or auto-saved with its photo still saved for
+    the kid."""
     return (
         m.decided_by == "user"
         or m.decision in ("confirmed", "rejected")
@@ -506,11 +516,13 @@ def flag(
 ) -> FlagResult:
     """The Test page's "this is wrong" on a crop, inside the caller's transaction.
 
-    ``review``: the face becomes a system review item for ``kid_id`` (its other system
-    matches are dropped, one active match per face); refused (409) when the face already has
-    a protected match. ``negative``: the face becomes a negative example for the kid (the
-    same as the review queue's "someone else") and the gallery version is bumped; repeating
-    it is a no-op."""
+    ``review``: the face becomes a review item for ``kid_id`` with ``decided_by='user'``, so
+    a later re-score never undoes it (its other matches are dropped, one active match per
+    face; an earlier flag may be moved to another kid); refused (409) when the face already
+    has another protected match. ``negative``: the face becomes a negative example for the
+    kid (as the review queue's "someone else") and the gallery version is bumped; refused
+    (409) when the face is confirmed/saved as that kid or is one of its active references;
+    repeating it is a no-op."""
     now = now or _utcnow()
     if action not in FLAG_ACTIONS:
         raise InvalidError(f"action must be one of {', '.join(FLAG_ACTIONS)}")
@@ -521,7 +533,32 @@ def flag(
         raise NotFoundError(f"kid {kid_id} not found")
     if face.embedding is None:
         raise InvalidError("this face has no embedding (too small to recognise)")
+    ms = list(session.scalars(select(Match).where(Match.face_id == face_id).order_by(Match.id)))
+    saved = {
+        (face.image_id, k)
+        for k in session.scalars(
+            select(SavedPhoto.kid_id).where(SavedPhoto.image_id == face.image_id)
+        )
+    }
     if action == "negative":
+        if any(
+            m.kid_id == kid_id
+            and (
+                m.decision == "confirmed"
+                or (m.decision == "auto_saved" and (face.image_id, kid_id) in saved)
+            )
+            for m in ms
+        ) or session.scalar(
+            select(ReferenceFace.id).where(
+                ReferenceFace.face_id == face_id,
+                ReferenceFace.kid_id == kid_id,
+                ReferenceFace.status == "active",
+            )
+        ):
+            raise ConflictError(
+                "this face is confirmed as this kid (or is one of the kid's references); "
+                "undo that first"
+            )
         existing = session.scalar(
             select(NegativeFace.id).where(
                 NegativeFace.kid_id == kid_id, NegativeFace.source_face_id == face_id
@@ -532,14 +569,9 @@ def flag(
         neg_id = review.add_negative(session, settings, kid_id, face, fx, now)
         review.bump_gallery(session)
         return FlagResult(face_id, kid_id, action, changed=True, negative_id=neg_id)
-    ms = list(session.scalars(select(Match).where(Match.face_id == face_id).order_by(Match.id)))
-    saved = {
-        (face.image_id, k)
-        for k in session.scalars(
-            select(SavedPhoto.kid_id).where(SavedPhoto.image_id == face.image_id)
-        )
-    }
-    if any(is_protected(m, saved, face.image_id) for m in ms):
+    # An earlier flag (a user review item) may be moved to another kid; anything else
+    # protected blocks the flag.
+    if any(is_protected(m, saved, face.image_id) and not _flagged(m) for m in ms):
         raise ConflictError(
             "this face was already decided; change it from the photos or review page"
         )
@@ -552,6 +584,7 @@ def flag(
     for m in ms:
         if m is not target:
             changed |= _set(m, decision="dropped", decided_at=now)
+            m.decided_by = "system"  # a moved flag stops protecting the old suggestion
     if target is None:
         target = Match(
             face_id=face_id,
@@ -560,19 +593,25 @@ def flag(
             margin=None,
             method="face",
             decision="review",
-            decided_by="system",
+            decided_by="user",  # the user asked for it: re-scoring must leave it alone
             decided_at=now,
         )
         session.add(target)
         changed = True
-    elif target.decision != "review":
+    elif not _flagged(target):
         target.decision = "review"
+        target.decided_by = "user"
         target.score = kid_score
         target.margin = None
         target.decided_at = now
         changed = True
     session.flush()
     return FlagResult(face_id, kid_id, action, changed=changed, match_id=target.id)
+
+
+def _flagged(m: Match) -> bool:
+    """A review item created by the Test page's "flag for review"."""
+    return m.decision == "review" and m.decided_by == "user"
 
 
 def apply_flag(settings: Settings, face_id: int, kid_id: int, action: str) -> FlagResult:

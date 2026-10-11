@@ -141,14 +141,16 @@ def image_of(face_id: int) -> int:
         return face.image_id
 
 
-def seed_match(face_id: int, kid_id: int, decision: str, by: str = "system") -> int:
+def seed_match(
+    face_id: int, kid_id: int, decision: str, by: str = "system", method: str = "face"
+) -> int:
     with dbs.get_session() as s:
         m = Match(
             face_id=face_id,
             kid_id=kid_id,
             score=0.3,
             margin=0.1,
-            method="face",
+            method=method,
             decision=decision,
             decided_by=by,
         )
@@ -515,7 +517,7 @@ def test_flag_review_puts_face_in_review_queue(world):
     body = r.json()
     assert body["changed"] is True and body["match_id"] is not None
     [m] = matches(world["A"])
-    assert m.kid_id == world["itai"] and m.decision == "review" and m.decided_by == "system"
+    assert m.kid_id == world["itai"] and m.decision == "review" and m.decided_by == "user"
     queue = api.get("/api/review").json()["items"]
     assert [(i["face_id"], i["kid_id"]) for i in queue] == [(world["A"], world["itai"])]
     assert flag(api, world["A"], world["itai"], "review").json()["changed"] is False
@@ -526,11 +528,40 @@ def test_flag_review_puts_face_in_review_queue(world):
     assert got[world["itai"]].decision == "dropped" and got[world["noa"]].decision == "review"
 
 
-def test_flag_review_refuses_decided_faces(world):
+def test_flag_refuses_decided_faces(world):
     api = world["api"]
     seed_match(world["A"], world["noa"], "confirmed", by="user")
     assert flag(api, world["A"], world["noa"], "review").status_code == 409
-    assert flag(api, world["A"], world["noa"], "negative").status_code == 200
+    assert flag(api, world["A"], world["noa"], "negative").status_code == 409
+    assert count(NegativeFace) == 0 and gallery_version() is None
+
+
+def test_flag_negative_refuses_a_reference_of_the_kid(world):
+    api = world["api"]
+    with dbs.get_session() as s:
+        face = s.get(Face, world["B"])
+        assert face is not None and face.embedding is not None
+        s.add(
+            ReferenceFace(
+                kid_id=world["noa"],
+                face_id=world["B"],
+                embedding=face.embedding,
+                source="review",
+                status="active",
+            )
+        )
+    assert flag(api, world["B"], world["noa"], "negative").status_code == 409
+    assert flag(api, world["B"], world["itai"], "negative").status_code == 200
+
+
+def test_flagged_review_survives_rescore(world, forwards):
+    api = world["api"]
+    assert flag(api, world["A"], world["itai"], "review").status_code == 200
+    out = rescore(api)
+    assert out["protected"] == 1
+    [m] = matches(world["A"])
+    assert m.kid_id == world["itai"] and m.decision == "review"
+    assert count(SavedPhoto) == 0  # A was not auto-saved as Noa behind the user's back
 
 
 def test_flag_errors(world):
