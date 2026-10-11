@@ -94,10 +94,10 @@ function GroupPicker({ value, onChange }: { value: number[]; onChange: (ids: num
               onChange([...next]);
             }}
           />
-          <span dir="auto" className="min-w-0 flex-1 truncate">
+          <span dir="auto" className="min-w-0 truncate">
             {groupLabel(g)}
           </span>
-          {!g.watched && <span className="text-xs text-muted-foreground">not watched</span>}
+          {!g.watched && <span className="ms-auto shrink-0 text-xs text-muted-foreground">not watched</span>}
         </label>
       ))}
     </div>

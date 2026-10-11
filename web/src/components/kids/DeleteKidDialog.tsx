@@ -20,7 +20,10 @@ export function DeleteKidDialog({ kid, onClose }: { kid: Kid | null; onClose: ()
   const del = useMutation({
     mutationFn: (k: Kid) => kidsApi.remove(k.id),
     onSuccess: (res, k) => {
-      void qc.invalidateQueries({ queryKey: kidKeys.all });
+      // Drop the card and its per-kid queries first, so nothing refetches a deleted kid (404).
+      qc.setQueryData<Kid[]>(kidKeys.list, (list) => list?.filter((x) => x.id !== k.id));
+      qc.removeQueries({ queryKey: ["kids", k.id] });
+      void qc.invalidateQueries({ queryKey: kidKeys.list });
       void qc.invalidateQueries({ queryKey: ["groups"] });
       void qc.invalidateQueries({ queryKey: ["review"] });
       toast.success(`Deleted ${k.display_name}`, {

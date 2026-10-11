@@ -122,8 +122,8 @@ export function KidCard({ kid, onEdit, onDelete, onToggleAutoSave, toggling }: K
         <div className="flex items-center gap-4">
           <KidAvatar kid={kid} />
           <div className="min-w-0 flex-1 space-y-1">
-            <h2 className="truncate text-lg font-semibold" dir="auto" title={kid.display_name}>
-              {kid.display_name}
+            <h2 className="truncate text-lg font-semibold" title={kid.display_name}>
+              <span dir="auto">{kid.display_name}</span>
             </h2>
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
               <span className="font-mono">{kid.slug}</span>

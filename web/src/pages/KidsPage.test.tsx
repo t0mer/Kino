@@ -119,7 +119,7 @@ describe("KidsPage", () => {
     renderPage();
     const card = await screen.findByTestId("kid-card-1");
     const heading = within(card).getByRole("heading", { name: "נועה" });
-    expect(heading).toHaveAttribute("dir", "auto");
+    expect(within(heading).getByText("נועה")).toHaveAttribute("dir", "auto");
     expect(within(card).getByText("9")).toBeInTheDocument(); // 7 days
     expect(await within(card).findByText("Add side angles")).toBeInTheDocument();
     expect(within(card).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "4");
