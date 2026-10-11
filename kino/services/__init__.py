@@ -23,8 +23,19 @@ class InvalidError(ServiceError):
     """An input value is out of range or malformed."""
 
 
+class StorageError(ServiceError):
+    """Writing or reading a file on disk failed (photo save); the request can be retried."""
+
+
 class GoneError(ServiceError):
     """The referenced item existed but has expired (e.g. an enrollment upload past its TTL)."""
 
 
-__all__ = ["ConflictError", "GoneError", "InvalidError", "NotFoundError", "ServiceError"]
+__all__ = [
+    "ConflictError",
+    "GoneError",
+    "InvalidError",
+    "NotFoundError",
+    "ServiceError",
+    "StorageError",
+]

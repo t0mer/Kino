@@ -232,7 +232,7 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     result.files = [Path(p) for p in paths if p not in shared]
     cfg = get_forward_config(session)
     for f in session.scalars(select(Forward).where(Forward.status == "pending")):
-        if kid.id in (f.kid_ids or []) and not _drop_kid_from_forward(
+        if kid.id in (f.kid_ids or []) and not drop_kid_from_forward(
             session, f, kid.id, set(paths), cfg.caption_template
         ):
             f.status = "cancelled"
@@ -255,7 +255,7 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     return result
 
 
-def _drop_kid_from_forward(
+def drop_kid_from_forward(
     session: Session, f: Forward, kid_id: int, kid_paths: set[str], template: str
 ) -> bool:
     """Keep a pending forward that also names other kids: drop the deleted kid, re-render the
