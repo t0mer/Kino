@@ -38,7 +38,7 @@ from kino.db.models import Image as ImageRow
 from kino.db.session import blob_to_embedding, embedding_to_blob
 from kino.pipeline.detect import Detection, Detector, detect_image
 from kino.pipeline.embed import Embedder, align_face, make_crop, should_embed
-from kino.pipeline.prefilter import NotAnImage, sniff_image
+from kino.pipeline.prefilter import STILL_MULTI_FORMATS, NotAnImage, sniff_image
 from kino.pipeline.quality import (
     BLUR_FULL,
     PITCH_MAX_DEG,
@@ -48,12 +48,12 @@ from kino.pipeline.quality import (
     face_quality,
     tier_for,
 )
-from kino.services import GoneError, InvalidError, NotFoundError, ServiceError
+from kino.services import ConflictError, GoneError, InvalidError, NotFoundError, ServiceError
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_FILES = 20
 MAX_UPLOAD_PIXELS = 50_000_000  # well above phone photos; rejects pixel bombs before decoding
-UPLOAD_FORMATS = frozenset({"JPEG", "PNG", "WEBP", "HEIF"})
+UPLOAD_FORMATS = frozenset({"JPEG", "MPO", "PNG", "WEBP", "HEIF"})  # MPO: multi-picture JPEG
 TEMP_FACE_TTL = timedelta(hours=1)
 MIN_QUALITY = 0.4
 RECOMMENDED_REFS = 10
@@ -176,9 +176,8 @@ def decode_upload(data: bytes) -> DecodedUpload:
         )
     try:
         with Image.open(io.BytesIO(data)) as im:
-            if (getattr(im, "is_animated", False) or getattr(im, "n_frames", 1) > 1) and (
-                im.format != "HEIF"
-            ):
+            multi = getattr(im, "is_animated", False) or getattr(im, "n_frames", 1) > 1
+            if multi and im.format not in STILL_MULTI_FORMATS:  # HEIF/MPO: primary image
                 raise UploadRejected(422, "animated images are not supported")
             taken = exif_datetime(im)
             im.load()
@@ -414,6 +413,8 @@ class _Candidate:
 class AddResult:
     created: list[ReferenceFace]
     duplicates: int
+    # Temp crops of the consumed faces: the caller removes them after the commit.
+    remove_after_commit: list[Path] = field(default_factory=list)
 
 
 def add_references(
@@ -537,9 +538,7 @@ def add_references(
     if created:
         _bump(session)
     session.flush()
-    for p in moved:  # temp crops of consumed faces (a rollback leaves them to the purge)
-        _unlink(p)
-    return AddResult(created, duplicates)
+    return AddResult(created, duplicates, moved)
 
 
 def list_references(
@@ -590,6 +589,15 @@ def update_reference(
         ref.status = status
     if kid_id is not None and kid_id != ref.kid_id:
         _get_kid(session, kid_id)
+        if ref.face_id is not None and session.scalar(
+            select(ReferenceFace.id).where(
+                ReferenceFace.kid_id == kid_id,
+                ReferenceFace.face_id == ref.face_id,
+                ReferenceFace.status == "active",
+                ReferenceFace.id != ref.id,
+            )
+        ):
+            raise ConflictError("that kid already has this face as a reference")
         ref.kid_id = kid_id
     if photo_date is not _UNSET:
         ref.photo_date = photo_date
@@ -629,9 +637,12 @@ def remove_file(path: Path | None) -> None:
     _unlink(path)
 
 
-def reference_to_negative(session: Session, settings: Settings, ref_id: int) -> NegativeFace:
+def reference_to_negative(
+    session: Session, settings: Settings, ref_id: int
+) -> tuple[NegativeFace, Path | None]:
     """ "It's someone else": the reference becomes a negative example for its kid and is
-    removed from the gallery. The negative keeps its own copy of the crop."""
+    removed from the gallery. The negative keeps its own copy of the crop; the returned path
+    is the reference's old crop, to remove after the commit."""
     ref = get_reference(session, ref_id)
     crop = _copy_crop(
         ref.crop_path, settings.data_dir / "crops", negatives_dir(settings), f"kid{ref.kid_id}"
@@ -645,8 +656,7 @@ def reference_to_negative(session: Session, settings: Settings, ref_id: int) -> 
     session.add(neg)
     old = delete_reference(session, settings, ref_id)
     session.flush()
-    _unlink(old)  # flush succeeded; a later rollback would only lose an already-copied crop
-    return neg
+    return neg, old
 
 
 # --- coverage ---------------------------------------------------------------------------------
