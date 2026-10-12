@@ -48,6 +48,13 @@ def test_siblings_one_row(s):
     assert rows[0].file_path == "/a.jpg"
 
 
+def test_no_caption_when_disabled(s):
+    g, k1, _, img = seed(s)
+    cfg(s, enabled=True, default_chat_id="d@c.us", send_caption=False)
+    rows = fw.plan_forwards(s, img, [k1], {k1.id: Path("/a.jpg")}, g)
+    assert rows[0].caption == ""
+
+
 def test_per_kid_destinations(s):
     g, k1, k2, img = seed(s)
     cfg(s, enabled=True, default_chat_id="d@c.us", per_kid={str(k2.id): "x@c.us"})
