@@ -50,7 +50,7 @@ def env(tmp_path):
 
 def add_pending(n: int, kid_id: int) -> None:
     with dbs.get_session() as s:
-        s.add(Image(id=n, message_id=f"m{n}"))
+        s.add(Image(id=n, message_id=f"m{n}", status="done"))
         s.flush()
         s.add(
             Face(
@@ -147,3 +147,19 @@ def test_client_is_closed_after_send_and_after_failure(env):
     good = FakeClient()
     assert digest.run_digest(env, client_factory=lambda _s: good)
     assert good.closed == 1
+
+
+def test_on_drain_waits_for_idle_queue_and_gap(env):
+    fake = FakeClient()
+    factory = lambda _st: fake  # noqa: E731
+    add_pending(1, 1)
+    with dbs.get_session() as s:
+        s.add(Image(id=99, message_id="busy", status="queued"))
+    assert not digest.run_digest_on_drain(env, client_factory=factory)  # queue busy
+    with dbs.get_session() as s:
+        s.get(Image, 99).status = "done"
+    assert digest.run_digest_on_drain(env, client_factory=factory)
+    assert fake.sent == [(CHAT, "1 photo waiting for review (Noa 1)")]
+    add_pending(2, 1)
+    assert not digest.run_digest_on_drain(env, client_factory=factory)  # < 10 min since last
+    assert len(fake.sent) == 1

@@ -818,10 +818,11 @@ def retention_cleanup() -> None:
 def review_digest() -> None:
     """Per-minute tick; sends the review digest when the configured cron expression matches
     (see kino.digest). Never raises into huey."""
-    from kino.digest import run_digest_if_due
+    from kino.digest import run_digest_if_due, run_digest_on_drain
 
     try:
-        run_digest_if_due()
+        if not run_digest_if_due():
+            run_digest_on_drain()
     except Exception as e:
         logger.error("review digest failed: {}", type(e).__name__)
 
