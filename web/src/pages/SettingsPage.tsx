@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { DigestSection } from "@/components/settings/DigestSection";
 import { ForwardingSection } from "@/components/settings/ForwardingSection";
+import { OpenWASection } from "@/components/settings/OpenWASection";
 import { RetentionSection } from "@/components/settings/RetentionSection";
 import { SystemSection } from "@/components/settings/SystemSection";
 import { ThresholdsSection } from "@/components/settings/ThresholdsSection";
@@ -43,6 +44,7 @@ export function SettingsPage() {
     const s = settings.data;
     body = (
       <div className="space-y-4">
+        <OpenWASection />
         <ForwardingSection saved={s.forward} kids={kids.data ?? []} />
         <DigestSection saved={s.digest} />
         <ThresholdsSection saved={s.thresholds} />
@@ -54,7 +56,7 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <PageHeader title="Settings" description="Forwarding, digest, thresholds, retention and model info." />
+      <PageHeader title="Settings" description="OpenWA, forwarding, digest, thresholds, retention and model info." />
       {body}
     </div>
   );
