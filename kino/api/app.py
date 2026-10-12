@@ -21,6 +21,7 @@ from kino.api.routes.images import router as images_router
 from kino.api.routes.jobs import router as jobs_router
 from kino.api.routes.kids import router as kids_router
 from kino.api.routes.openwa import router as openwa_router
+from kino.api.routes.openwa_setup import router as openwa_setup_router
 from kino.api.routes.photos import router as photos_router
 from kino.api.routes.references import router as references_router
 from kino.api.routes.review import router as review_router
@@ -60,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(settings_router)
     app.include_router(openwa_router)
+    app.include_router(openwa_setup_router)
     app.include_router(forwards_router)
     app.include_router(stats_router)
     app.include_router(uploads_router)

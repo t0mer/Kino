@@ -10,6 +10,7 @@ from huey import crontab
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from kino.forward import MAX_CAPTION
+from kino.openwa.register import MIN_SECRET_LEN
 from kino.pipeline.decide import AUTO_FLOOR, OFFSET_MAX, OFFSET_MIN
 
 
@@ -281,6 +282,80 @@ class WebhookRegistered(BaseModel):
     id: str
     url: str
     events: list[str]
+
+
+# --- OpenWA setup wizard -------------------------------------------------------------------
+
+Printable = r"^[\x21-\x7e]+$"  # no spaces or control characters (HTTP header safe)
+ApiKeyIn = Annotated[str, Field(min_length=1, max_length=500, pattern=Printable)]
+WebhookSecretIn = Annotated[
+    str, Field(min_length=MIN_SECRET_LEN, max_length=200, pattern=Printable)
+]
+
+
+class OpenWASetupStatus(BaseModel):
+    configured: bool
+    url: str | None  # without credentials or query string
+    session_id: str | None
+    session_name: str | None
+    has_api_key: bool
+    has_webhook_secret: bool
+    webhook_url: str
+    env_overrides: list[str]
+
+
+class OpenWAConnectIn(In):
+    # omitted or blank = keep the stored value
+    url: Annotated[str, Field(max_length=500)] | None = None
+    api_key: ApiKeyIn | None = None
+    webhook_secret: WebhookSecretIn | None = None
+
+    @field_validator("api_key", "webhook_secret", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip() or None
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        if not v or not v.strip():
+            return None
+        if "?" in v or "#" in v:  # httpx appends request paths after a base-URL query
+            raise ValueError("the OpenWA URL must not contain ? or #")
+        return _check_url(v.strip(), ("http", "https"))
+
+
+class OpenWASessionOut(BaseModel):
+    id: str
+    name: str | None
+    status: str
+    phone_masked: str | None
+
+
+class OpenWAConnectOut(BaseModel):
+    sessions: list[OpenWASessionOut]
+    generated_webhook_secret: bool
+
+
+class OpenWASessionIn(In):
+    session_id: Annotated[str, Field(min_length=1, max_length=200, pattern=r"^\S+$")]
+    webhook_url: Annotated[str, Field(max_length=500)] | None = None
+
+    @field_validator("webhook_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return _check_url(v.strip(), ("http", "https")) if v and v.strip() else None
+
+
+class OpenWASessionResult(BaseModel):
+    session_id: str
+    registered: bool
+    action: str | None = None
+    webhook_id: str | None = None
+    webhook_url: str
+    error: str | None = None
 
 
 class ForwardTestIn(In):
