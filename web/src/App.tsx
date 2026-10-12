@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
 import { EnrollPage } from "@/pages/EnrollPage";
+import { GroupsPage } from "@/pages/GroupsPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
@@ -19,6 +20,7 @@ import { SetupPage } from "@/pages/SetupPage";
 const PAGES: Record<string, ReactNode> = {
   "/review": <ReviewPage />,
   "/kids": <KidsPage />,
+  "/groups": <GroupsPage />,
 };
 
 export function AppRoutes() {
