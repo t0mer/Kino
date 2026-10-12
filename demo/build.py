@@ -35,6 +35,7 @@ CRFS = [20, 22, 24, 26, 28]
 AUDIO_BITRATE = "64k"
 MAX_BYTES = 5 * 1024 * 1024
 LINE_CHARS = 42
+LEAD_S = 0.4      # keep this much of the recording before the first caption
 DUCK = "sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400"
 LOUD = "I=-23:TP=-1.5:LRA=11"
 
@@ -104,13 +105,15 @@ def mix(voice: Path, bed: Path, fade_at: float, out: Path) -> dict:
     return m
 
 
-def encode(raw: Path, audio: Path, total: float, fade_at: float, out: Path) -> int:
-    pad = max(0.0, total - probe_duration(raw)) + 1.0
+def encode(raw: Path, head: float, audio: Path, total: float, fade_at: float,
+           out: Path) -> int:
+    """Encode raw.webm from `head` seconds on (output t=0) with the mix."""
+    pad = max(0.0, total - (probe_duration(raw) - head)) + 1.0
     vf = (f"fps={FPS},tpad=stop_mode=clone:stop_duration={pad:.3f},"
           f"fade=t=out:st={fade_at:.3f}:d={FADE_S},format=yuv420p")
     tmp = out.with_suffix(".tmp.mp4")
     for crf in CRFS:
-        run(["ffmpeg", "-y", "-i", str(raw), "-i", str(audio), "-map", "0:v", "-map", "1:a",
+        run(["ffmpeg", "-y", "-ss", f"{head:.3f}", "-i", str(raw), "-i", str(audio), "-map", "0:v", "-map", "1:a",
              "-vf", vf, "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
              "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ac", "1",
              "-t", f"{total:.3f}", "-movflags", "+faststart", str(tmp)])
@@ -217,6 +220,12 @@ def main() -> None:
     build.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     timeline = json.loads((work / "timeline.json").read_text())
+    # Trim the recording's lead-in (blank page, loading spinner) so the video
+    # opens LEAD_S before the first caption. Everything below (voice placement,
+    # music length, hold/fade, SRT, poster) uses the shifted timeline; the
+    # timeline.json file itself is left untouched.
+    head = max(0.0, timeline[0]["start"] - LEAD_S)
+    timeline = [{**s, "start": s["start"] - head, "end": s["end"] - head} for s in timeline]
     captions = {s["id"]: s["caption"] for s in json.loads((HERE / "script.json").read_text())}
     if missing := [s["id"] for s in timeline if s["id"] not in captions]:
         sys.exit(f"build: timeline steps missing from script.json: {missing}")
@@ -226,17 +235,17 @@ def main() -> None:
     speech = {k: len(x) / sr for k, x in clips.items()}
     # Length: hold the last frame HOLD_S after the last line ends, then fade.
     voice_end = max(s["start"] + speech[s["id"]] for s in timeline)
-    total = max(voice_end + HOLD_S, probe_duration(raw)) + FADE_S
+    total = max(voice_end + HOLD_S, probe_duration(raw) - head) + FADE_S
     fade_at = total - FADE_S
     voice_track(timeline, clips, sr, total, build / "voice.wav")
-    print(f"build: last line ends {voice_end:.2f} s, fade {fade_at:.2f}-{total:.2f} s")
+    print(f"build: trimmed {head:.3f} s of lead-in, last line ends {voice_end:.2f} s, fade {fade_at:.2f}-{total:.2f} s")
 
     music.write_wav(build / "music.wav", music.make(total))
     m = mix(build / "voice.wav", build / "music.wav", fade_at, build / "mix.wav")
     print(f"build: pre-norm loudness {m['input_i']} LUFS, TP {m['input_tp']} dBTP")
 
     mp4 = outdir / "demo.mp4"
-    crf = encode(raw, build / "mix.wav", total, fade_at, mp4)
+    crf = encode(raw, head, build / "mix.wav", total, fade_at, mp4)
     if not faststart_ok(mp4):
         sys.exit("build: FAILED, moov is not before mdat (faststart)")
 
