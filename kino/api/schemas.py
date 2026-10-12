@@ -503,6 +503,21 @@ class PhotoOut(BaseModel):
     sent_at: datetime | None
     saved_at: datetime
     file_url: str
+    thumb_url: str
+    sender_name: str | None = None
+    kid_ids: list[int] = []
+    kid_names: list[str] = []
+
+
+class KidPhotoCount(BaseModel):
+    kid_id: int
+    kid_name: str
+    count: int
+
+
+class PhotoCounts(BaseModel):
+    total: int
+    kids: list[KidPhotoCount]
 
 
 class PhotoPage(BaseModel):
