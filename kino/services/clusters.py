@@ -61,6 +61,34 @@ def _crop_files(faces: list[Face], settings: Settings) -> list[Path]:
     return out
 
 
+def _held_ids(s: Session, ids: list[int]) -> set[int]:
+    """Faces among ``ids`` that must survive ignore/label: they carry a live kid match."""
+    if not ids:
+        return set()
+    q = select(Match.face_id).where(Match.face_id.in_(ids), Match.decision.in_(ACTIVE_MATCH))
+    return set(s.scalars(q))
+
+
+def prune_unlabeled(s: Session) -> int:
+    """Detach faces that gained a live match from unlabeled clusters, refresh the sizes and
+    drop clusters left too small. Returns the number of faces detached."""
+    unlabeled = select(Cluster.id).where(Cluster.label_status == "unlabeled")
+    matched = exists().where(Match.face_id == Face.id, Match.decision.in_(ACTIVE_MATCH))
+    res = s.execute(
+        update(Face).where(Face.cluster_id.in_(unlabeled), matched).values(cluster_id=None),
+        execution_options={"synchronize_session": False},
+    )
+    s.expire_all()
+    for c in list(s.scalars(select(Cluster).where(Cluster.label_status == "unlabeled"))):
+        n = s.scalar(select(func.count()).select_from(Face).where(Face.cluster_id == c.id)) or 0
+        if n < clustering.SPLIT_MIN_CLUSTER_SIZE:
+            s.execute(update(Face).where(Face.cluster_id == c.id).values(cluster_id=None))
+            s.delete(c)
+        else:
+            c.size = n
+    return int(res.rowcount or 0)  # type: ignore[attr-defined]
+
+
 # --- build -------------------------------------------------------------------------------
 
 
@@ -250,6 +278,7 @@ class LabelResult:
     selected: int
     references_created: int
     duplicates: int
+    skipped: int = 0  # faces with a live kid match, left alone and detached
     rescore: RescoreResult | None = field(default=None)
 
 
@@ -273,12 +302,15 @@ def label_cluster(
             raise ConflictError("kid is not active")
         faces = list(s.scalars(select(Face).where(Face.cluster_id == c.id).order_by(Face.id)))
         by_id = {f.id: f for f in faces}
+        held = _held_ids(s, list(by_id))
         picked = faces
         if face_ids is not None:
             wanted = list(dict.fromkeys(face_ids))
             if not wanted or any(i not in by_id for i in wanted):
                 raise InvalidError("face_ids must be a non-empty subset of the cluster's faces")
             picked = [by_id[i] for i in wanted]
+        skipped = sum(1 for f in picked if f.id in held)
+        picked = [f for f in picked if f.id not in held]
         usable = [
             f
             for f in picked
@@ -303,37 +335,48 @@ def label_cluster(
         c.label_status = "labeled"
         c.kid_id = kid.id
         c.size = len(keep)
-        res = LabelResult(c.id, kid.id, len(keep), len(added.created), added.duplicates)
+        res = LabelResult(c.id, kid.id, len(keep), len(added.created), added.duplicates, skipped)
     try:
         res.rescore = rescore(settings, CANDIDATE_DAYS)
     except Exception as e:  # the label is saved; "Re-score" can be run again from the UI
         logger.error("re-score after labeling cluster {} failed: {}", cluster_id, type(e).__name__)
+    # The re-score may have matched faces sitting in other unlabeled clusters.
+    with get_session() as s:
+        prune_unlabeled(s)
     return res
 
 
 # --- ignore ------------------------------------------------------------------------------
 
 
-def ignore_cluster(settings: Settings, cluster_id: int) -> tuple[int, int]:
+def ignore_cluster(settings: Settings, cluster_id: int) -> tuple[int, int, int]:
     """Delete the cluster's faces (embeddings, rows, matches) and crop files immediately.
 
-    Returns ``(faces_deleted, files_removed)``. The cluster row goes too, so nothing about
-    these faces remains in the DB or on disk (§13, §19).
+    Returns ``(faces_deleted, files_removed, faces_skipped)``. The cluster row goes too, so
+    nothing about these faces remains in the DB or on disk (§13, §19). Faces that hold a live
+    kid match (or are otherwise referenced) are never deleted: they are detached and counted
+    as skipped.
     """
     with get_session() as s:
         c = get_cluster(s, cluster_id)
         if c.label_status != "unlabeled":
             raise ConflictError(f"cluster {cluster_id} is already {c.label_status}")
-        faces = list(s.scalars(select(Face).where(Face.cluster_id == c.id)))
+        all_faces = list(s.scalars(select(Face).where(Face.cluster_id == c.id)))
+        held = _held_ids(s, [f.id for f in all_faces])
+        for f in all_faces:
+            if f.id in held:
+                f.cluster_id = None
+        faces = [f for f in all_faces if f.id not in held]
         files = _crop_files(faces, settings)
         ids = [f.id for f in faces]
         if ids:
             s.execute(delete(Match).where(Match.face_id.in_(ids)))
             s.execute(delete(Face).where(Face.id.in_(ids)))
+        s.flush()
         s.delete(c)
     removed = _remove_files(files)  # only after the commit
-    logger.info("ignored cluster {}: {} face(s) deleted", cluster_id, len(ids))
-    return len(ids), removed
+    logger.info("ignored cluster {}: {} deleted, {} kept", cluster_id, len(ids), len(held))
+    return len(ids), removed, len(held)
 
 
 # --- split -------------------------------------------------------------------------------

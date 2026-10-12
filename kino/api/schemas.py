@@ -736,12 +736,14 @@ class ClusterLabelOut(BaseModel):
     selected: int
     references_created: int
     duplicates: int
+    skipped: int = 0
     rescore: RescoreOut | None
 
 
 class ClusterIgnoreOut(BaseModel):
     faces_deleted: int
     files_removed: int
+    faces_skipped: int = 0
 
 
 class ClusterSplitOut(BaseModel):

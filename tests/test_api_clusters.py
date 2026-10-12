@@ -219,3 +219,81 @@ def test_split_tight_cluster_conflicts(api) -> None:  # type: ignore[no-untyped-
     cid = first_cluster(api)
     assert api.post(f"/api/clusters/{cid}/split").status_code == 409
     assert api.get(f"/api/clusters/{cid}").status_code == 200  # untouched
+
+
+def _live_match(face_id: int, kid_id: int, decision: str = "auto_saved") -> None:
+    """What a later re-score leaves behind: a live match, saved photo and pending forward."""
+    from kino.db.models import Forward, Match, SavedPhoto
+
+    with dbs.get_session() as s:
+        f = s.get(Face, face_id)
+        assert f is not None
+        s.add(Match(face_id=face_id, kid_id=kid_id, score=0.9, method="face", decision=decision))
+        if decision == "auto_saved":
+            s.add(SavedPhoto(image_id=f.image_id, kid_id=kid_id, path=f"/p/{face_id}.jpg"))
+            s.add(Forward(image_id=f.image_id, dest_chat_id="x@c.us", kid_ids=[kid_id]))
+
+
+def test_ignore_keeps_faces_with_live_matches(api) -> None:  # type: ignore[no-untyped-def]
+    from kino.db.models import Forward, Match, SavedPhoto
+
+    seed_clusters()
+    run(api)
+    a_id, b_id = first_cluster(api, 0), first_cluster(api, 1)
+    k = kid()
+    assert api.post(f"/api/clusters/{a_id}/label", json={"kid_id": k}).status_code == 200
+    with dbs.get_session() as s:
+        b_faces = list(s.scalars(select(Face).where(Face.cluster_id == b_id).order_by(Face.id)))
+        held = [f.id for f in b_faces[:2]]
+        loose = [f.id for f in b_faces[2:]]
+        files = [Path(f.crop_path) for f in b_faces if f.crop_path]
+    for fid in held:
+        _live_match(fid, k)
+    r = api.post(f"/api/clusters/{b_id}/ignore")
+    assert r.status_code == 200, r.text
+    assert r.json()["faces_deleted"] == len(loose) and r.json()["faces_skipped"] == 2
+    with dbs.get_session() as s:
+        assert s.scalar(select(func.count()).select_from(Face).where(Face.id.in_(loose))) == 0
+        for fid in held:
+            f = s.get(Face, fid)
+            assert f is not None and f.cluster_id is None and f.embedding is not None
+        live = select(func.count()).select_from(Match)
+        live = live.where(Match.face_id.in_(held), Match.decision == "auto_saved")
+        assert s.scalar(live) == 2
+        assert s.scalar(select(func.count()).select_from(SavedPhoto)) == 2
+        assert s.scalar(select(func.count()).select_from(Forward)) == 2
+        assert s.get(Cluster, b_id) is None
+    held_files = {Path(f) for f in files[:2]}
+    assert all(p.exists() for p in held_files)
+
+
+def test_label_skips_faces_with_live_matches_and_prunes_other_clusters(api) -> None:  # type: ignore[no-untyped-def]
+    seed_clusters()
+    run(api)
+    a_id, b_id = first_cluster(api, 0), first_cluster(api, 1)
+    k, other = kid(), kid()
+    with dbs.get_session() as s:
+        a_faces = [f.id for f in s.scalars(select(Face).where(Face.cluster_id == a_id))]
+        b_faces = [f.id for f in s.scalars(select(Face).where(Face.cluster_id == b_id))]
+    _live_match(a_faces[0], other, "review")
+    r = api.post(f"/api/clusters/{a_id}/label", json={"kid_id": k})
+    assert r.status_code == 200, r.text
+    assert r.json()["skipped"] == 1 and r.json()["selected"] == len(a_faces) - 1
+    with dbs.get_session() as s:
+        refs = {
+            x.face_id for x in s.scalars(select(ReferenceFace).where(ReferenceFace.kid_id == k))
+        }
+        assert a_faces[0] not in refs
+        f0 = s.get(Face, a_faces[0])
+        assert f0 is not None and f0.cluster_id is None
+    # a re-score later matches faces of cluster B: pruning detaches them and drops B when small
+    for fid in b_faces[:-2]:
+        _live_match(fid, k, "review")
+    from kino.services import clusters as svc
+
+    with dbs.get_session() as s:
+        assert svc.prune_unlabeled(s) == len(b_faces) - 2
+    with dbs.get_session() as s:
+        assert s.get(Cluster, b_id) is None
+        left = s.scalar(select(func.count()).select_from(Face).where(Face.cluster_id.is_not(None)))
+        assert left == len(a_faces) - 1  # only the labeled cluster's faces remain clustered

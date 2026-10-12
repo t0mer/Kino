@@ -103,14 +103,15 @@ def label(request: Request, cluster_id: int, body: ClusterLabelIn) -> ClusterLab
         selected=r.selected,
         references_created=r.references_created,
         duplicates=r.duplicates,
+        skipped=r.skipped,
         rescore=RescoreOut(**vars(r.rescore)) if r.rescore is not None else None,
     )
 
 
 @router.post("/{cluster_id}/ignore", response_model=ClusterIgnoreOut)
 def ignore(request: Request, cluster_id: int) -> ClusterIgnoreOut:
-    deleted, removed = svc.ignore_cluster(_settings(request), cluster_id)
-    return ClusterIgnoreOut(faces_deleted=deleted, files_removed=removed)
+    deleted, removed, skipped = svc.ignore_cluster(_settings(request), cluster_id)
+    return ClusterIgnoreOut(faces_deleted=deleted, files_removed=removed, faces_skipped=skipped)
 
 
 @router.post("/{cluster_id}/split", response_model=ClusterSplitOut)
