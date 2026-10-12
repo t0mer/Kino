@@ -797,3 +797,15 @@ def backfill_group_task(job_id: int) -> None:
         backfill_group(job_id)
     except Exception as e:
         logger.error("backfill task crashed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(minute="17"))  # type: ignore[untyped-decorator]
+def retention_cleanup() -> None:
+    """Hourly retention sweep (CLAUDE.md section 10); never raises into huey."""
+    from kino.retention import run_retention
+
+    try:
+        run_retention()
+    except Exception as e:
+        logger.error("retention cleanup failed: {}", type(e).__name__)
+
