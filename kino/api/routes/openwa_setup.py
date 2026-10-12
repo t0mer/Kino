@@ -1,7 +1,7 @@
 """/api/openwa/setup: the OpenWA setup wizard (connect, pick a session, register the webhook).
 
 Secrets are write-only: responses carry ``has_*`` flags and a URL without credentials, never
-the API key or the webhook secret. Fields set by environment variables are locked (409).
+the API key or the webhook secret. Fields set in the environment or config.yaml are locked (409).
 """
 
 from __future__ import annotations

@@ -233,6 +233,7 @@ def test_env_locked_secret(api, owa):
     )
     r = connect(api, url="http://openwa:2785", api_key=API_KEY, webhook_secret=SECRET)
     assert r.status_code == 409 and "KINO_WEBHOOK_SECRET" in r.json()["detail"]
+    assert "set in the environment or config.yaml (KINO_WEBHOOK_SECRET)" in r.json()["detail"]
     assert owa.calls == []  # refused before contacting OpenWA
     r = connect(api, url="http://openwa:2785", api_key=API_KEY)
     assert r.status_code == 200 and r.json()["generated_webhook_secret"] is False
@@ -449,3 +450,47 @@ def test_url_change_with_blank_key_is_400_and_sends_nothing(api, owa, blank):
     assert r.status_code == 400
     assert r.json()["detail"] == "Enter the API key for the new URL."
     assert len(owa.hosts) == before
+
+
+# --- F4: a reset while a client is being built never leaves a stale client cached ----------
+
+
+def test_reset_during_build_does_not_cache_the_stale_client(api, owa, monkeypatch):
+    import asyncio
+
+    configured(api, owa)
+    app = api.app
+    asyncio.run(deps.reset_openwa(app))
+    real_load = deps.load_openwa_config
+    stale = real_load(app.state.settings)
+    raced = {"done": False}
+
+    def load_then_reconnect(env):
+        cfg = real_load(env)
+        if not raced["done"]:  # the wizard saves a new host and resets meanwhile
+            raced["done"] = True
+            connect(api, url="http://openwa-new:2785", api_key=API_KEY)
+            api.post("/api/openwa/setup/session", json={"session_id": "main"})
+            asyncio.run(deps.reset_openwa(app))
+            return stale
+        return cfg
+
+    monkeypatch.setattr(deps, "load_openwa_config", load_then_reconnect)
+    client = deps.current_openwa(app)
+    assert client is not None and "openwa-new" in str(client._http.base_url)
+    assert app.state.openwa is None or "openwa-new" in str(app.state.openwa._http.base_url)
+
+
+def test_webhook_cfg_loaded_before_a_reset_is_not_cached(api, owa):
+    import asyncio
+
+    configured(api, owa)
+    app = api.app
+    asyncio.run(deps.reset_openwa(app))
+    generation = deps.openwa_generation(app)
+    stale = load_openwa_config(app.state.settings)
+    connect(api, url="http://openwa-new:2785", api_key=API_KEY)
+    api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    asyncio.run(deps.reset_openwa(app))
+    client = deps.current_openwa(app, stale, generation=generation)
+    assert client is not None and "openwa-new" in str(client._http.base_url)

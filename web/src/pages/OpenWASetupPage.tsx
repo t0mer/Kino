@@ -59,7 +59,7 @@ function LockedField({ id, label, field }: { id: string; label: string; field: O
       <Label htmlFor={id}>{label}</Label>
       <Input id={id} value={`Set by ${ENV_NAMES[field]}`} readOnly disabled aria-describedby={`${id}-locked`} />
       <p id={`${id}-locked`} className="text-xs text-muted-foreground">
-        Set by an environment variable. Change it in .env and restart Kino.
+        Set in the environment or config.yaml. Change it there and restart Kino.
       </p>
     </div>
   );

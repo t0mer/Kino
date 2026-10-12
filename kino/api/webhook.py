@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -13,7 +14,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from kino import metrics
-from kino.api.deps import current_openwa
+from kino.api.deps import current_openwa, openwa_generation
 from kino.config import Settings
 from kino.db.models import Group
 from kino.db.session import get_session
@@ -115,6 +116,7 @@ async def openwa_webhook(request: Request) -> Response:
     except _TooLarge:
         return _reply("too_large", 413)
 
+    generation = openwa_generation(request.app)  # before the config: see current_openwa
     cfg = await run_in_threadpool(load_openwa_config, settings)
     if not cfg.webhook_secret:
         return _reply("not_configured", 503)
@@ -149,7 +151,9 @@ async def openwa_webhook(request: Request) -> Response:
         if refresh:  # after the upsert, so the refresh finds the group row
             _start_refresh(request, ev.chat_id)
 
-    client = await run_in_threadpool(current_openwa, request.app, cfg)
+    client = await run_in_threadpool(
+        partial(current_openwa, request.app, cfg, generation=generation)
+    )
     result = await ingest_message(
         ev,
         settings,

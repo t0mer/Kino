@@ -457,6 +457,7 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 ## Troubleshooting
 
 - **Kino keeps showing the OpenWA setup page**: OpenWA is not fully configured (URL, API key, session and webhook secret). Finish the wizard, or set the missing `KINO_*` variables. If `/data/secret.key` was lost, saved secrets can no longer be read and the wizard asks again.
+- **Some OpenWA values are set by env, but Kino still opens the wizard**: an install configured only partly by env (for example `KINO_WEBHOOK_SECRET` and `KINO_OPENWA_SESSION_ID` but no URL or API key) is sent to the wizard until the URL and API key are saved there. Fields set in the environment or `config.yaml` are shown read-only.
 - **Webhook returns 401 or 403**: the HMAC secret differs between OpenWA and `KINO_WEBHOOK_SECRET`, or the payload's session id is not the configured session (env or wizard).
 - **Photos from a group are ignored**: the group is not watched; check `kino groups list` and run `kino groups watch`.
 - **Matches are not saved**: auto-save is off for the kid (`kino kids set-auto-save`), or the face is below the auto-save size tier.

@@ -24,6 +24,7 @@ __all__ = [
     "current_openwa",
     "get_auth",
     "openwa_client",
+    "openwa_generation",
     "protected_router",
     "reset_openwa",
     "require_auth",
@@ -110,24 +111,44 @@ def protected_router(**kwargs: Any) -> APIRouter:
 _client_lock = threading.Lock()
 
 
-def current_openwa(app: FastAPI, cfg: OpenWAConfig | None = None) -> OpenWAClient | None:
+def openwa_generation(app: FastAPI) -> int:
+    """Bumped by every :func:`reset_openwa`; a client built from config read before a bump is
+    stale and must not be cached. Read it before loading the config you pass in."""
+    generation: int = getattr(app.state, "openwa_generation", 0)
+    return generation
+
+
+_MAX_REBUILDS = 5
+
+
+def current_openwa(
+    app: FastAPI, cfg: OpenWAConfig | None = None, *, generation: int | None = None
+) -> OpenWAClient | None:
     """The shared OpenWA client, built from the resolved config on first use and cached on
     ``app.state.openwa`` until :func:`reset_openwa` (the setup wizard) drops it.
 
-    Blocking (reads the database): call it from a threadpool in async code."""
-    cached: OpenWAClient | None = app.state.openwa
-    if cached is not None:
-        return cached
-    settings: Settings = app.state.settings
-    resolved = cfg if cfg is not None else load_openwa_config(settings)
-    if not resolved.client_ready:
-        return None
-    with _client_lock:
-        cached = app.state.openwa
-        if cached is None:
-            cached = OpenWAClient(*resolved.client_args())
-            app.state.openwa = cached
-        return cached
+    A caller passing ``cfg`` should pass the :func:`openwa_generation` read before loading it.
+    When a reset happened while the config was read, the config is read again, so a client for
+    the old host is never cached. Blocking (reads the database): call it from a threadpool."""
+    for _ in range(_MAX_REBUILDS):
+        cached: OpenWAClient | None = app.state.openwa
+        if cached is not None:
+            return cached
+        gen = generation if generation is not None else openwa_generation(app)
+        resolved = cfg if cfg is not None else load_openwa_config(app.state.settings)
+        if not resolved.client_ready:
+            return None
+        with _client_lock:
+            cached = app.state.openwa
+            if cached is not None:
+                return cached
+            if openwa_generation(app) == gen:
+                cached = OpenWAClient(*resolved.client_args())
+                app.state.openwa = cached
+                return cached
+        cfg, generation = None, None  # reset while reading: the config may be stale
+    logger.warning("OpenWA settings keep changing; using an uncached client")
+    return OpenWAClient(*load_openwa_config(app.state.settings).client_args())
 
 
 async def reset_openwa(app: FastAPI) -> None:
@@ -135,6 +156,7 @@ async def reset_openwa(app: FastAPI) -> None:
     with _client_lock:
         old: OpenWAClient | None = app.state.openwa
         app.state.openwa = None
+        app.state.openwa_generation = openwa_generation(app) + 1
     if old is not None:
         await old.aclose()
 

@@ -66,7 +66,7 @@ class OpenWANotConfiguredError(RuntimeError):
 
 
 class EnvLockedError(ConflictError):
-    """The field is set by an environment variable, which always wins over the wizard."""
+    """The field is set in the environment or config.yaml, which always wins over the wizard."""
 
 
 @dataclass(frozen=True, repr=False)
@@ -128,7 +128,7 @@ def env_values(env: Settings) -> dict[Field, str | None]:
 
 
 def env_overrides(env: Settings) -> list[Field]:
-    """Fields set by environment variables (read-only in the wizard)."""
+    """Fields set by environment variables or config.yaml (read-only in the wizard)."""
     return [f for f, v in env_values(env).items() if v]
 
 
@@ -138,7 +138,7 @@ def ensure_unlocked(env: Settings, fields: Iterable[str]) -> None:
     if locked:
         raise EnvLockedError(
             "; ".join(
-                f"{_LABELS[f]} is set by the environment variable {ENV_NAMES[f]} "
+                f"{_LABELS[f]} is set in the environment or config.yaml ({ENV_NAMES[f]}) "
                 "and cannot be changed here"
                 for f in locked
             )

@@ -141,6 +141,7 @@ describe("OpenWASetupPage", () => {
     const url = await screen.findByLabelText("OpenWA URL");
     expect(url).toBeDisabled();
     expect(url).toHaveValue("Set by KINO_OPENWA_URL");
+    expect(screen.getAllByText(/Set in the environment or config\.yaml/)).toHaveLength(2);
     expect(screen.getByLabelText("Webhook secret")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Generate" })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("API key"), "owa-key-123");
