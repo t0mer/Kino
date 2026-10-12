@@ -242,7 +242,8 @@ web/node_modules/
 web/dist/
 !web/src/lib/
 
-# Demo tooling
+# Demo tooling (the Python "lib/" ignore above must not hide the recorder helpers)
+!demo/lib/
 demo/models/
 demo/.venv/
 demo/work/
