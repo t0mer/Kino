@@ -83,6 +83,7 @@ export const SLUG_MAX = 40;
 export const kidKeys = {
   all: ["kids"] as const,
   list: ["kids", "list"] as const,
+  detail: (id: number) => ["kids", id, "detail"] as const,
   coverage: (id: number) => ["kids", id, "coverage"] as const,
   avatar: (id: number) => ["kids", id, "references", "active"] as const,
 };
@@ -90,6 +91,7 @@ export const groupKeys = { list: ["groups", "list"] as const };
 
 export const kidsApi = {
   list: () => api.get<Kid[]>("/api/kids"),
+  get: (id: number) => api.get<Kid>(`/api/kids/${id}`),
   create: (body: KidCreate) => api.post<Kid>("/api/kids", body),
   update: (id: number, body: KidUpdate) => api.patch<Kid>(`/api/kids/${id}`, body),
   remove: (id: number) => api.delete<KidDeleted>(`/api/kids/${id}`),
