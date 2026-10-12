@@ -29,6 +29,7 @@ from kino.openwa.register import RegisterError, register_webhook
 from kino.services import ConflictError, InvalidError, NotFoundError, settings_svc
 from kino.services.openwa_cfg import (
     OpenWANotConfiguredError,
+    clear_openwa_session,
     ensure_unlocked,
     env_overrides,
     get_openwa_config,
@@ -36,6 +37,7 @@ from kino.services.openwa_cfg import (
     promote_webhook_secret,
     save_openwa_config,
     save_webhook_secret,
+    url_changed,
 )
 
 router = protected_router(prefix="/api/openwa/setup", tags=["openwa-setup"])
@@ -118,6 +120,7 @@ async def connect(request: Request, body: OpenWAConnectIn) -> OpenWAConnectOut:
         ],
     )
     cfg = await run_in_threadpool(load_openwa_config, env)
+    new_host = url_changed(cfg, body.url)
     url = body.url or cfg.url
     api_key = body.api_key or cfg.api_key
     if not url:
@@ -135,6 +138,8 @@ async def connect(request: Request, body: OpenWAConnectIn) -> OpenWAConnectOut:
     def save() -> None:
         with get_session() as s:
             save_openwa_config(s, env, url=body.url, api_key=body.api_key)
+            if new_host:  # the picked session lives on the old OpenWA
+                clear_openwa_session(s, env)
             if secret is not None:  # pending while OpenWA may still sign with the old one
                 save_webhook_secret(s, env, secret)
 

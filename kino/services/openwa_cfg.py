@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
 from loguru import logger
 from pydantic import SecretStr
@@ -266,6 +267,37 @@ def save_webhook_secret(session: Session, env: Settings, secret: str) -> None:
     else:
         ensure_unlocked(env, ["webhook_secret"])
         _put(session, K_WEBHOOK_SECRET_PENDING, secrets_store.encrypt(secret, _load_key(env)))
+    session.flush()
+
+
+def normalize_url(url: str) -> str:
+    """Scheme, host, port and path (scheme and host lowercase, no trailing slash): two URLs
+    with the same form point at the same OpenWA. Credentials and query are ignored."""
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = f"{host}:{port}" if port is not None else host
+    return f"{parts.scheme.lower()}://{netloc}{parts.path.rstrip('/')}"
+
+
+def url_changed(cfg: OpenWAConfig, new_url: str | None) -> bool:
+    """True when ``new_url`` points at a different OpenWA than the effective URL.
+
+    No effective URL yet (fresh install, or only some fields set by env) is not a change."""
+    return bool(new_url and cfg.url and normalize_url(new_url) != normalize_url(cfg.url))
+
+
+def clear_openwa_session(session: Session, env: Settings) -> None:
+    """Forget the stored session (it belongs to another OpenWA); an env-set one stays."""
+    if "session_id" in env_overrides(env):
+        return
+    _delete(session, K_SESSION_ID)
+    _delete(session, K_SESSION_NAME)
     session.flush()
 
 

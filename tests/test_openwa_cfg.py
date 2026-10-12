@@ -132,3 +132,20 @@ def test_lost_or_replaced_key_reads_as_not_configured(db):
 def test_repr_hides_secrets():
     text = repr(OpenWAConfig("http://u", "API-KEY", "s", "WEBHOOK-SECRET"))
     assert "API-KEY" not in text and "WEBHOOK-SECRET" not in text
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("http://openwa:2785", "HTTP://OpenWA:2785/", True),
+        ("http://user:pw@openwa:2785/api/", "http://openwa:2785/api", True),
+        ("http://openwa:2785", "http://openwa:2786", False),
+        ("http://openwa:2785", "https://openwa:2785", False),
+        ("http://openwa:2785/a", "http://openwa:2785/b", False),
+        ("http://[::1]:2785", "http://[::1]:2785/", True),
+    ],
+)
+def test_normalize_url(a, b, same):
+    from kino.services.openwa_cfg import normalize_url
+
+    assert (normalize_url(a) == normalize_url(b)) is same

@@ -246,7 +246,9 @@ def test_reconnect_drops_the_cached_client(api, owa):
     api.post("/api/openwa/setup/session", json={"session_id": "main"})
     assert api.get("/api/openwa/chats").status_code == 200
     assert owa.hosts[-1] == "openwa-a"
-    connect(api, url="http://openwa-b:2785")
+    connect(api, url="http://openwa-b:2785", api_key=API_KEY)
+    assert api.get("/api/openwa/chats").status_code == 503  # session of openwa-a dropped
+    api.post("/api/openwa/setup/session", json={"session_id": "main"})
     assert api.get("/api/openwa/chats").status_code == 200
     assert owa.hosts[-1] == "openwa-b"
 
@@ -368,3 +370,33 @@ def test_pending_secret_never_returned(api, owa):
     texts.append(api.post("/api/openwa/webhook/register", json={}).text)
     for t in texts:
         assert NEW_SECRET not in t and SECRET not in t
+
+
+# --- F2: a different OpenWA URL drops the session picked on the old host -------------------
+
+
+def test_url_change_clears_the_session(api, owa):
+    configured(api, owa)
+    r = connect(api, url="http://openwa-new:2785", api_key=API_KEY)
+    assert r.status_code == 200, r.text
+    s = status(api)
+    assert s["configured"] is False
+    assert s["session_id"] is None and s["session_name"] is None
+    assert load_openwa_config(api.app.state.settings).session_id is None
+
+
+def test_same_url_keeps_the_session(api, owa):
+    configured(api, owa)
+    r = connect(api, url="HTTP://OpenWA:2785/", api_key=API_KEY)
+    assert r.status_code == 200, r.text
+    s = status(api)
+    assert s["configured"] is True
+    assert s["session_id"] == "main" and s["session_name"] == "Main phone"
+
+
+def test_url_change_keeps_an_env_locked_session(api, owa):
+    api.app.state.settings = api.app.state.settings.model_copy(update={"openwa_session_id": "main"})
+    connect(api, url="http://openwa:2785", api_key=API_KEY, webhook_secret=SECRET)
+    r = connect(api, url="http://openwa-new:2785", api_key=API_KEY)
+    assert r.status_code == 200, r.text
+    assert status(api)["session_id"] == "main"
