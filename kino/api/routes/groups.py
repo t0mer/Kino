@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import Depends
+from fastapi import Depends, Query
 from fastapi.concurrency import run_in_threadpool
+from loguru import logger
 from sqlalchemy import func, select
 
+from kino import backfill, jobs, tasks
 from kino.api.deps import openwa_client, protected_router
-from kino.api.schemas import GroupOut, GroupsRefreshed, GroupUpdate
+from kino.api.schemas import GroupOut, GroupsRefreshed, GroupUpdate, JobStarted
 from kino.db.models import Group
 from kino.db.session import get_session
 from kino.openwa.client import OpenWAClient
+from kino.services import NotFoundError
 from kino.services import groups as svc
 
 router = protected_router(prefix="/api/groups", tags=["groups"])
@@ -60,3 +63,27 @@ async def refresh_groups(
     """Import group names from OpenWA (new groups start unwatched)."""
     found = await svc.fetch_groups(client)
     return await run_in_threadpool(_import, found)
+
+
+def _start_backfill(group_id: int, days: int) -> int:
+    with get_session() as s:
+        if s.get(Group, group_id) is None:
+            raise NotFoundError("group not found")
+    job_id = jobs.create_job(backfill.KIND, {"days": days}, subject_id=group_id, exclusive=True)
+    try:
+        tasks.backfill_group_task(job_id)
+    except Exception as e:
+        logger.error("enqueue of backfill job {} failed: {}", job_id, type(e).__name__)
+        jobs.finish_job(job_id, e)
+        raise
+    return job_id
+
+
+@router.post("/{group_id}/backfill", response_model=JobStarted, status_code=202)
+async def backfill_group(
+    group_id: int,
+    _client: Annotated[OpenWAClient, Depends(openwa_client)],
+    days: Annotated[int, Query(ge=backfill.MIN_DAYS, le=backfill.MAX_DAYS)] = 30,
+) -> JobStarted:
+    """Ingest the group's image messages of the last `days` days from OpenWA history."""
+    return JobStarted(job_id=await run_in_threadpool(_start_backfill, group_id, days))

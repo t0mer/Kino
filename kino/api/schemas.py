@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from huey import crontab
@@ -90,6 +90,26 @@ class GroupOut(BaseModel):
 class GroupsRefreshed(BaseModel):
     imported: int
     total: int
+
+
+class JobOut(BaseModel):
+    id: int
+    kind: str
+    status: Literal["queued", "running", "done", "failed"]
+    group_id: int | None
+    params: dict[str, Any]
+    total: int
+    processed: int
+    skipped: int
+    errors: int
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class JobStarted(BaseModel):
+    job_id: int
 
 
 # --- settings -----------------------------------------------------------------------------

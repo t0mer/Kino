@@ -786,3 +786,14 @@ def nightly_cluster_unknown_faces() -> None:
         cluster_unknown_faces()
     except Exception as e:
         logger.error("nightly clustering failed: {}", type(e).__name__)
+
+
+@huey.task()  # type: ignore[untyped-decorator]
+def backfill_group_task(job_id: int) -> None:
+    """Group backfill (POST /api/groups/{id}/backfill); the job row carries the outcome."""
+    from kino.backfill import backfill_group
+
+    try:
+        backfill_group(job_id)
+    except Exception as e:
+        logger.error("backfill task crashed: {}", type(e).__name__)
