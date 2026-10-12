@@ -33,23 +33,11 @@ from kino.api.web import install_spa
 from kino.api.webhook import router as webhook_router
 from kino.config import Settings, get_settings
 from kino.db.session import get_engine, init_engine, run_migrations
-from kino.openwa.client import OpenWAClient
-
-
-def _make_client(settings: Settings) -> OpenWAClient | None:
-    if not (settings.openwa_url and settings.openwa_api_key and settings.openwa_session_id):
-        logger.warning("OpenWA URL/API key/session not fully configured; media fetch disabled")
-        return None
-    return OpenWAClient(
-        settings.openwa_url,
-        settings.openwa_api_key.get_secret_value(),
-        settings.openwa_session_id,
-    )
+from kino.services.openwa_cfg import load_openwa_config
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    settings.require_webhook_secret()  # refuse to start without it
     init_engine()
     run_migrations()
     kino_metrics.setup(settings.metrics_path)
@@ -58,8 +46,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="Kino", version=kino.__version__, docs_url=None, redoc_url=None, openapi_url=None
     )
     app.state.settings = settings
-    app.state.openwa = _make_client(settings)
+    app.state.openwa = None  # built on first use from env or the setup wizard (deps)
     app.state.secret_key = auth.load_secret_key(settings)
+    if not load_openwa_config(settings).configured:
+        logger.warning(
+            "OpenWA is not configured yet: finish the setup wizard in the web UI "
+            "(Settings > OpenWA) or set KINO_OPENWA_* and KINO_WEBHOOK_SECRET"
+        )
     app.include_router(webhook_router)
     app.include_router(auth_router)
     app.include_router(kids_router)

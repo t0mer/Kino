@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from kino import metrics
+from kino.api.deps import current_openwa
 from kino.config import Settings
 from kino.db.models import Group
 from kino.db.session import get_session
@@ -24,6 +25,7 @@ from kino.openwa.schemas import (
     parse_webhook,
     verify_signature,
 )
+from kino.services.openwa_cfg import load_openwa_config
 
 router = APIRouter()
 
@@ -113,8 +115,10 @@ async def openwa_webhook(request: Request) -> Response:
     except _TooLarge:
         return _reply("too_large", 413)
 
-    secret = settings.require_webhook_secret()
-    if not verify_signature(secret, body, request.headers.get(SIGNATURE_HEADER)):
+    cfg = await run_in_threadpool(load_openwa_config, settings)
+    if not cfg.webhook_secret:
+        return _reply("not_configured", 503)
+    if not verify_signature(cfg.webhook_secret, body, request.headers.get(SIGNATURE_HEADER)):
         return _reply("bad_signature", 401)
 
     try:
@@ -130,7 +134,7 @@ async def openwa_webhook(request: Request) -> Response:
     except (ValueError, TypeError):
         return _reply("malformed", 400)
 
-    if not settings.openwa_session_id or ev.session_id != settings.openwa_session_id:
+    if not cfg.session_id or ev.session_id != cfg.session_id:
         return _reply("bad_session", 403)
     if ev.media_type != "image" or not ev.is_group:
         return _reply("ignored")
@@ -145,10 +149,11 @@ async def openwa_webhook(request: Request) -> Response:
         if refresh:  # after the upsert, so the refresh finds the group row
             _start_refresh(request, ev.chat_id)
 
+    client = await run_in_threadpool(current_openwa, request.app, cfg)
     result = await ingest_message(
         ev,
         settings,
-        request.app.state.openwa,
+        client,
         get_name=get_name,
         after_upsert=after_upsert,
     )

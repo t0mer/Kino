@@ -6,9 +6,10 @@ Routers protect routes with ``Depends(require_auth)`` and, for state-changing me
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from loguru import logger
 
 from kino.api import auth
@@ -16,12 +17,15 @@ from kino.api.auth import AuthInfo
 from kino.api.errors import OpenWANotConfigured
 from kino.config import Settings
 from kino.openwa.client import OpenWAClient
+from kino.services.openwa_cfg import NOT_CONFIGURED_HINT, OpenWAConfig, load_openwa_config
 
 __all__ = [
     "AuthInfo",
+    "current_openwa",
     "get_auth",
     "openwa_client",
     "protected_router",
+    "reset_openwa",
     "require_auth",
     "require_csrf",
 ]
@@ -103,12 +107,41 @@ def protected_router(**kwargs: Any) -> APIRouter:
     return APIRouter(dependencies=deps, **kwargs)
 
 
+_client_lock = threading.Lock()
+
+
+def current_openwa(app: FastAPI, cfg: OpenWAConfig | None = None) -> OpenWAClient | None:
+    """The shared OpenWA client, built from the resolved config on first use and cached on
+    ``app.state.openwa`` until :func:`reset_openwa` (the setup wizard) drops it.
+
+    Blocking (reads the database): call it from a threadpool in async code."""
+    cached: OpenWAClient | None = app.state.openwa
+    if cached is not None:
+        return cached
+    settings: Settings = app.state.settings
+    resolved = cfg if cfg is not None else load_openwa_config(settings)
+    if not resolved.client_ready:
+        return None
+    with _client_lock:
+        cached = app.state.openwa
+        if cached is None:
+            cached = OpenWAClient(*resolved.client_args())
+            app.state.openwa = cached
+        return cached
+
+
+async def reset_openwa(app: FastAPI) -> None:
+    """Forget the cached client so the next call rebuilds it from the saved config."""
+    with _client_lock:
+        old: OpenWAClient | None = app.state.openwa
+        app.state.openwa = None
+    if old is not None:
+        await old.aclose()
+
+
 def openwa_client(request: Request) -> OpenWAClient:
     """The app's shared OpenWA client; 503 when OpenWA is not configured."""
-    client: OpenWAClient | None = request.app.state.openwa
+    client = current_openwa(request.app)
     if client is None:
-        raise OpenWANotConfigured(
-            "OpenWA is not configured (KINO_OPENWA_URL, KINO_OPENWA_API_KEY, "
-            "KINO_OPENWA_SESSION_ID)"
-        )
+        raise OpenWANotConfigured(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
     return client

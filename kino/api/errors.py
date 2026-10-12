@@ -17,6 +17,7 @@ from kino.services import (
     ServiceError,
     StorageError,
 )
+from kino.services.openwa_cfg import OpenWANotConfiguredError
 
 
 class OpenWANotConfigured(Exception):
@@ -32,6 +33,7 @@ _STATUS: list[tuple[type[Exception], int]] = [
     (ServiceError, 400),
     (ForwardError, 409),  # destination guard (watched group <-> forward destination)
     (OpenWANotConfigured, 503),
+    (OpenWANotConfiguredError, 503),
     (RegisterError, 503),  # server-side configuration (webhook secret too short)
 ]
 
