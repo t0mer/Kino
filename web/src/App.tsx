@@ -19,6 +19,7 @@ import { PhotosPage } from "@/pages/PhotosPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ReviewPage } from "@/pages/ReviewPage";
 import { SetupPage } from "@/pages/SetupPage";
+import { TestPage } from "@/pages/TestPage";
 
 /** Built pages by nav path; the rest show the "Coming soon" placeholder. */
 const PAGES: Record<string, ReactNode> = {
@@ -28,6 +29,7 @@ const PAGES: Record<string, ReactNode> = {
   "/photos": <PhotosPage />,
   "/settings": <SettingsPage />,
   "/activity": <ActivityPage />,
+  "/test": <TestPage />,
   "/gallery": <GalleryPage />,
 };
 
