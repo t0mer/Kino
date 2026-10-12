@@ -171,3 +171,85 @@ async def test_send_image_without_caption_omits_field():
 
     await make(h).send_image("c@c.us", b"abc", "image/jpeg", "")
     assert "caption" not in bodies[0]
+
+
+from kino.openwa.client import list_sessions, mask_phone  # noqa: E402
+
+LIVE_SESSION = {
+    "id": "main",
+    "name": "Main phone",
+    "status": "ready",
+    "phone": "972501234567",
+    "pushName": "Dana",
+    "connectedAt": "2026-10-12T08:00:00Z",
+    "lastActive": None,
+    "createdAt": "x",
+    "updatedAt": "x",
+    "lastError": None,
+    "restriction": None,
+    "engineLoaded": True,
+}
+
+
+async def test_list_sessions_masks_phone_and_sends_key():
+    seen = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["path"], seen["key"] = req.url.path, req.headers["x-api-key"]
+        return httpx.Response(
+            200,
+            json=[
+                LIVE_SESSION,
+                {"id": "spare", "name": None, "status": "qr", "phone": None},
+                {"name": "no id"},
+                "junk",
+            ],
+        )
+
+    out = await list_sessions("http://owa:2785/", "key123", transport=httpx.MockTransport(h))
+    assert seen == {"path": "/api/sessions", "key": "key123"}
+    assert out == [
+        {"id": "main", "name": "Main phone", "status": "ready", "phone_masked": "9725****567"},
+        {"id": "spare", "name": None, "status": "qr", "phone_masked": None},
+    ]
+    assert "972501234567" not in repr(out)
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+async def test_list_sessions_http_errors(status):
+    with pytest.raises(OpenWAError) as ei:
+        await list_sessions(
+            "http://owa", "bad-key", transport=httpx.MockTransport(lambda r: httpx.Response(status))
+        )
+    assert ei.value.status == status and "bad-key" not in str(ei.value)
+
+
+async def test_list_sessions_unreachable_and_redirect_not_followed():
+    def down(req):
+        raise httpx.ConnectError("refused", request=req)
+
+    with pytest.raises(OpenWAError) as ei:
+        await list_sessions("http://owa", "k", transport=httpx.MockTransport(down))
+    assert ei.value.status is None
+
+    def redirect(req):
+        return httpx.Response(302, headers={"location": "file:///etc/passwd"})
+
+    with pytest.raises(OpenWAError) as ei:
+        await list_sessions("http://owa", "k", transport=httpx.MockTransport(redirect))
+    assert ei.value.status == 302
+
+
+async def test_list_sessions_rejects_non_list():
+    with pytest.raises(OpenWAError):
+        await list_sessions(
+            "http://owa",
+            "k",
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"error": "x"})),
+        )
+
+
+def test_mask_phone():
+    assert mask_phone("972501234567") == "9725****567"
+    assert mask_phone("+1 555") == "****"
+    assert mask_phone(None) is None and mask_phone("") is None
