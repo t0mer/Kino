@@ -39,6 +39,16 @@ def mask_ids(text: str | None) -> str | None:
     return _DIGITS.sub(_mask_digits, text)
 
 
+_PHONEISH = re.compile(r"^[\d+\s().-]{6,}$|@")
+
+
+def display_sender(name: str | None) -> str | None:
+    """The sender's display name; anything that looks like a phone number or JID is hidden."""
+    if not name or _PHONEISH.search(name.strip()):
+        return None
+    return mask_ids(name)
+
+
 def sanitize_error(text: str | None) -> str | None:
     """The error with filesystem paths and phone numbers/JIDs masked, capped to MAX_ERROR."""
     if not text:
@@ -173,6 +183,7 @@ __all__ = [
     "ImageDetail",
     "ImageRow",
     "get_image",
+    "display_sender",
     "mask_ids",
     "image_detail",
     "list_images",

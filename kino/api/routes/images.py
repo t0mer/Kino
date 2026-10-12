@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -23,7 +22,7 @@ from kino.config import Settings
 from kino.db.session import get_session
 from kino.services import images as svc
 from kino.services import review as review_svc
-from kino.services.images import mask_ids, sanitize_error
+from kino.services.images import display_sender, mask_ids, sanitize_error
 
 router = protected_router(tags=["images"])
 
@@ -37,14 +36,8 @@ _ATTACHMENT = {**_PRIVATE, "Content-Disposition": "attachment"}
 _SAFE_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}
 )
-_PHONEISH = re.compile(r"^[\d+\s().-]{6,}$|@")
 
-
-def _sender(name: str | None) -> str | None:
-    """The sender's display name; anything that looks like a phone number or JID is hidden."""
-    if not name or _PHONEISH.search(name.strip()):
-        return None
-    return mask_ids(name)
+_sender = display_sender
 
 
 def _media_type(path: Path) -> str:
