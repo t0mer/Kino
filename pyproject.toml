@@ -20,6 +20,7 @@ dependencies = [
     "typer==0.27.3",
     "httpx==0.28.1",
     "numpy==2.5.4",
+    "scikit-learn==1.9.1",
     "onnxruntime==1.31.0",
     "opencv-python-headless==5.0.0.93",
     "filelock==4.1.0",
@@ -79,7 +80,7 @@ strict = true
 "kino/db/alembic/versions/*" = ["E501", "I", "UP"]
 
 [[tool.mypy.overrides]]
-module = ["imagehash", "huey", "huey.*", "piexif", "pillow_heif"]
+module = ["imagehash", "huey", "huey.*", "piexif", "pillow_heif", "sklearn", "sklearn.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
