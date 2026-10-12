@@ -113,13 +113,21 @@ def test_thumb_deleted_with_photo_and_kid(world):
 def test_list_sender_siblings_and_thumb_url(world):
     api = world["api"]
     a, b = confirm_all(world)
-    items = {p["id"]: p for p in api.get("/api/photos").json()["items"]}
-    pa = items[a.id]
+    items = api.get("/api/photos").json()["items"]
+    assert len(items) == 1  # one row per image when no kid is selected
+    pa = items[0]
+    assert pa["id"] == a.id and pa["kid_id"] == a.kid_id
     assert pa["thumb_url"] == f"/api/photos/{a.id}/thumb" and pa["sender_name"] == "Dana"
     assert pa["kid_ids"] == [b.kid_id] and pa["kid_names"] == ["איתי"]
-    assert items[b.id]["kid_ids"] == [a.kid_id] and items[b.id]["kid_names"] == ["Noa"]
+    assert pa["kids"] == [
+        {"kid_id": a.kid_id, "kid_name": "Noa", "saved_photo_id": a.id},
+        {"kid_id": b.kid_id, "kid_name": "איתי", "saved_photo_id": b.id},
+    ]
     only = api.get(f"/api/photos?kid_id={a.kid_id}").json()["items"]
     assert only[0]["kid_ids"] == [b.kid_id]  # siblings ignore the kid filter
+    assert len(only[0]["kids"]) == 2
+    other = api.get(f"/api/photos?kid_id={b.kid_id}").json()["items"]
+    assert len(other) == 1 and other[0]["id"] == b.id and other[0]["kid_ids"] == [a.kid_id]
     with dbs.get_session() as s:
         s.get(Image, world["img"]).sender_name = "972501234567@c.us"
     assert api.get("/api/photos").json()["items"][0]["sender_name"] is None
@@ -127,6 +135,89 @@ def test_list_sender_siblings_and_thumb_url(world):
         s.get(Image, world["img"]).sender_name = "Dana 0501234567 Levi"
     name = api.get("/api/photos").json()["items"][0]["sender_name"]
     assert name and "0501234567" not in name
+
+
+def _seed_pair(world, msg: str) -> int:
+    """An image saved for both kids; returns the image id."""
+    im = seed_image(world["gid"], msg=msg)
+    for kid in (world["noa"], world["itai"]):
+        f = seed_face(im, unit(0), n=0 if kid == world["noa"] else 1)
+        assert act(world["api"], seed_match(f, kid), "confirm").status_code == 200
+    return im
+
+
+def _walk(api, qs: str, limit: int) -> list[dict]:
+    out: list[dict] = []
+    cursor = None
+    for _ in range(50):
+        url = f"/api/photos?limit={limit}{qs}" + (f"&cursor={cursor}" if cursor else "")
+        page = api.get(url).json()
+        assert len(page["items"]) <= limit
+        out += page["items"]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return out
+    raise AssertionError("pagination did not terminate")
+
+
+def test_pagination_with_siblings_straddling_pages(world):
+    api = world["api"]
+    confirm_all(world)
+    images = [world["img"]] + [_seed_pair(world, f"p{i}") for i in range(4)]
+    # a single-kid image, saved after the pairs
+    solo = seed_image(world["gid"], msg="solo")
+    assert (
+        act(api, seed_match(seed_face(solo, unit(2)), world["itai"]), "confirm").status_code == 200
+    )
+    images.append(solo)
+    for limit in (1, 2, 3, 4, 100):
+        seen = [p["image_id"] for p in _walk(api, "", limit)]
+        assert sorted(seen) == sorted(images), limit
+        assert len(set(seen)) == len(seen)
+        ids = [p["id"] for p in _walk(api, "", limit)]
+        assert ids == sorted(ids, reverse=True)
+        per_kid = _walk(api, f"&kid_id={world['itai']}", limit)
+        assert len(per_kid) == len(images) and len({p["id"] for p in per_kid}) == len(images)
+    for p in _walk(api, "", 2):
+        want = 1 if p["image_id"] == solo else 2
+        assert len(p["kids"]) == want
+        assert [k["kid_id"] for k in p["kids"]] == sorted(k["kid_id"] for k in p["kids"])
+
+
+def test_list_filters_group_and_dates_group_by_image(world):
+    api = world["api"]
+    confirm_all(world)
+    g2 = seed_group(chat="120363000000000002@g.us", name="Dance", slug="dance")
+    img2 = seed_image(g2, msg="d1")
+    for n, kid in enumerate((world["noa"], world["itai"])):
+        assert (
+            act(api, seed_match(seed_face(img2, unit(0), n=n), kid), "confirm").status_code == 200
+        )
+    assert [p["image_id"] for p in api.get(f"/api/photos?group_id={g2}").json()["items"]] == [img2]
+    assert len(api.get("/api/photos").json()["items"]) == 2
+    assert api.get("/api/photos?from=2026-05-07T00:00:00").json()["items"] == []
+    assert len(api.get("/api/photos?to=2026-05-07T00:00:00Z").json()["items"]) == 2
+
+
+def test_counts_consistent_with_grouped_list(world):
+    api = world["api"]
+    confirm_all(world)
+    _seed_pair(world, "c1")
+    counts = api.get("/api/photos/counts").json()
+    assert counts["total"] == len(_walk(api, "", 1)) == 2
+    for k in counts["kids"]:
+        assert k["count"] == len(_walk(api, f"&kid_id={k['kid_id']}", 1))
+
+
+def test_remove_for_one_kid_keeps_the_other(world):
+    api = world["api"]
+    a, b = confirm_all(world)
+    assert api.delete(f"/api/photos/{a.id}").status_code == 200
+    items = api.get("/api/photos").json()["items"]
+    assert len(items) == 1 and items[0]["id"] == b.id and items[0]["kid_id"] == b.kid_id
+    assert [k["saved_photo_id"] for k in items[0]["kids"]] == [b.id]
+    assert api.get(f"/api/photos?kid_id={a.kid_id}").json()["items"] == []
+    assert api.get("/api/photos/counts").json()["total"] == 1
 
 
 def test_counts_and_filters(world):
@@ -170,12 +261,15 @@ def test_list_photos_has_no_n_plus_one(world):
         finally:
             event.remove(eng, "before_cursor_execute", count)
 
-    assert len(run().json()["items"]) == 2
+    assert len(run().json()["items"]) == 1
     small = n
     for i in range(3, 9):
         im = seed_image(world["gid"], msg=f"m{i}")
         assert (
             act(api, seed_match(seed_face(im, unit(0)), world["noa"]), "confirm").status_code == 200
         )
+    assert len(run().json()["items"]) == 7
+    assert n == small
+    _seed_pair(world, "extra")  # sibling rows add no queries
     assert len(run().json()["items"]) == 8
     assert n == small

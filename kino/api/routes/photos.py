@@ -13,7 +13,14 @@ from fastapi.responses import FileResponse
 from loguru import logger
 
 from kino.api.deps import protected_router
-from kino.api.schemas import KidPhotoCount, PhotoCounts, PhotoOut, PhotoPage, PhotoRemoved
+from kino.api.schemas import (
+    KidPhotoCount,
+    PhotoCounts,
+    PhotoKidOut,
+    PhotoOut,
+    PhotoPage,
+    PhotoRemoved,
+)
 from kino.config import Settings
 from kino.db.models import SavedPhoto
 from kino.db.session import get_session
@@ -72,6 +79,7 @@ def list_photos(
                 sender_name=display_sender(r.image.sender_name),
                 kid_ids=[k for k, _ in r.siblings],
                 kid_names=[n for _, n in r.siblings],
+                kids=[PhotoKidOut(kid_id=k, kid_name=n, saved_photo_id=sp) for k, n, sp in r.kids],
             )
             for r in rows
         ]

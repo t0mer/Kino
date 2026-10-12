@@ -663,19 +663,20 @@ def test_list_photos_filters_and_pagination(world):
     m3 = seed_match(seed_face(img2, unit(0)), world["noa"])
     assert act(api, m3, "confirm").status_code == 200
     all_ = api.get("/api/photos").json()
-    assert len(all_["items"]) == 3 and all_["next_cursor"] is None
+    assert len(all_["items"]) == 2 and all_["next_cursor"] is None
     ids = [p["id"] for p in all_["items"]]
     assert ids == sorted(ids, reverse=True)
     first = all_["items"][0]
     assert first["file_url"] == f"/api/images/{img2}/file" and first["group_name"] == "Dance"
     assert len(api.get(f"/api/photos?kid_id={world['noa']}").json()["items"]) == 2
+    assert len(api.get(f"/api/photos?kid_id={world['itai']}").json()["items"]) == 1
     assert len(api.get(f"/api/photos?group_id={g2}").json()["items"]) == 1
     assert len(api.get("/api/photos?from=2026-05-07T00:00:00").json()["items"]) == 0
-    assert len(api.get("/api/photos?to=2026-05-07T00:00:00Z").json()["items"]) == 3
-    p1 = api.get("/api/photos?limit=2").json()
-    assert len(p1["items"]) == 2 and p1["next_cursor"] == p1["items"][-1]["id"]
-    p2 = api.get(f"/api/photos?limit=2&cursor={p1['next_cursor']}").json()
-    assert len(p2["items"]) == 1
+    assert len(api.get("/api/photos?to=2026-05-07T00:00:00Z").json()["items"]) == 2
+    p1 = api.get("/api/photos?limit=1").json()
+    assert len(p1["items"]) == 1 and p1["next_cursor"] == p1["items"][-1]["id"]
+    p2 = api.get(f"/api/photos?limit=1&cursor={p1['next_cursor']}").json()
+    assert len(p2["items"]) == 1 and p2["next_cursor"] is None
 
 
 def test_delete_photo_keeps_sibling_forward_and_rejects_match(world, enqueued):
