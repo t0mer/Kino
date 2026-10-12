@@ -121,8 +121,18 @@ async def connect(request: Request, body: OpenWAConnectIn) -> OpenWAConnectOut:
     )
     cfg = await run_in_threadpool(load_openwa_config, env)
     new_host = url_changed(cfg, body.url)
+    if new_host and "api_key" in env_overrides(env):
+        # never send a key from the environment to a host the operator did not configure
+        raise HTTPException(
+            400,
+            "The API key is set in the environment or config.yaml (KINO_OPENWA_API_KEY): "
+            "the OpenWA URL can only change together with it there.",
+        )
+    if new_host and not body.api_key:
+        raise HTTPException(400, "Enter the API key for the new URL.")
     url = body.url or cfg.url
-    api_key = body.api_key or cfg.api_key
+    # a new host only ever gets the key typed with it, never the saved one
+    api_key = body.api_key if new_host else (body.api_key or cfg.api_key)
     if not url:
         raise InvalidError("Enter the OpenWA URL.")
     if not api_key:

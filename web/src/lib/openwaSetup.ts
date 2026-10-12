@@ -86,7 +86,11 @@ export function connectErrors(f: ConnectForm, s: StatusLike): ConnectErrors {
     if (!url && !s.url) out.url = "Enter the OpenWA URL.";
     else if (url && !HTTP_URL.test(url)) out.url = "Use an http:// or https:// address, e.g. http://openwa:2785.";
   }
-  if (!locked.has("api_key") && !f.apiKey.trim() && !s.has_api_key) out.apiKey = "Enter the OpenWA API key.";
+  if (!locked.has("api_key") && !f.apiKey.trim()) {
+    if (!s.has_api_key) out.apiKey = "Enter the OpenWA API key.";
+    // the saved key is never sent to a newly typed address (the server enforces it too)
+    else if (url && !locked.has("url")) out.apiKey = "Enter the API key for the new URL.";
+  }
   const secret = f.webhookSecret.trim();
   if (!locked.has("webhook_secret") && secret) {
     if ([...secret].length < MIN_WEBHOOK_SECRET)

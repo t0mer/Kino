@@ -238,8 +238,13 @@ export function OpenWASetupPage() {
                     value={form.apiKey}
                     onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
                     aria-invalid={shown.apiKey ? true : undefined}
-                    aria-describedby="owa-key-error"
+                    aria-describedby="owa-key-hint owa-key-error"
                   />
+                  {s.has_api_key && (
+                    <p id="owa-key-hint" className="text-xs text-muted-foreground">
+                      Leave empty to keep the saved key. Enter it again when you change the URL.
+                    </p>
+                  )}
                   <FieldError id="owa-key-error" text={shown.apiKey} />
                 </div>
               )}

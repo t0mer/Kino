@@ -400,3 +400,52 @@ def test_url_change_keeps_an_env_locked_session(api, owa):
     r = connect(api, url="http://openwa-new:2785", api_key=API_KEY)
     assert r.status_code == 200, r.text
     assert status(api)["session_id"] == "main"
+
+
+# --- F3: the saved API key is never sent to a newly typed host -----------------------------
+
+
+def test_url_change_without_key_is_400_and_sends_nothing(api, owa):
+    configured(api, owa)
+    before = len(owa.hosts)
+    r = connect(api, url="http://evil.example:2785")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Enter the API key for the new URL."
+    assert len(owa.hosts) == before
+    assert status(api)["url"] == "http://openwa:2785"
+
+
+def test_url_change_with_key_connects(api, owa):
+    configured(api, owa)
+    r = connect(api, url="http://openwa-new:2785", api_key=API_KEY)
+    assert r.status_code == 200, r.text
+    assert owa.hosts[-1] == "openwa-new"
+
+
+def test_same_url_without_key_keeps_the_stored_key(api, owa):
+    configured(api, owa)
+    r = connect(api, url="http://openwa:2785/")
+    assert r.status_code == 200, r.text
+    assert load_openwa_config(api.app.state.settings).api_key == API_KEY
+
+
+def test_env_locked_key_cannot_follow_a_new_url(api, owa):
+    api.app.state.settings = api.app.state.settings.model_copy(
+        update={"openwa_api_key": SecretStr(API_KEY)}
+    )
+    assert connect(api, url="http://openwa:2785", webhook_secret=SECRET).status_code == 200
+    before = len(owa.hosts)
+    r = connect(api, url="http://evil.example:2785")
+    assert r.status_code == 400 and "KINO_OPENWA_API_KEY" in r.json()["detail"]
+    assert len(owa.hosts) == before
+    assert status(api)["url"] == "http://openwa:2785"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_url_change_with_blank_key_is_400_and_sends_nothing(api, owa, blank):
+    configured(api, owa)
+    before = len(owa.hosts)
+    r = connect(api, url="http://evil.example:2785", api_key=blank)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Enter the API key for the new URL."
+    assert len(owa.hosts) == before

@@ -20,6 +20,15 @@ describe("connectErrors", () => {
     expect(e.webhookSecret).toMatch(/at least 16/);
     expect(connectErrors({ url: "http://o:1", apiKey: "k", webhookSecret: "has a space in it!!" }, fresh).webhookSecret).toMatch(/no spaces/);
   });
+  it("requires the API key again whenever a URL is typed", () => {
+    const saved = { env_overrides: [], has_api_key: true, url: "http://openwa:2785" };
+    expect(connectErrors({ ...blank, url: "http://other:2785" }, saved)).toEqual({
+      apiKey: "Enter the API key for the new URL.",
+    });
+    expect(connectErrors({ ...blank, url: "http://other:2785", apiKey: "k" }, saved)).toEqual({});
+    const envKey = { env_overrides: ["api_key"] as const, has_api_key: true, url: "http://openwa:2785" };
+    expect(connectErrors({ ...blank, url: "http://other:2785" }, envKey)).toEqual({});
+  });
   it("skips env-locked fields", () => {
     const locked = { env_overrides: ["url", "api_key", "webhook_secret"] as const, has_api_key: false, url: null };
     expect(connectErrors({ ...blank, webhookSecret: "x" }, locked)).toEqual({});
