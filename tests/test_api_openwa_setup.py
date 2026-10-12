@@ -260,3 +260,17 @@ def test_setup_routes_need_auth_and_csrf(api, owa):
         ("POST", "/api/openwa/setup/session"),
     ]:
         assert api.request(method, path, json={}).status_code == 401
+
+
+def test_validation_errors_do_not_echo_input(api, owa):
+    bodies = [
+        {"api_key": "secret key-value-XYZ"},
+        {"webhook_secret": "my secret with space 123456"},
+        {"url": "http://u:hunter2pw@openwa/?t=1"},
+    ]
+    for body in bodies:
+        r = api.post("/api/openwa/setup/connect", json=body)
+        assert r.status_code == 422
+        assert r.json()["detail"][0]["loc"] and r.json()["detail"][0]["msg"]
+        for leak in ("key-value-XYZ", "with space", "hunter2pw", "t=1"):
+            assert leak not in r.text, leak

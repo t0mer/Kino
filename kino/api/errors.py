@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -61,7 +62,15 @@ def _openwa(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse({"detail": detail}, status_code=502)
 
 
+def _validation(request: Request, exc: Exception) -> JSONResponse:
+    # Drop `input` and `ctx`: they echo the submitted values (API keys, secrets, URL credentials).
+    errors = exc.errors() if isinstance(exc, RequestValidationError) else []
+    detail = [{k: e[k] for k in ("type", "loc", "msg") if k in e} for e in errors]
+    return JSONResponse({"detail": detail}, status_code=422)
+
+
 def install_error_handlers(app: FastAPI) -> None:
     for cls, _ in _STATUS:
         app.add_exception_handler(cls, _detail)
     app.add_exception_handler(OpenWAError, _openwa)
+    app.add_exception_handler(RequestValidationError, _validation)
