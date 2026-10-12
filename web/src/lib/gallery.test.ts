@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dateOnly, filterByDate, hasRefFilters, invalidRefRange, monthHistogram, monthLabel, sortRefs } from "./gallery";
+import { countOutliers, dateOnly, onlyOutliers, outlierReasonText, filterByDate, hasRefFilters, invalidRefRange, monthHistogram, monthLabel, sortRefs } from "./gallery";
 
 const r = (id: number, photo_date: string | null) => ({ id, photo_date });
 
@@ -21,6 +21,25 @@ describe("gallery helpers", () => {
     const refs = [r(1, "2026-01-01T00:00:00"), r(2, null), r(3, "2026-06-01T00:00:00"), r(4, "2026-06-01T00:00:00")];
     expect(sortRefs(refs).map((x) => x.id)).toEqual([4, 3, 1, 2]);
     expect(refs[0]!.id).toBe(1);
+  });
+
+  it("sortRefs puts outliers first, keeping the date order within each group", () => {
+    const refs: { id: number; photo_date: string | null; outlier?: boolean }[] = [
+      { ...r(1, "2026-01-01T00:00:00"), outlier: true },
+      r(2, "2026-09-01T00:00:00"),
+      { ...r(3, "2026-06-01T00:00:00"), outlier: true },
+      r(4, null),
+    ];
+    expect(sortRefs(refs).map((x) => x.id)).toEqual([3, 1, 2, 4]);
+    expect(countOutliers(refs)).toBe(2);
+    expect(onlyOutliers(refs).map((x) => x.id)).toEqual([1, 3]);
+  });
+
+  it("outlierReasonText maps known codes and falls back for unknown ones", () => {
+    expect(outlierReasonText("far_from_centroid")).toMatch(/different from the rest/);
+    expect(outlierReasonText("closer_to_other_kid")).toMatch(/another kid/);
+    expect(outlierReasonText("weird")).toMatch(/Flagged/);
+    expect(outlierReasonText(null)).toMatch(/Flagged/);
   });
 
   it("monthHistogram fills gaps across a year boundary and counts undated", () => {

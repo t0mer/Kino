@@ -83,6 +83,37 @@ describe("GalleryPage", () => {
     expect(screen.getByRole("link", { name: /Add references/ })).toHaveAttribute("href", "/kids/1/enroll");
   });
 
+  it("flags outliers first with a reason tooltip, a banner and an Outliers-only toggle", async () => {
+    refs = [
+      ref(1, { photo_date: "2026-08-10T00:00:00" }),
+      ref(2, { photo_date: "2026-09-10T00:00:00" }),
+      ref(3, { photo_date: "2026-01-10T00:00:00", outlier: true, outlier_reason: "closer_to_other_kid" }),
+    ];
+    renderPage();
+    const cards = await screen.findAllByTestId(/^ref-/);
+    expect(cards.map((c) => c.dataset.testid)).toEqual(["ref-3", "ref-2", "ref-1"]);
+    expect(screen.getByRole("status")).toHaveTextContent("1 reference looks different from the rest; review or retire it.");
+    expect(within(cards[0]!).getByText("Outlier")).toBeInTheDocument();
+    await userEvent.hover(within(cards[0]!).getByText("Outlier"));
+    expect((await screen.findAllByText(/more like another kid/)).length).toBeGreaterThan(0);
+
+    const toggle = screen.getByRole("button", { name: "Outliers only (1)" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    expect(screen.getAllByTestId(/^ref-/).map((c) => c.dataset.testid)).toEqual(["ref-3"]);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(toggle);
+    expect(screen.getAllByTestId(/^ref-/)).toHaveLength(3);
+  });
+
+  it("shows no outlier UI when nothing is flagged", async () => {
+    renderPage();
+    await screen.findAllByTestId(/^ref-/);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText("Outlier")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Outliers only/ })).not.toBeInTheDocument();
+  });
+
   it("selects the kid from ?kid= and shows the empty state", async () => {
     renderPage("/gallery?kid=2");
     expect(await screen.findByText("No references yet")).toBeInTheDocument();
