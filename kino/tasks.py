@@ -33,7 +33,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from kino import metrics
+from kino import jobs, metrics
 from kino.config import Settings, get_settings
 from kino.db.models import Face, Group, Image, Kid, Match, ReferenceFace, SavedPhoto, Setting
 from kino.db.session import embedding_to_blob, get_session
@@ -149,6 +149,10 @@ def get_pipeline() -> Pipeline:
 
 @huey.on_startup()  # type: ignore[untyped-decorator]
 def _warm_pipeline() -> None:
+    try:
+        jobs.fail_interrupted_jobs()
+    except Exception as e:
+        logger.error("interrupted-job cleanup failed: {}", type(e).__name__)
     try:
         get_pipeline()
     except Exception as e:  # first job retries the load and fails that image cleanly
