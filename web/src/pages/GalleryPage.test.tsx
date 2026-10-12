@@ -1,51 +1,45 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { GalleryRef } from "@/lib/gallery";
+import type { Photo } from "@/lib/photos";
 import { createQueryClient } from "@/lib/query";
 import { GalleryPage } from "./GalleryPage";
 
-type Call = { method: string; url: string; body: unknown };
+type Call = { method: string; url: string };
 let routes: Record<string, (c: Call) => Response>;
 let calls: Call[];
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-const ref = (id: number, over: Partial<GalleryRef> = {}): GalleryRef => ({
-  id, kid_id: 1, face_id: id, source: "upload", status: "active", quality: 0.8, photo_date: "2026-09-10T00:00:00",
-  added_at: "2026-10-01T00:00:00", weight: 0.9, yaw: 0, crop_url: `/api/references/${id}/crop`, ...over,
+const photo = (id: number, image_id: number, kid_id: number, kid_name: string): Photo => ({
+  id, image_id, kid_id, kid_name, group_id: 10, group_name: "כיתה ב", thumb_url: `/api/photos/${id}/thumb`, sender_name: "Dana", kid_ids: [], kid_names: [],
+  sent_at: "2026-10-05T10:00:00", saved_at: "2026-10-05T10:01:00", file_url: `/api/images/${image_id}/file`,
 });
 const kid = (id: number, display_name: string) => ({
   id, display_name, slug: String(id), birth_year: null, active: true, auto_save_enabled: false,
   threshold_offset: 0, group_ids: [], reference_count: 0, today: 0, last_7_days: 0, created_at: "2026-10-01T00:00:00",
 });
-const cov = (kid_id: number) => ({
-  kid_id, count: 3, recommended: 10, yaw_known: 0, left: 0, frontal: 0, right: 0, older_than_year: 0, hints: ["Add side angles"],
-});
-
-let refs: GalleryRef[];
 
 beforeEach(() => {
   document.cookie = "kino_csrf=tok; path=/";
   calls = [];
-  refs = [ref(1, { photo_date: "2026-08-10T00:00:00" }), ref(2, { source: "auto", photo_date: "2026-09-10T00:00:00" }), ref(3, { status: "retired", photo_date: null })];
   routes = {
     "GET /api/kids": () => json(200, [kid(1, "Noa"), kid(2, "Itai")]),
-    "GET /api/kids/1/coverage": () => json(200, cov(1)),
-    "GET /api/kids/1/references": () => json(200, refs),
-    "GET /api/kids/2/references": () => json(200, []),
-    "GET /api/kids/2/coverage": () => json(200, cov(2)),
+    "GET /api/groups": () => json(200, [{ id: 10, chat_id: "10@g.us", name: "כיתה ב", slug: null, watched: true, kid_ids: [], is_forward_destination: false, created_at: "2026-10-01T00:00:00", last_seen_at: null }]),
+    "GET /api/photos": () => json(200, { items: [{ ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"] }, photo(2, 101, 2, "Itai")], next_cursor: null }),
+    "GET /api/photos/counts": () => json(200, { total: 2, kids: [{ kid_id: 1, kid_name: "Noa", count: 1 }, { kid_id: 2, kid_name: "Itai", count: 2 }] }),
   };
+  vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} unobserve() {} });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init: RequestInit = {}) => {
       const method = (init.method ?? "GET").toUpperCase();
-      const call = { method, url, body: init.body ? JSON.parse(init.body as string) : undefined };
+      const call = { method, url };
       calls.push(call);
       const h = routes[`${method} ${url.split("?")[0]}`];
       return h ? h(call) : json(404, { detail: "not found" });
@@ -68,139 +62,157 @@ function renderPage(path = "/gallery") {
     </QueryClientProvider>,
   );
 }
-const writes = () => calls.filter((c) => c.method !== "GET");
+const photoGets = () => calls.filter((c) => c.method === "GET" && /^\/api\/photos(\?|$)/.test(c.url));
+const countGets = () => calls.filter((c) => c.method === "GET" && c.url.startsWith("/api/photos/counts"));
+const open = async (name: RegExp) => userEvent.click((await screen.findAllByRole("button", { name }))[0]!);
 
 describe("GalleryPage", () => {
-  it("shows references newest first with badges, crop and histogram", async () => {
+  it("renders month headings and thumbnails with a shared-kid badge", async () => {
+    routes["GET /api/photos"] = () =>
+      json(200, {
+        items: [
+          { ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"] },
+          { ...photo(2, 101, 2, "Itai"), sent_at: "2026-09-10T10:00:00" },
+        ],
+        next_cursor: null,
+      });
     renderPage();
-    const cards = await screen.findAllByTestId(/^ref-/);
-    expect(cards.map((c) => c.dataset.testid)).toEqual(["ref-2", "ref-1", "ref-3"]);
-    expect(within(cards[0]!).getByText("auto")).toBeInTheDocument();
-    expect(within(cards[2]!).getByText("retired")).toBeInTheDocument();
-    expect(cards[0]!.querySelector("img")).toHaveAttribute("src", "/api/references/2/crop");
-    expect(screen.getAllByTestId("hist-bar")).toHaveLength(2);
-    expect(screen.getByText("Add side angles")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Add references/ })).toHaveAttribute("href", "/kids/1/enroll");
+    const btn = await screen.findByRole("button", { name: "Open photo of Noa from כיתה ב" });
+    expect(btn.querySelector("img")).toHaveAttribute("src", "/api/photos/1/thumb");
+    expect(btn.querySelector("img")).toHaveAttribute("loading", "lazy");
+    expect(within(btn).getByText("Noa")).toHaveAttribute("dir", "auto");
+    expect(within(btn).getByTestId("shared-badge")).toHaveTextContent("Itai");
+    expect(screen.getByRole("heading", { name: "October 2026" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "September 2026" })).toBeInTheDocument();
+    const itai = screen.getByRole("button", { name: /Open photo of Itai/ });
+    expect(within(itai).queryByTestId("shared-badge")).not.toBeInTheDocument();
   });
 
-  it("flags outliers first with a reason tooltip, a banner and an Outliers-only toggle", async () => {
-    refs = [
-      ref(1, { photo_date: "2026-08-10T00:00:00" }),
-      ref(2, { photo_date: "2026-09-10T00:00:00" }),
-      ref(3, { photo_date: "2026-01-10T00:00:00", outlier: true, outlier_reason: "closer_to_other_kid" }),
-    ];
+  it("shows kid tabs with counts, zero for kids without photos, and remembers the kid in the URL", async () => {
+    routes["GET /api/photos/counts"] = () => json(200, { total: 2, kids: [{ kid_id: 2, kid_name: "Itai", count: 2 }] });
     renderPage();
-    const cards = await screen.findAllByTestId(/^ref-/);
-    expect(cards.map((c) => c.dataset.testid)).toEqual(["ref-3", "ref-2", "ref-1"]);
-    expect(screen.getByRole("status")).toHaveTextContent("1 reference looks different from the rest; review or retire it.");
-    expect(within(cards[0]!).getByText("Outlier")).toBeInTheDocument();
-    await userEvent.hover(within(cards[0]!).getByText("Outlier"));
-    expect((await screen.findAllByText(/more like another kid/)).length).toBeGreaterThan(0);
-
-    const toggle = screen.getByRole("button", { name: "Outliers only (1)" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await userEvent.click(toggle);
-    expect(screen.getAllByTestId(/^ref-/).map((c) => c.dataset.testid)).toEqual(["ref-3"]);
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(toggle);
-    expect(screen.getAllByTestId(/^ref-/)).toHaveLength(3);
+    const all = await screen.findByRole("tab", { name: /All/ });
+    expect(await screen.findByRole("tab", { name: /Noa/ })).toHaveTextContent("0");
+    await waitFor(() => expect(all).toHaveTextContent("2"));
+    expect(screen.getByRole("tab", { name: /Itai/ })).toHaveTextContent("2");
+    expect(all).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(screen.getByRole("tab", { name: /Itai/ }));
+    expect(screen.getByRole("tab", { name: /Itai/ })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(photoGets().at(-1)!.url).toContain("kid_id=2"));
+    expect(countGets().at(-1)!.url).not.toContain("kid_id");
   });
 
-  it("shows no outlier UI when nothing is flagged", async () => {
-    renderPage();
-    await screen.findAllByTestId(/^ref-/);
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.queryByText("Outlier")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Outliers only/ })).not.toBeInTheDocument();
+  it("starts on the kid from ?kid=", async () => {
+    renderPage("/gallery?kid=1");
+    expect(await screen.findByRole("tab", { name: /Noa/ })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(photoGets().at(-1)!.url).toContain("kid_id=1"));
   });
 
-  it("selects the kid from ?kid= and shows the empty state", async () => {
-    renderPage("/gallery?kid=2");
-    expect(await screen.findByText("No references yet")).toBeInTheDocument();
-    expect((screen.getByLabelText("Kid") as HTMLSelectElement).value).toBe("2");
+  it("sends group and date filters to photos and counts", async () => {
+    renderPage();
+    await screen.findByRole("button", { name: /Open photo of Noa/ });
+    await userEvent.selectOptions(screen.getByLabelText("Group"), "10");
+    await userEvent.type(screen.getByLabelText("From"), "2026-10-01");
+    await userEvent.type(screen.getByLabelText("To"), "2026-10-07");
+    await waitFor(() => {
+      for (const last of [photoGets().at(-1)!.url, countGets().at(-1)!.url]) {
+        expect(last).toContain("group_id=10");
+        expect(last).toContain("from=2026-10-01T00%3A00%3A00");
+        expect(last).toContain("to=2026-10-07T23%3A59%3A59");
+      }
+    });
   });
 
-  it("sends source/status to the API and filters dates client-side", async () => {
+  it("loads more with the cursor", async () => {
+    routes["GET /api/photos"] = (c) =>
+      c.url.includes("cursor=2")
+        ? json(200, { items: [photo(3, 102, 1, "Noa")], next_cursor: null })
+        : json(200, { items: [photo(1, 100, 1, "Noa"), photo(2, 101, 2, "Itai")], next_cursor: 2 });
     renderPage();
-    await screen.findAllByTestId(/^ref-/);
-    await userEvent.selectOptions(screen.getByLabelText("Source"), "auto");
-    await waitFor(() => expect(calls.at(-1)!.url).toContain("source=auto"));
-    await userEvent.selectOptions(screen.getByLabelText("Source"), "");
-    await userEvent.type(screen.getByLabelText("From"), "2026-09-01");
-    await waitFor(() => expect(screen.getAllByTestId(/^ref-/)).toHaveLength(1));
-    expect(screen.getByTestId("ref-2")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Open photo/ })).toHaveLength(3));
+    expect(photoGets().at(-1)!.url).toContain("cursor=2");
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
-  it("retires and reactivates", async () => {
-    routes["PATCH /api/references/1"] = () => json(200, ref(1, { status: "retired" }));
-    routes["PATCH /api/references/3"] = () => json(200, ref(3));
+  it("shows the empty state with links, a filtered empty state, and an error with retry", async () => {
+    routes["GET /api/photos"] = () => json(200, { items: [], next_cursor: null });
+    const { unmount } = renderPage();
+    expect(await screen.findByText("No photos yet")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "References" })).toHaveAttribute("href", "/references");
+    unmount();
+    renderPage("/gallery?kid=1");
+    expect(await screen.findByText("No photos match these filters")).toBeInTheDocument();
+    cleanup();
+    routes["GET /api/photos"] = () => json(400, { detail: "bad" });
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Retire reference 1" }));
-    await waitFor(() => expect(writes()[0]).toMatchObject({ method: "PATCH", url: "/api/references/1", body: { status: "retired" } }));
-    await userEvent.click(await screen.findByRole("button", { name: "Reactivate reference 3" }));
-    await waitFor(() => expect(writes().at(-1)).toMatchObject({ url: "/api/references/3", body: { status: "active" } }));
+    expect(await screen.findByText("Could not load photos")).toBeInTheDocument();
+    routes["GET /api/photos"] = () => json(200, { items: [photo(1, 100, 1, "Noa")], next_cursor: null });
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: /Open photo of Noa/ })).toBeInTheDocument();
   });
 
-  it("confirms before deleting", async () => {
-    routes["DELETE /api/references/1"] = () => new Response(null, { status: 204 });
+  it("opens the lightbox with the original, details, and the unknown-sender fallback", async () => {
+    routes["GET /api/photos"] = () =>
+      json(200, { items: [{ ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"], sender_name: null }, photo(2, 101, 2, "Itai")], next_cursor: null });
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Delete reference 1" }));
-    expect(writes()).toHaveLength(0);
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(writes()).toHaveLength(0);
-    await userEvent.click(screen.getByRole("button", { name: "Delete reference 1" }));
-    await userEvent.click(screen.getByRole("button", { name: "Delete reference" }));
-    await waitFor(() => expect(writes()[0]).toMatchObject({ method: "DELETE", url: "/api/references/1" }));
+    await open(/Open photo of Noa/);
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByRole("img")).toHaveAttribute("src", "/api/images/100/file");
+    expect(within(dlg).getByText("Noa, Itai", { selector: "dd span" })).toBeInTheDocument();
+    expect(within(dlg).getByText("Unknown sender")).toBeInTheDocument();
+    expect(within(dlg).getByText("1 of 2")).toBeInTheDocument();
   });
 
-  it("confirms before marking as negative", async () => {
-    routes["POST /api/references/2/to-negative"] = () => json(200, { id: 1, kid_id: 1, source_face_id: 2, added_at: "2026-10-01T00:00:00" });
+  it("navigates the lightbox with buttons and arrow keys, ignoring repeats", async () => {
+    routes["GET /api/photos"] = () =>
+      json(200, { items: [photo(1, 100, 1, "Noa"), photo(2, 101, 2, "Itai"), photo(3, 102, 1, "Noa")], next_cursor: null });
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Mark reference 2 as negative" }));
-    expect(screen.getByText(/the reference is removed from the gallery/)).toBeInTheDocument();
-    expect(writes()).toHaveLength(0);
-    await userEvent.click(screen.getByRole("button", { name: "Mark as someone else" }));
-    await waitFor(() => expect(writes()[0]).toMatchObject({ method: "POST", url: "/api/references/2/to-negative" }));
+    await open(/Open photo of Noa/);
+    const dlg = await screen.findByRole("dialog");
+    const src = () => within(dlg).getByRole("img").getAttribute("src");
+    expect(within(dlg).getByRole("button", { name: "Previous photo" })).toBeDisabled();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(src()).toBe("/api/images/101/file");
+    fireEvent.keyDown(window, { key: "ArrowRight", repeat: true });
+    expect(src()).toBe("/api/images/101/file");
+    await userEvent.click(within(dlg).getByRole("button", { name: "Next photo" }));
+    expect(src()).toBe("/api/images/102/file");
+    expect(within(dlg).getByRole("button", { name: "Next photo" })).toBeDisabled();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(src()).toBe("/api/images/101/file");
   });
 
-  it("moves a reference to another kid", async () => {
-    routes["PATCH /api/references/1"] = () => json(200, ref(1, { kid_id: 2 }));
+  it("removes after confirm, refreshes photos, counts, kids and activity", async () => {
+    let removed = false;
+    routes["GET /api/photos"] = () =>
+      json(200, { items: removed ? [photo(2, 101, 2, "Itai")] : [photo(1, 100, 1, "Noa"), photo(2, 101, 2, "Itai")], next_cursor: null });
+    routes["DELETE /api/photos/1"] = () => {
+      removed = true;
+      return json(200, { id: 1, removed_files: 1, cancelled_forwards: 0, rejected_matches: 1, retired_references: 0 });
+    };
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Move reference 1" }));
-    const move = screen.getByRole("button", { name: "Move" });
-    expect(move).toBeDisabled();
-    await userEvent.selectOptions(screen.getByLabelText("Move to"), "2");
-    await userEvent.click(move);
-    await waitFor(() => expect(writes()[0]).toMatchObject({ url: "/api/references/1", body: { kid_id: 2 } }));
+    await open(/Open photo of Noa/);
+    const dlg = await screen.findByRole("dialog");
+    await userEvent.click(within(dlg).getByRole("button", { name: /Remove from Noa/ }));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    const confirm = (await screen.findAllByRole("dialog")).at(-1)!;
+    const countsBefore = countGets().length;
+    const kidsBefore = calls.filter((c) => c.url === "/api/kids").length;
+    await userEvent.click(within(confirm).getByRole("button", { name: "Remove photo" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.url === "/api/photos/1")).toBe(true));
+    expect(await screen.findByText("Removed from Noa")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Open photo of Noa/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(countGets().length).toBeGreaterThan(countsBefore));
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/kids").length).toBeGreaterThan(kidsBefore));
   });
 
-  it("edits and clears the photo date", async () => {
-    routes["PATCH /api/references/1"] = () => json(200, ref(1));
+  it("cancelling the confirm does not delete", async () => {
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Edit date of reference 1" }));
-    const input = screen.getByLabelText("Date") as HTMLInputElement;
-    expect(input.value).toBe("2026-08-10");
-    await userEvent.clear(input);
-    await userEvent.type(input, "2026-07-04");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(writes()[0]).toMatchObject({ body: { photo_date: "2026-07-04T00:00:00" } }));
-    await userEvent.click(await screen.findByRole("button", { name: "Edit date of reference 1" }));
-    await userEvent.click(screen.getByRole("button", { name: "Clear date" }));
-    await waitFor(() => expect(writes().at(-1)).toMatchObject({ body: { photo_date: null } }));
-  });
-
-  it("shows an error toast when an action fails", async () => {
-    routes["DELETE /api/references/1"] = () => json(404, { detail: "reference not found" });
-    renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: "Delete reference 1" }));
-    await userEvent.click(screen.getByRole("button", { name: "Delete reference" }));
-    expect(await screen.findByText("Could not delete the reference")).toBeInTheDocument();
-  });
-
-  it("shows a retry state when loading fails", async () => {
-    routes["GET /api/kids/1/references"] = () => json(500, { detail: "boom" });
-    renderPage();
-    expect(await screen.findByText("Could not load references", undefined, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+    await open(/Open photo of Noa/);
+    await userEvent.click(await screen.findByRole("button", { name: /Remove from Noa/ }));
+    const confirm = (await screen.findAllByRole("dialog")).at(-1)!;
+    await userEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
 });

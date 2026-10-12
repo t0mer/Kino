@@ -1,6 +1,7 @@
 /** Photos API (CLAUDE.md §11.7, §12) and the pure helpers the Photos page uses. */
 
 import { api } from "./api";
+import { parseApiDate } from "./format";
 
 export interface Photo {
   id: number;
@@ -12,6 +13,23 @@ export interface Photo {
   sent_at: string | null;
   saved_at: string;
   file_url: string;
+  thumb_url: string;
+  /** Null when the sender is only a phone number (masked by the backend). */
+  sender_name: string | null;
+  /** The OTHER kids saved from the same photo. */
+  kid_ids: number[];
+  kid_names: string[];
+}
+
+export interface KidPhotoCount {
+  kid_id: number;
+  kid_name: string;
+  count: number;
+}
+
+export interface PhotoCounts {
+  total: number;
+  kids: KidPhotoCount[];
 }
 
 export interface PhotoPage {
@@ -39,6 +57,7 @@ export interface PhotoRemoved {
 export const photoKeys = {
   all: ["photos"] as const,
   list: (f: PhotoFilters) => ["photos", "list", f] as const,
+  counts: (f: PhotoFilters) => ["photos", "counts", { ...f, kidId: "" }] as const,
 };
 
 /** Query params for GET /api/photos. A "to" date covers the whole day. */
@@ -64,8 +83,55 @@ export function invalidRange(f: PhotoFilters): boolean {
 export const photosApi = {
   list: (f: PhotoFilters, cursor?: number | null) =>
     api.get<PhotoPage>("/api/photos", { query: filterQuery(f, cursor) }),
+  counts: (f: PhotoFilters) => {
+    const { kid_id: _kid, cursor: _cursor, ...q } = filterQuery(f);
+    return api.get<PhotoCounts>("/api/photos/counts", { query: q });
+  },
   remove: (id: number) => api.delete<PhotoRemoved>(`/api/photos/${id}`),
 };
+
+export interface MonthGroup {
+  key: string;
+  label: string;
+  items: Photo[];
+}
+
+/** The date a photo is filed under: when it was sent, else when it was saved. */
+function photoDate(p: Photo): Date | null {
+  return parseApiDate(p.sent_at) ?? parseApiDate(p.saved_at);
+}
+
+/** Group photos (already newest first) under local-month headings, keeping their order. */
+export function groupByMonth(photos: Photo[], locale?: string): MonthGroup[] {
+  const fmt = new Intl.DateTimeFormat(locale, { month: "long", year: "numeric" });
+  const out: MonthGroup[] = [];
+  for (const p of photos) {
+    const d = photoDate(p);
+    const key = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` : "unknown";
+    const last = out.at(-1);
+    if (last && last.key === key) last.items.push(p);
+    else out.push({ key, label: d ? fmt.format(d) : "Unknown date", items: [p] });
+  }
+  return out;
+}
+
+export interface KidTab {
+  /** null = the "All" tab. */
+  kidId: number | null;
+  name: string;
+  count: number;
+}
+
+/** "All" plus one tab per kid; kids without photos show 0. */
+export function mergeTabs(kids: { id: number; display_name: string }[], counts: PhotoCounts | undefined): KidTab[] {
+  const byKid = new Map((counts?.kids ?? []).map((k) => [k.kid_id, k.count]));
+  return [
+    { kidId: null, name: "All", count: counts?.total ?? 0 },
+    ...kids.map((k) => ({ kidId: k.id, name: k.display_name, count: byKid.get(k.id) ?? 0 })),
+  ];
+}
+
+export const UNKNOWN_SENDER = "Unknown sender";
 
 /** Every saved row (one per kid) for the same image, so the lightbox can name all kids. */
 export function siblingsOf(photo: Photo, all: Photo[]): Photo[] {
