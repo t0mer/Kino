@@ -1,4 +1,4 @@
-// Real-backend end-to-end smoke of the Kino web UI. Throwaway instance, dead OpenWA address, no network use.
+// Real-backend end-to-end smoke of the Kino web UI. Throwaway instance, fake local OpenWA (sessions + webhooks only), no network use.
 // Usage: node web/e2e/smoke.mjs
 // Needs: repo .venv, built web/dist, `playwright` resolvable via PLAYWRIGHT_REQUIRE_FROM (a path to a
 // package.json/dir outside the repo), E2E_MODELS_DIR (dir holding det_10g.onnx + glintr100.onnx) and
@@ -9,6 +9,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, mkdirSync, readdirSync, copyFileSync, existsSync, readFileSync, createWriteStream } from 'node:fs';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir, homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +56,22 @@ process.on('exit', cleanup);
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(1));
 
 const port = await freePort();
+const OWA_KEY = 'smoke-openwa-key'; // throwaway
+const owaCalls = [];
+const owa = createHttpServer((req, res) => {
+  req.resume();
+  req.on('end', () => {
+    owaCalls.push(`${req.method} ${req.url}`);
+    const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.headers['x-api-key'] !== OWA_KEY) return send(401, { message: 'unauthorized' });
+    if (req.method === 'GET' && req.url === '/api/sessions') return send(200, [{ id: SESSION, name: 'Smoke phone', status: 'ready', phone: '972500000001' }]);
+    if (req.url === `/api/sessions/${SESSION}/webhooks`) return req.method === 'GET' ? send(200, []) : send(201, { id: 'wh-smoke' });
+    return send(503, { message: 'not available in the smoke fake' }); // chats/history stay "down"
+  });
+});
+const owaPort = await freePort();
+await new Promise((r) => owa.listen(owaPort, '127.0.0.1', r));
+process.on('exit', () => owa.close());
 const base = `http://127.0.0.1:${port}`;
 const dataDir = join(work, 'data');
 mkdirSync(join(dataDir, 'models'), { recursive: true });
@@ -64,16 +81,13 @@ const env = {
   KINO_DATA_DIR: dataDir,
   KINO_PHOTOS_DIR: join(dataDir, 'photos'),
   KINO_WEB_DIR: join(ROOT, 'web', 'dist'),
-  KINO_WEBHOOK_SECRET: SECRET,
   KINO_SECRET_KEY: randomBytes(32).toString('hex'),
-  KINO_OPENWA_URL: 'http://127.0.0.1:9', // dead on purpose
-  KINO_OPENWA_API_KEY: 'dummy',
-  KINO_OPENWA_SESSION_ID: SESSION,
   KINO_ADMIN_USER: 'admin',
   KINO_DIGEST_CRON: '',
   KINO_WORKERS: '1',
 };
 delete env.KINO_ADMIN_PASSWORD_HASH;
+for (const k of ['KINO_WEBHOOK_SECRET', 'KINO_OPENWA_URL', 'KINO_OPENWA_API_KEY', 'KINO_OPENWA_SESSION_ID']) delete env[k];
 const kino = join(ROOT, '.venv', 'bin', 'kino');
 execFileSync(kino, ['migrate'], { env, stdio: 'inherit' });
 const apiLog = join(work, 'api.log');
@@ -162,7 +176,25 @@ await run('setup: first-run admin password', async () => {
   await page.getByLabel('New password').fill(PASSWORD);
   await page.getByLabel('Confirm password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Set password and sign in' }).click();
+  await page.getByRole('heading', { name: 'Connect Kino to OpenWA' }).waitFor();
+});
+
+await run('wizard: connect OpenWA, pick the session, register the webhook', async () => {
+  // exact: the Show/Hide button's label also contains "webhook secret"
+  await page.getByLabel('OpenWA URL', { exact: true }).fill(`http://127.0.0.1:${owaPort}`);
+  await page.getByLabel('API key', { exact: true }).fill(OWA_KEY);
+  await page.getByLabel('Webhook secret', { exact: true }).fill(SECRET);
+  await page.getByRole('button', { name: 'Test and continue' }).click();
+  await page.getByRole('radio', { name: /Smoke phone/ }).check();
+  if (!(await page.getByText(/9725\*\*\*\*001/).count())) throw new Error('masked phone not shown');
+  await page.getByRole('button', { name: 'Use this session' }).click();
+  await page.getByText('Webhook created').waitFor();
+  await page.getByRole('button', { name: 'Open Kino' }).click();
   await page.getByRole('navigation', { name: 'Main' }).waitFor();
+  if (!owaCalls.includes(`POST /api/sessions/${SESSION}/webhooks`)) throw new Error('webhook not registered in the fake OpenWA');
+  const raw = JSON.stringify(await getJson('/api/openwa/setup/status'));
+  if (!JSON.parse(raw).configured) throw new Error('status not configured');
+  if (raw.includes(OWA_KEY) || raw.includes(SECRET)) throw new Error('status leaks a secret');
 });
 
 await run('login: sign out and back in', async () => {
