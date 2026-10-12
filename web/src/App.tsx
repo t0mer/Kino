@@ -1,5 +1,4 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { ScanFace } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -9,6 +8,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
+import { EnrollPage } from "@/pages/EnrollPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
@@ -17,13 +17,6 @@ import { SetupPage } from "@/pages/SetupPage";
 /** Built pages by nav path; the rest show the "Coming soon" placeholder. */
 const PAGES: Record<string, ReactNode> = {
   "/kids": <KidsPage />,
-};
-
-const ENROLL_ITEM = {
-  to: "/kids",
-  label: "Enroll faces",
-  icon: ScanFace,
-  blurb: "Pick this kid's face in a few photos to teach Kino.",
 };
 
 export function AppRoutes() {
@@ -37,7 +30,7 @@ export function AppRoutes() {
           {NAV.map((item) => (
             <Route key={item.to} path={item.to.slice(1)} element={PAGES[item.to] ?? <PlaceholderPage item={item} />} />
           ))}
-          <Route path="kids/:id/enroll" element={<PlaceholderPage item={ENROLL_ITEM} />} />
+          <Route path="kids/:id/enroll" element={<EnrollPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Route>
