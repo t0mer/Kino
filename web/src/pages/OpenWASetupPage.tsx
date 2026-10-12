@@ -190,7 +190,14 @@ export function OpenWASetupPage() {
           </ol>
         </CardHeader>
         <CardContent>
-          {status.isError && <Alert>{errorText(status.error)}</Alert>}
+          {status.isError && (
+            <div className="space-y-3">
+              <Alert>{errorText(status.error)}</Alert>
+              <Button variant="outline" onClick={() => void status.refetch()} disabled={status.isFetching}>
+                <RefreshCw aria-hidden="true" /> Try again
+              </Button>
+            </div>
+          )}
 
           {step === "connect" && s && (
             <form className="space-y-4" onSubmit={onConnect} noValidate>

@@ -176,4 +176,70 @@ describe("OpenWASetupPage", () => {
     expect(screen.getByRole("button", { name: "Reload sessions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Use this session" })).toBeDisabled();
   });
+
+  it("recovers from a failed status fetch with Try again", async () => {
+    let fail = true;
+    routes["GET /api/openwa/setup/status"] = () => (fail ? json(500, { detail: "Server exploded." }) : json(200, status));
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Server exploded.");
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByLabelText("OpenWA URL")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("skips the session pick and only registers when the session is env-locked", async () => {
+    status = { ...emptyStatus(), session_id: "main", env_overrides: ["session_id"] };
+    routes["POST /api/openwa/webhook/register"] = () =>
+      json(200, { action: "created", id: "h-3", url: HOOK, events: ["message.received"] });
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(await screen.findByLabelText("OpenWA URL"), "http://openwa:2785");
+    await user.type(screen.getByLabelText("API key"), "owa-key-123");
+    await user.click(screen.getByRole("button", { name: "Test and continue" }));
+    expect(await screen.findByText(/KINO_OPENWA_SESSION_ID/)).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Register webhook" }));
+    expect(await screen.findByText("Webhook created")).toBeInTheDocument();
+    expect(posts("/api/openwa/setup/session")).toHaveLength(0);
+    expect(posts("/api/openwa/webhook/register")[0]?.body).toEqual({ url: HOOK });
+  });
+
+  it("shows a locked API key read-only and omits it from the request", async () => {
+    status = { ...emptyStatus(), has_api_key: true, env_overrides: ["api_key"] };
+    const user = userEvent.setup();
+    renderPage();
+    const key = await screen.findByLabelText("API key");
+    expect(key).toBeDisabled();
+    expect(key).toHaveValue("Set by KINO_OPENWA_API_KEY");
+    await user.type(screen.getByLabelText("OpenWA URL"), "http://openwa:2785");
+    await user.click(screen.getByRole("button", { name: "Test and continue" }));
+    await screen.findByRole("radio", { name: /Main phone/ });
+    expect(posts("/api/openwa/setup/connect")[0]?.body).toEqual({ url: "http://openwa:2785" });
+  });
+
+  it("reloads the sessions when the picked session no longer exists (404)", async () => {
+    routes["POST /api/openwa/setup/session"] = () => json(404, { detail: "Session not found." });
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndConnect(user);
+    await user.click(await screen.findByRole("button", { name: "Use this session" }));
+    await vi.waitFor(() => expect(posts("/api/openwa/setup/connect")).toHaveLength(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Session not found.");
+    expect(screen.getByRole("radio", { name: /Main phone/ })).toBeInTheDocument();
+  });
+
+  it.each([
+    [409, "Conflict from the server."],
+    [422, "Invalid request."],
+    [502, "OpenWA is unreachable."],
+  ])("shows the server's message for a %i on connect", async (code, detail) => {
+    routes["POST /api/openwa/setup/connect"] = () => json(code, { detail });
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndConnect(user);
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(screen.getByLabelText("OpenWA URL")).toBeInTheDocument();
+  });
 });
