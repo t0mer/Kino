@@ -5,6 +5,7 @@ import { FullPageSpinner } from "@/components/FullPageSpinner";
 import { Button } from "@/components/ui/button";
 import { isApiError, setUnauthorizedHandler } from "@/lib/api";
 import { authApi, authKeys } from "@/lib/auth";
+import { openwaSetupApi, openwaSetupKeys } from "@/lib/openwaSetup";
 
 const PUBLIC = ["/login", "/setup"];
 
@@ -15,7 +16,7 @@ export function UnauthorizedRedirect() {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       const { pathname, search } = window.location;
-      if (PUBLIC.some((p) => pathname.startsWith(p))) return;
+      if (PUBLIC.includes(pathname)) return;
       navigate(`/login?next=${encodeURIComponent(pathname + search)}`, { replace: true });
       qc.clear();
     });
@@ -45,5 +46,19 @@ export function RequireAuth() {
       </div>
     );
   }
+  return <Outlet />;
+}
+
+/** Sends a signed-in user to the OpenWA setup wizard until OpenWA is configured. A failed status
+ * check does not block the app; the pages then show their own OpenWA errors. */
+export function RequireConfigured() {
+  const status = useQuery({
+    queryKey: openwaSetupKeys.status,
+    queryFn: openwaSetupApi.status,
+    retry: false,
+    staleTime: 60_000,
+  });
+  if (status.isPending) return <FullPageSpinner />;
+  if (status.data && !status.data.configured) return <Navigate to="/setup/openwa" replace />;
   return <Outlet />;
 }
