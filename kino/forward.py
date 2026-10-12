@@ -38,6 +38,7 @@ K_DEFAULT = "forward.default_chat_id"
 K_PER_KID = "forward.per_kid"
 K_TEMPLATE = "forward.caption_template"
 K_REVIEW = "forward.include_review_confirmed"
+K_SEND_CAPTION = "forward.send_caption"
 
 
 class ForwardError(Exception):
@@ -50,6 +51,7 @@ class ForwardConfig(BaseModel):
     per_kid: dict[int, str] = Field(default_factory=dict)
     caption_template: str = DEFAULT_CAPTION
     include_review_confirmed: bool = True
+    send_caption: bool = True
 
 
 def get_setting(session: Session, key: str, default: Any) -> Any:
@@ -83,6 +85,7 @@ def get_forward_config(session: Session) -> ForwardConfig:
         per_kid=per_kid,
         caption_template=template if isinstance(template, str) and template else DEFAULT_CAPTION,
         include_review_confirmed=bool(get_setting(session, K_REVIEW, True)),
+        send_caption=bool(get_setting(session, K_SEND_CAPTION, True)),
     )
 
 
@@ -199,7 +202,11 @@ def plan_forwards(
             rows.append(existing)
             continue
         first = next((saved_paths[k.id] for k in kids if k.id in saved_paths), None)
-        caption = image_caption(cfg.caption_template, [k.display_name for k in kids], image, group)
+        caption = (
+            image_caption(cfg.caption_template, [k.display_name for k in kids], image, group)
+            if cfg.send_caption
+            else ""
+        )
         row = Forward(
             image_id=image.id,
             dest_chat_id=dest,

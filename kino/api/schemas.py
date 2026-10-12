@@ -125,6 +125,7 @@ class ForwardSettings(In):
     per_kid: dict[int, ChatId] = Field(default_factory=dict, max_length=500)
     caption_template: Caption
     include_review_confirmed: bool
+    send_caption: bool = True
 
 
 class CaptionPreviewIn(In):
