@@ -12,10 +12,12 @@ import { EnrollPage } from "@/pages/EnrollPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
+import { ReviewPage } from "@/pages/ReviewPage";
 import { SetupPage } from "@/pages/SetupPage";
 
 /** Built pages by nav path; the rest show the "Coming soon" placeholder. */
 const PAGES: Record<string, ReactNode> = {
+  "/review": <ReviewPage />,
   "/kids": <KidsPage />,
 };
 
