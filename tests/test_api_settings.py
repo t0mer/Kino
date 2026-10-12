@@ -556,3 +556,24 @@ def test_forward_test_cooldown(api, owa, monkeypatch):
     assert len(sends) == 1
     now[0] += 0.6
     assert api.post("/api/forward/test", json={"chat_id": DEST}).status_code == 200
+
+
+def test_forwards_list_masks_ids_and_sanitises_errors(api):
+    with dbs.get_session() as s:
+        img = Image(message_id="mask1", status="done")
+        s.add(img)
+        s.flush()
+        s.add(
+            Forward(
+                image_id=img.id,
+                dest_chat_id="972501234567@c.us",
+                status="failed",
+                caption="for 972501234567",
+                last_error="send to 972501234567@c.us failed at /data/photos/noa/x.jpg",
+            )
+        )
+    (row,) = api.get("/api/forwards").json()
+    blob = str(row)
+    assert "972501234567" not in blob and "/data/photos" not in blob
+    assert "9725****567@c.us" in row["last_error"]
+    assert row["dest_chat_id"] == "9725****567@c.us"
