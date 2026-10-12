@@ -30,7 +30,7 @@ export function BucketColumn({
         </div>
         <p className="text-xs text-muted-foreground">{meta.hint}</p>
       </header>
-      <div className="flex-1 p-3">
+      <div className="max-h-[32rem] flex-1 overflow-y-auto p-3">
         {bucket.items.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">Nothing here.</p>
         ) : (

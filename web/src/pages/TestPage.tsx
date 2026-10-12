@@ -303,9 +303,9 @@ export function TestPage() {
 
             <div className="border-t pt-4">
               <label htmlFor="dry-days" className="mb-1 block text-sm font-medium">Re-score stored faces</label>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm text-muted-foreground">Last</span>
-                <input id="dry-days" type="number" min={1} max={365} className={`${inputClass} w-20`} value={days}
+                <input id="dry-days" type="number" min={1} max={365} className={`${inputClass} !w-20 shrink-0`} value={days}
                   aria-invalid={daysN === null} onChange={(e) => setDays(e.target.value)} />
                 <span className="text-sm text-muted-foreground">days</span>
                 <Button variant="outline" disabled={daysN === null || rescore.isPending} onClick={() => setConfirm("rescore")}>
