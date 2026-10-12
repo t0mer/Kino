@@ -52,7 +52,7 @@ export function DigestSection({ saved }: { saved: DigestOut }) {
         <>
           A daily message when photos wait in the review queue.{" "}
           <span className="inline-flex items-center gap-1" data-testid="digest-note">
-            <Info className="h-3.5 w-3.5" aria-hidden="true" /> Stored now; the digest job arrives in a later update.
+            <Info className="h-3.5 w-3.5" aria-hidden="true" /> A digest is sent at this time only when new photos are waiting for review.
           </span>
         </>
       }

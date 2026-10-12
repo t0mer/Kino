@@ -180,7 +180,7 @@ describe("SettingsPage", () => {
     routes["PUT /api/settings/digest"] = (c) => json(200, { ...(c.body as object), public_base_url: "https://k.example.com" });
     renderPage();
     const d = await section("digest");
-    expect(d.getByTestId("digest-note")).toHaveTextContent("Stored now; the digest job arrives in a later update.");
+    expect(d.getByTestId("digest-note")).toHaveTextContent("A digest is sent at this time only when new photos are waiting for review.");
     expect(d.getByLabelText("Notification URL 1")).toHaveValue("tgram://****");
     await user.type(d.getByLabelText("Public base URL"), "https://k.example.com");
     await user.click(d.getByRole("button", { name: "Save Review digest" }));
