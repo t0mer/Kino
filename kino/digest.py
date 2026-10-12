@@ -6,6 +6,9 @@ Scheduling: the huey task ``review_digest`` fires every minute and calls
 huey's own ``crontab`` cannot take a runtime expression, hence the per-minute tick; the
 check is a cheap string match before any DB work.
 
+A digest also goes out when the processing queue drains (:func:`run_digest_on_drain`),
+checked on the same per-minute tick.
+
 A digest goes out only when there are pending review items, the pending set (a fingerprint of
 the match ids) differs from the one the previous digest reported, and a destination chat is
 set. The ``digests`` row is written only after a successful send; a failed send is logged
@@ -21,7 +24,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -29,7 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings, get_settings
-from kino.db.models import Digest, Face, Kid, Match
+from kino.db.models import Digest, Face, Image, Kid, Match
 from kino.db.session import get_session
 from kino.forward import sanitize_error
 from kino.openwa.client import OpenWAClient, mask_path
@@ -177,6 +180,34 @@ def run_digest(
         )
     logger.info("digest sent to {}: {} photo(s) pending", mask_path(cfg.chat_id), pending.photos)
     return True
+
+
+DRAIN_MIN_GAP = timedelta(minutes=10)
+
+
+def run_digest_on_drain(
+    settings: Settings | None = None,
+    *,
+    client_factory: Callable[[Settings], OpenWAClient] | None = None,
+) -> bool:
+    """Send a digest once the processing queue has drained and review items are pending.
+
+    Skipped while any image is queued or processing, when the pending set is unchanged since
+    the last digest (handled by :func:`run_digest`), or when the previous digest went out less
+    than ``DRAIN_MIN_GAP`` ago, so a trickle of photos does not produce a message each.
+    """
+    with get_session() as s:
+        busy = s.scalar(
+            select(func.count())
+            .select_from(Image)
+            .where(Image.status.in_(("queued", "processing")))
+        )
+        last_sent = s.scalar(select(Digest.sent_at).order_by(Digest.id.desc()).limit(1))
+    if busy:
+        return False
+    if last_sent and _utcnow() - last_sent < DRAIN_MIN_GAP:
+        return False
+    return run_digest(settings, client_factory=client_factory)
 
 
 def run_digest_if_due(
