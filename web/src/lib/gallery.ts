@@ -14,6 +14,9 @@ export interface GalleryRef {
   weight: number;
   yaw: number | null;
   crop_url: string | null;
+  /** Set by the nightly gallery-health task (kino/health.py); absent on older backends. */
+  outlier?: boolean;
+  outlier_reason?: string | null;
 }
 
 export interface RefFilters {
@@ -68,9 +71,28 @@ export function filterByDate<T extends { photo_date: string | null }>(refs: T[],
   });
 }
 
-/** Newest photo first; undated last; ties by id descending. Does not mutate. */
-export function sortRefs<T extends { id: number; photo_date: string | null }>(refs: T[]): T[] {
+const OUTLIER_TEXT: Record<string, string> = {
+  far_from_centroid: "Looks different from the rest of this kid's references.",
+  closer_to_other_kid: "Looks more like another kid than like this one.",
+};
+
+/** Plain-language explanation for a backend outlier reason code (generic text for unknown codes). */
+export function outlierReasonText(reason: string | null | undefined): string {
+  return (reason && OUTLIER_TEXT[reason]) || "Flagged as different from the rest of the gallery.";
+}
+
+export function countOutliers(refs: { outlier?: boolean }[]): number {
+  return refs.filter((r) => r.outlier).length;
+}
+
+export function onlyOutliers<T extends { outlier?: boolean }>(refs: T[]): T[] {
+  return refs.filter((r) => r.outlier);
+}
+
+/** Outliers first, then newest photo first; undated last; ties by id descending. Does not mutate. */
+export function sortRefs<T extends { id: number; photo_date: string | null; outlier?: boolean }>(refs: T[]): T[] {
   return [...refs].sort((a, b) => {
+    if (Boolean(a.outlier) !== Boolean(b.outlier)) return a.outlier ? -1 : 1;
     const da = dateOnly(a.photo_date);
     const db = dateOnly(b.photo_date);
     if (da !== db) {

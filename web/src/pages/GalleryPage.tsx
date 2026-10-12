@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, CalendarDays, FolderInput, Images, Loader2, PlusCircle, RefreshCw, Trash2, Undo2, UserX } from "lucide-react";
+import { AlertTriangle, Ban, CalendarDays, FolderInput, Images, Loader2, PlusCircle, RefreshCw, Trash2, Undo2, UserX } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { DateHistogram } from "@/components/gallery/DateHistogram";
@@ -16,10 +16,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/sonner";
 import { formatDate } from "@/lib/format";
 import {
+  countOutliers,
   dateOnly,
   EMPTY_REF_FILTERS,
   filterByDate,
@@ -29,6 +31,8 @@ import {
   hasRefFilters,
   invalidRefRange,
   monthHistogram,
+  onlyOutliers,
+  outlierReasonText,
   type RefFilters,
   SOURCES,
   sortRefs,
@@ -62,6 +66,7 @@ export function GalleryPage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [filters, setFilters] = useState<RefFilters>(EMPTY_REF_FILTERS);
+  const [outliersOnly, setOutliersOnly] = useState(false);
   const [action, setAction] = useState<Action | null>(null);
   const [moveTo, setMoveTo] = useState("");
   const [dateValue, setDateValue] = useState("");
@@ -77,10 +82,13 @@ export function GalleryPage() {
     enabled: kidId !== null,
   });
   const bad = invalidRefRange(filters);
-  const visible = useMemo(
-    () => (bad ? [] : sortRefs(filterByDate(refs.data ?? [], filters.from, filters.to))),
-    [refs.data, filters.from, filters.to, bad],
-  );
+  const outlierCount = useMemo(() => countOutliers(refs.data ?? []), [refs.data]);
+  const showOutliersOnly = outliersOnly && outlierCount > 0;
+  const visible = useMemo(() => {
+    if (bad) return [];
+    const dated = filterByDate(refs.data ?? [], filters.from, filters.to);
+    return sortRefs(showOutliersOnly ? onlyOutliers(dated) : dated);
+  }, [refs.data, filters.from, filters.to, bad, showOutliersOnly]);
   const histogram = useMemo(() => monthHistogram(refs.data ?? []), [refs.data]);
 
   const refresh = () => {
@@ -143,6 +151,7 @@ export function GalleryPage() {
   const selectKid = (id: string) => {
     setParams({ kid: id }, { replace: true });
     setFilters(EMPTY_REF_FILTERS);
+    setOutliersOnly(false);
   };
   const open = (a: Action) => {
     setMoveTo("");
@@ -219,6 +228,18 @@ export function GalleryPage() {
                 <div className="absolute start-1 top-1 flex flex-wrap gap-1">
                   <Badge variant="secondary">{r.source}</Badge>
                   {r.status === "retired" && <Badge variant="outline" className="bg-background">retired</Badge>}
+                  {r.outlier && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Outlier: ${outlierReasonText(r.outlier_reason)}`}>
+                          <Badge variant="outline" className="gap-1 border-destructive bg-background text-destructive">
+                            <AlertTriangle className="h-3 w-3" aria-hidden="true" /> Outlier
+                          </Badge>
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>{outlierReasonText(r.outlier_reason)}</TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
               <CardContent className="space-y-2 p-2">
@@ -339,12 +360,30 @@ export function GalleryPage() {
             <Field label="To">
               <Input type="date" value={filters.to} min={filters.from || undefined} onChange={(e) => set({ to: e.target.value })} />
             </Field>
+            {outlierCount > 0 && (
+              <Button
+                variant={showOutliersOnly ? "default" : "outline"}
+                aria-pressed={showOutliersOnly}
+                onClick={() => setOutliersOnly((v) => !v)}
+              >
+                Outliers only ({outlierCount})
+              </Button>
+            )}
             {hasRefFilters(filters) && (
               <Button variant="ghost" onClick={() => setFilters(EMPTY_REF_FILTERS)}>
                 Clear
               </Button>
             )}
           </div>
+          {outlierCount > 0 && (
+            <div role="status" className="mb-4 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+              <p>
+                {outlierCount} {outlierCount === 1 ? "reference looks" : "references look"} different from the rest; review or retire{" "}
+                {outlierCount === 1 ? "it" : "them"}.
+              </p>
+            </div>
+          )}
           {body}
         </>
       )}
