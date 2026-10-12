@@ -152,7 +152,7 @@ export function previewCaption(template: string, s: CaptionSample): string {
 export function unknownPlaceholders(template: string): string[] {
   const known = new Set<string>(CAPTION_PLACEHOLDERS);
   const out = new Set<string>();
-  for (const m of template.matchAll(PLACEHOLDER_RE)) if (!known.has(m[1])) out.add(m[0]);
+  for (const m of template.matchAll(PLACEHOLDER_RE)) if (m[1] !== undefined && !known.has(m[1])) out.add(m[0]);
   return [...out];
 }
 
@@ -188,7 +188,7 @@ export function parseFieldErrors(detail: string): ParsedErrors {
   const general: string[] = [];
   for (const part of detail.split("; ")) {
     const m = /^([A-Za-z_][\w.]*): (.+)$/.exec(part);
-    if (m) fields[m[1]] = m[2].replace(/^Value error, /, "");
+    if (m?.[1] && m[2]) fields[m[1]] = m[2].replace(/^Value error, /, "");
     else if (part.trim()) general.push(part.trim());
   }
   return { fields, general };
