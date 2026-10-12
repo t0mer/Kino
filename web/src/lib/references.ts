@@ -1,8 +1,8 @@
-/** Gallery management API (CLAUDE.md §11.6) and the pure helpers the Gallery page uses. */
+/** Reference faces API (CLAUDE.md §11.6) and the pure helpers the References page uses. */
 
 import { api } from "./api";
 
-export interface GalleryRef {
+export interface ReferenceItem {
   id: number;
   kid_id: number;
   face_id: number | null;
@@ -30,20 +30,20 @@ export const EMPTY_REF_FILTERS: RefFilters = { source: "", status: "", from: "",
 export const SOURCES = ["upload", "cluster", "review", "auto"] as const;
 export const STATUSES = ["active", "retired"] as const;
 
-export const galleryKeys = {
+export const referencesKeys = {
   refs: (kidId: number, source: string, status: string) =>
-    ["kids", kidId, "gallery", source, status] as const,
+    ["kids", kidId, "reference-list", source, status] as const,
 };
 
-export const galleryApi = {
+export const referencesApi = {
   list: (kidId: number, source: string, status: string) =>
-    api.get<GalleryRef[]>(`/api/kids/${kidId}/references`, {
+    api.get<ReferenceItem[]>(`/api/kids/${kidId}/references`, {
       query: { status: status || null, source: source || null, limit: 500 },
     }),
-  setStatus: (id: number, status: "active" | "retired") => api.patch<GalleryRef>(`/api/references/${id}`, { status }),
-  move: (id: number, kid_id: number) => api.patch<GalleryRef>(`/api/references/${id}`, { kid_id }),
+  setStatus: (id: number, status: "active" | "retired") => api.patch<ReferenceItem>(`/api/references/${id}`, { status }),
+  move: (id: number, kid_id: number) => api.patch<ReferenceItem>(`/api/references/${id}`, { kid_id }),
   setDate: (id: number, date: string | null) =>
-    api.patch<GalleryRef>(`/api/references/${id}`, { photo_date: date ? `${date}T00:00:00` : null }),
+    api.patch<ReferenceItem>(`/api/references/${id}`, { photo_date: date ? `${date}T00:00:00` : null }),
   remove: (id: number) => api.delete<void>(`/api/references/${id}`),
   toNegative: (id: number) => api.post<unknown>(`/api/references/${id}/to-negative`),
 };
@@ -78,7 +78,7 @@ const OUTLIER_TEXT: Record<string, string> = {
 
 /** Plain-language explanation for a backend outlier reason code (generic text for unknown codes). */
 export function outlierReasonText(reason: string | null | undefined): string {
-  return (reason && OUTLIER_TEXT[reason]) || "Flagged as different from the rest of the gallery.";
+  return (reason && OUTLIER_TEXT[reason]) || "Flagged as different from the rest of the references.";
 }
 
 export function countOutliers(refs: { outlier?: boolean }[]): number {
@@ -121,7 +121,7 @@ function nextMonth(key: string): string {
 }
 
 /** Reference counts per month between the oldest and newest photo_date (empty months included). */
-export function monthHistogram(refs: Pick<GalleryRef, "photo_date">[]): Histogram {
+export function monthHistogram(refs: Pick<ReferenceItem, "photo_date">[]): Histogram {
   const counts = new Map<string, number>();
   let undated = 0;
   for (const r of refs) {
