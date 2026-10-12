@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
   bulkSettled,
@@ -11,8 +11,11 @@ import {
   selectRange,
   shortcutFor,
   shouldIgnoreKey,
+  decisionInvalidations,
+  invalidateKeys,
   withSkipped,
 } from "./review";
+import { QueryClient } from "@tanstack/react-query";
 
 const item = (id: number): ReviewItem => ({
   match_id: id, face_id: id, image_id: id, kid_id: 1, kid_name: "k", score: 0.4, margin: null, tier: "M",
@@ -97,5 +100,17 @@ describe("misc", () => {
     expect([...selectRange(order, new Set(), 2, null)]).toEqual([2]);
     expect([...selectRange(order, new Set([2]), 2, null)]).toEqual([]);
     expect([...selectRange(order, new Set([2]), 4, 2)].sort()).toEqual([2, 3, 4]);
+  });
+});
+
+describe("decision invalidations", () => {
+  it("refreshes count, photos, kids, activity and stats", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    invalidateKeys(qc, decisionInvalidations);
+    const keys = spy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey);
+    expect(keys).toEqual(
+      expect.arrayContaining([["review", "count"], ["photos"], ["kids"], ["activity"], ["stats"]]),
+    );
   });
 });

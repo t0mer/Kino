@@ -11,7 +11,9 @@ import { kidKeys, kidsApi } from "@/lib/kids";
 import {
   bulkSettled,
   bulkSummary,
+  decisionInvalidations,
   goneMessage,
+  invalidateKeys,
   isGone,
   MAX_NUMBERED_KIDS,
   needsPrefetch,
@@ -82,8 +84,7 @@ export function ReviewPage() {
     (ids: number[]) => {
       setDecided((d) => new Set([...d, ...ids]));
       setSelected((s) => new Set([...s].filter((x) => !ids.includes(x))));
-      void qc.invalidateQueries({ queryKey: reviewKeys.count });
-      void qc.invalidateQueries({ queryKey: ["stats"] });
+      invalidateKeys(qc, decisionInvalidations);
     },
     [qc],
   );

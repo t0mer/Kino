@@ -1,6 +1,10 @@
 /** Review queue API (CLAUDE.md §11.4, §12) and the pure helpers the Review page uses. */
 
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { activityKeys } from "./activity";
 import { api, isApiError } from "./api";
+import { kidKeys } from "./kids";
+import { photoKeys } from "./photos";
 
 export interface NearRef {
   reference_id: number;
@@ -53,6 +57,19 @@ export const reviewKeys = {
   count: ["review", "count"] as const,
   list: (kidId: number | null, method: string | null) => ["review", "list", kidId, method] as const,
 };
+
+/** Caches a review decision changes: queue count, saved photos, kid references/coverage, activity, stats. */
+export const decisionInvalidations: readonly QueryKey[] = [
+  reviewKeys.count,
+  photoKeys.all,
+  kidKeys.all,
+  activityKeys.all,
+  ["stats"],
+];
+
+export function invalidateKeys(qc: QueryClient, keys: readonly QueryKey[]): void {
+  for (const queryKey of keys) void qc.invalidateQueries({ queryKey });
+}
 
 export const PAGE_SIZE = 30;
 /** Fetch the next page when this few undecided items remain in the loaded queue. */
