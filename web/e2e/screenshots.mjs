@@ -160,10 +160,29 @@ const FAILED = [
   FWD(20, 31, 'failed', { attempts: 4, last_error: 'timed out waiting for OpenWA' }),
 ];
 const PENDING = [FWD(22, 41, 'pending', { attempts: 1, created_at: iso(3), next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString().slice(0, 19), last_error: 'rate limited, retrying' })];
-const PHOTOS = Array.from({ length: 15 }, (_, i) => {
-  const kid = 1 + (i % 3);
-  return { id: 100 + i, image_id: 200 + i, kid_id: kid, kid_name: NAMES[kid], group_id: GROUPS[i % 4].id, group_name: GROUPS[i % 4].name, sent_at: iso(60 + i * 400), saved_at: iso(55 + i * 400), file_url: `/api/images/${200 + i}/file` };
+// Saved photos: one image can be saved for several kids (a shared photo has a row per kid).
+const KID_SETS = [[1], [2], [1, 2], [3], [1], [2, 3], [3], [1], [2], [1, 3], [2], [3], [1], [1, 2, 3], [2], [3], [1], [2]];
+const SENDERS = ['Dana', 'Omer', 'Yael', 'Guy'];
+const IMAGES = KID_SETS.map((kids, i) => ({ i, kids, imageId: 200 + i, sentMins: 90 + i * 2700, gi: i % 4 }));
+const photoRow = (im, kidId, listKids) => ({
+  id: im.imageId * 10 + kidId, image_id: im.imageId, kid_id: kidId, kid_name: NAMES[kidId], group_id: GROUPS[im.gi].id, group_name: GROUPS[im.gi].name,
+  sent_at: iso(im.sentMins), saved_at: iso(im.sentMins - 5), file_url: `/api/images/${im.imageId}/file`, thumb_url: `/api/photos/${im.imageId * 10 + kidId}/thumb`,
+  sender_name: SENDERS[im.i % 4], kid_ids: listKids, kid_names: listKids.map((k) => NAMES[k]),
+  kids: listKids.map((k) => ({ kid_id: k, kid_name: NAMES[k], saved_photo_id: im.imageId * 10 + k })),
 });
+/** The "All" tab shows each image once (first kid); a kid tab shows that kid's row. */
+const photosFor = (kid) => (kid ? IMAGES.filter((im) => im.kids.includes(kid)).map((im) => photoRow(im, kid, im.kids)) : IMAGES.map((im) => photoRow(im, im.kids[0], im.kids)));
+const PHOTO_COUNTS = { total: IMAGES.length, kids: [1, 2, 3].map((k) => ({ kid_id: k, kid_name: NAMES[k], count: IMAGES.filter((im) => im.kids.includes(k)).length })) };
+const PHOTO_PEOPLE = { 1: 'noa', 2: 'itai', 3: 'maya' };
+const photoThumbSvg = (savedId) => {
+  const im = IMAGES.find((x) => x.imageId === Math.floor(savedId / 10));
+  const hue = hash(`img${im.imageId}`) % 360;
+  const people = im.kids.map((k) => PHOTO_PEOPLE[k]);
+  const n = people.length, w = n === 1 ? 300 : n === 2 ? 250 : 200;
+  const faces = people.map((who, i) => person(`${who}-${im.i}`, 400 - (n * w) / 2 + i * w + (w - w * 0.9) / 2, 250 + (i % 2) * 30, w * 0.9)).join('');
+  return svg(800, 800, `<defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue} 70% 82%)"/><stop offset="1" stop-color="hsl(${hue} 60% 94%)"/></linearGradient></defs>
+<rect width="800" height="800" fill="url(#s)"/><rect y="600" width="800" height="200" fill="hsl(${(hue + 100) % 360} 35% 62%)"/><circle cx="680" cy="110" r="50" fill="#ffe27a"/>${faces}`);
+};
 const sf = (i, kid, score, tier, group, reason = '') => ({
   face_id: 2000 + i, image_id: 400 + i, crop_url: `/api/crops/${KEYNAME[kid]}-${40 + i}`, score, margin: 0.1, tier, kid_id: kid, kid_name: NAMES[kid],
   group_id: group, group_name: GROUPS[group - 1].name, sent_at: iso(100 + i * 90), reason, auto_save_disabled: kid === 2,
@@ -259,7 +278,9 @@ function mockApi(state) {
     if ((r = p.match(/^\/api\/crops\/(.+)$/))) return img(cropSvg(r[1]));
     if (p === '/api/forwards') return json(u.searchParams.get('status') === 'failed' ? FAILED : u.searchParams.get('status') === 'pending' ? PENDING : []);
     if (p === '/api/review') return json({ items: REVIEW, next_cursor: null });
-    if (p === '/api/photos') return json({ items: PHOTOS, next_cursor: null });
+    if (p === '/api/photos/counts') return json(PHOTO_COUNTS);
+    if (p === '/api/photos') return json({ items: photosFor(Number(u.searchParams.get('kid_id')) || 0), next_cursor: null });
+    if ((r = p.match(/^\/api\/photos\/(\d+)\/thumb$/))) return img(photoThumbSvg(Number(r[1])));
     if (p === '/api/settings') return json(SETTINGS);
     if (p === '/api/openwa/chats') { const q = (u.searchParams.get('q') || '').toLowerCase(); return json(CHATS.filter((c) => (c.name || '').toLowerCase().includes(q))); }
     if (p === '/api/openwa/webhook') return json({ registered: true, active: true, id: 'wh-1', url: 'http://kino-api:8080/api/webhook/openwa', events: ['message.received'] });
@@ -335,12 +356,20 @@ await surface('review-bulk', async (p) => {
   await p.waitForSelector('[aria-label="Select all"]');
   for (const id of [500, 502, 505]) await p.click(`[aria-label="Select match ${id}"]`);
 });
-await surface('gallery', async (p) => {
-  await open(p, '/gallery', 'text=Photo dates by month');
+await surface('references', async (p) => {
+  await open(p, '/references', 'text=Photo dates by month');
   await p.waitForSelector('[aria-label^="Reference "]');
 });
 await surface('groups', (p) => open(p, '/groups', '[role=progressbar], [aria-label="Backfill progress"]'), { jobs: true });
-await surface('photos', (p) => open(p, '/photos', '[aria-label^="Open photo of"]'));
+await surface('gallery', async (p) => {
+  await open(p, '/gallery?kid=1', '[aria-label^="Open photo of"]');
+  await p.waitForSelector('[data-testid=shared-badge]');
+});
+await surface('gallery-lightbox', async (p) => {
+  await open(p, '/gallery?kid=1', '[aria-label^="Open photo of"]');
+  await p.locator('[data-testid=shared-badge]').first().click();
+  await p.waitForSelector('[role=dialog] img[alt^="Photo of"]');
+});
 await surface('activity', (p) => open(p, '/activity', '[aria-label="Open image 41"]'));
 await surface('activity-detail', async (p) => {
   await open(p, '/activity', '[aria-label="Open image 41"]');
