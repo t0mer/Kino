@@ -27,6 +27,7 @@ from kino.forward import (
     K_ENABLED,
     K_PER_KID,
     K_REVIEW,
+    K_SEND_CAPTION,
     K_TEMPLATE,
     ForwardConfig,
     get_forward_config,
@@ -58,6 +59,7 @@ def update_forward(
     per_kid: dict[int, str],
     caption_template: str,
     include_review_confirmed: bool,
+    send_caption: bool = True,
 ) -> ForwardConfig:
     """Replace the forwarding section. Every destination is checked against watched groups
     (forwarding into a watched group would re-ingest the photos)."""
@@ -75,6 +77,7 @@ def update_forward(
     put_setting(session, K_PER_KID, {str(k): v for k, v in sorted(per_kid.items())})
     put_setting(session, K_TEMPLATE, caption_template)
     put_setting(session, K_REVIEW, include_review_confirmed)
+    put_setting(session, K_SEND_CAPTION, send_caption)
     session.flush()
     return get_forward_config(session)
 

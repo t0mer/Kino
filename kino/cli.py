@@ -387,7 +387,7 @@ def forward_show() -> None:
     typer.echo(f"default destination: {mask_chat_id(cfg.default_chat_id or '-')}")
     for kid_id, dest in sorted(cfg.per_kid.items()):
         typer.echo(f"  {names.get(kid_id, kid_id)} -> {mask_chat_id(dest)}")
-    typer.echo(f"caption: {cfg.caption_template}")
+    typer.echo(f"caption: {cfg.caption_template if cfg.send_caption else '(none)'}")
     typer.echo(f"include review-confirmed: {'yes' if cfg.include_review_confirmed else 'no'}")
 
 

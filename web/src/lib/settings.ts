@@ -8,6 +8,7 @@ export interface ForwardSettings {
   per_kid: Record<string, string>;
   caption_template: string;
   include_review_confirmed: boolean;
+  send_caption: boolean;
 }
 
 export interface DigestOut {

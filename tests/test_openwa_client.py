@@ -160,3 +160,14 @@ async def test_list_chat_messages_error_is_sanitised():
         await make(h).list_chat_messages("972501234567@g.us")
     assert "secret" not in str(ei.value)
     assert "972501234567" not in str(ei.value)
+
+
+async def test_send_image_without_caption_omits_field():
+    bodies = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(201, json={"messageId": "true_x_ID", "timestamp": 1})
+
+    await make(h).send_image("c@c.us", b"abc", "image/jpeg", "")
+    assert "caption" not in bodies[0]

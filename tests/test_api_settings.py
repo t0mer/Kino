@@ -114,6 +114,7 @@ def forward_body(**over):
         "per_kid": {},
         "caption_template": "{kids} @ {group}",
         "include_review_confirmed": False,
+        "send_caption": True,
     }
     body.update(over)
     return body
@@ -130,6 +131,7 @@ def test_put_forward_roundtrip(api):
         "per_kid": {str(noa): "x@c.us"},
         "caption_template": "{kids} @ {group}",
         "include_review_confirmed": False,
+        "send_caption": True,
     }
     # disabling keeps the destination
     api.put("/api/settings/forward", json=forward_body(enabled=False))

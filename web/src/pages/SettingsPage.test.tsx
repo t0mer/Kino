@@ -23,7 +23,7 @@ const kid = (id: number, display_name: string) => ({
   threshold_offset: 0, group_ids: [], reference_count: 0, today: 0, last_7_days: 0, created_at: "2026-10-01T00:00:00",
 });
 const baseSettings = (): SettingsOut => ({
-  forward: { enabled: false, default_chat_id: null, per_kid: {}, caption_template: "{kids} · {group}", include_review_confirmed: true },
+  forward: { enabled: false, default_chat_id: null, per_kid: {}, caption_template: "{kids} · {group}", include_review_confirmed: true, send_caption: true },
   digest: { chat_id: null, cron: "0 20 * * *", apprise_urls: ["tgram://****"], public_base_url: null },
   thresholds: { L: { auto: 0.45, review: 0.32 }, M: { auto: 0.5, review: 0.35 }, S: { review: 0.4 }, prior_bonus: 0.03, unmapped_penalty: 0.05, margin_min: 0.08, auto_floor: 0.3 },
   retention: { raw_days: 7, face_days: 30 },
