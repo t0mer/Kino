@@ -14,6 +14,7 @@ from kino.api import auth
 from kino.api.deps import get_auth
 from kino.api.errors import install_error_handlers
 from kino.api.routes.auth import router as auth_router
+from kino.api.routes.clusters import router as clusters_router
 from kino.api.routes.forwards import router as forwards_router
 from kino.api.routes.groups import router as groups_router
 from kino.api.routes.images import router as images_router
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(images_router)
     app.include_router(test_router)
     app.include_router(rescore_router)
+    app.include_router(clusters_router)
     install_error_handlers(app)
 
     @app.get("/healthz")

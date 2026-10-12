@@ -667,3 +667,65 @@ class FlagOut(BaseModel):
     changed: bool
     match_id: int | None
     negative_id: int | None
+
+
+class ClusterCardOut(BaseModel):
+    id: int
+    size: int
+    label_status: str
+    kid_id: int | None
+    sample_crop_urls: list[str]
+    groups: list[str]
+    date_from: datetime | None
+    date_to: datetime | None
+
+
+class ClusterPageOut(BaseModel):
+    items: list[ClusterCardOut]
+    next_cursor: str | None
+
+
+class ClusterFaceOut(BaseModel):
+    face_id: int
+    crop_url: str | None
+    quality: float | None
+    size_px: float
+    group_name: str | None
+    sent_at: datetime | None
+
+
+class ClusterDetailOut(BaseModel):
+    id: int
+    size: int
+    label_status: str
+    kid_id: int | None
+    faces: list[ClusterFaceOut]
+    next_cursor: int | None
+
+
+class ClusterLabelIn(In):
+    kid_id: int
+    face_ids: list[int] | None = Field(default=None, max_length=1000)
+
+
+class ClusterLabelOut(BaseModel):
+    cluster_id: int
+    kid_id: int
+    selected: int
+    references_created: int
+    duplicates: int
+    rescore: RescoreOut | None
+
+
+class ClusterIgnoreOut(BaseModel):
+    faces_deleted: int
+    files_removed: int
+
+
+class ClusterSplitOut(BaseModel):
+    cluster_ids: list[int]
+
+
+class ClusterRunOut(BaseModel):
+    status: str
+    job_id: str | None
