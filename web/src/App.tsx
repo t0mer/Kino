@@ -14,6 +14,7 @@ import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
 import { PhotosPage } from "@/pages/PhotosPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { ReviewPage } from "@/pages/ReviewPage";
 import { SetupPage } from "@/pages/SetupPage";
 
@@ -23,6 +24,7 @@ const PAGES: Record<string, ReactNode> = {
   "/kids": <KidsPage />,
   "/groups": <GroupsPage />,
   "/photos": <PhotosPage />,
+  "/settings": <SettingsPage />,
 };
 
 export function AppRoutes() {
