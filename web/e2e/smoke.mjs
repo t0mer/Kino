@@ -268,8 +268,17 @@ if (haveFaces) {
   });
   await run('gallery: confirmed photo appears', async () => {
     await nav('Gallery');
-    await until(async () => ((await getJson('/api/photos')).items ?? []).length > 0, 15000, 'saved photo');
-    await page.locator('img').first().waitFor();
+    const photo = await until(async () => ((await getJson('/api/photos')).items ?? [])[0], 15000, 'saved photo');
+    const kid = photo.kids[0];
+    // the kid's tab lists the photo with a thumbnail that actually loads (JPEG over the authenticated route)
+    await page.getByRole('tab', { name: new RegExp(`^${kid.kid_name}\\s*\\d+`) }).click();
+    await page.getByRole('button', { name: new RegExp(`^Open photo of ${kid.kid_name}`) }).first().waitFor();
+    const thumb = page.locator(`img[src="${photo.thumb_url}"]`).first();
+    await thumb.waitFor();
+    await until(() => thumb.evaluate((el) => el.complete && el.naturalWidth > 0), 10000, 'thumbnail to render');
+    const r = await page.request.get(base + photo.thumb_url);
+    if (r.status() !== 200 || !String(r.headers()['content-type']).startsWith('image/jpeg')) throw new Error(`thumb ${r.status()} ${r.headers()['content-type']}`);
+    return `thumb ${r.status()} ${r.headers()['content-type']}`;
   });
   await run('activity: shows outcomes', async () => {
     await nav('Activity');
