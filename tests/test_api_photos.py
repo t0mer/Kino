@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 
 from PIL import Image as PILImage
@@ -44,8 +45,7 @@ def test_thumb_generated_cached_and_headers(world):
     assert r.headers["x-content-type-options"] == "nosniff"
     im = PILImage.open(io.BytesIO(r.content))
     assert max(im.size) == 400 and im.mode == "RGB"
-    cached = data_dir() / "thumbs" / f"{sp.id}_400.jpg"
-    assert cached.is_file()
+    (cached,) = (data_dir() / "thumbs").glob(f"{sp.id}_400_*.jpg")
     # cache reused: replace with a marker thumb that is still a valid JPEG
     PILImage.new("RGB", (10, 7)).save(cached, "JPEG")
     assert PILImage.open(io.BytesIO(api.get(f"/api/photos/{sp.id}/thumb").content)).size == (10, 7)
@@ -55,10 +55,39 @@ def test_thumb_generated_cached_and_headers(world):
     assert max(PILImage.open(io.BytesIO(r.content)).size) == 400
     # width clamped
     r = api.get(f"/api/photos/{sp.id}/thumb?w=5")
-    assert max(PILImage.open(io.BytesIO(r.content)).size) == 128
+    assert max(PILImage.open(io.BytesIO(r.content)).size) == 160
     r = api.get(f"/api/photos/{sp.id}/thumb?w=99999")
     assert max(PILImage.open(io.BytesIO(r.content)).size) == 400  # source is only 400 wide
-    assert (data_dir() / "thumbs" / f"{sp.id}_1024.jpg").is_file()
+    assert list((data_dir() / "thumbs").glob(f"{sp.id}_1024_*.jpg"))
+
+
+def test_clamp_width_snaps_up_to_allowed_sizes():
+    from kino.services.thumbs import clamp_width
+
+    assert clamp_width(None) == 400
+    assert [clamp_width(w) for w in (1, 160, 161, 300, 401, 1024, 5000)] == [
+        160,
+        160,
+        240,
+        320,
+        640,
+        1024,
+        1024,
+    ]
+
+
+def test_thumb_not_stale_when_source_replaced_or_id_reused(world):
+    api = world["api"]
+    sp = confirm_all(world)[0]
+    first = api.get(f"/api/photos/{sp.id}/thumb")
+    assert PILImage.open(io.BytesIO(first.content)).getpixel((5, 5)) != (250, 0, 0)
+    PILImage.new("RGB", (333, 222), (250, 0, 0)).save(sp.path, "JPEG", quality=95)
+    st = Path(sp.path).stat()
+    os.utime(sp.path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    im = PILImage.open(io.BytesIO(api.get(f"/api/photos/{sp.id}/thumb").content))
+    assert im.size == (333, 222) and im.getpixel((5, 5))[0] > 200
+    # only the fresh variant is kept for this id and width
+    assert len(list((data_dir() / "thumbs").glob(f"{sp.id}_400_*.jpg"))) == 1
 
 
 def test_thumb_applies_exif_orientation(world):
@@ -70,6 +99,17 @@ def test_thumb_applies_exif_orientation(world):
     r = world["api"].get(f"/api/photos/{sp.id}/thumb")
     w, h = PILImage.open(io.BytesIO(r.content)).size
     assert (w, h) == (100, 300)
+
+
+def test_thumb_orientation_with_large_jpeg_draft(world):
+    sp = confirm_all(world)[0]
+    img = PILImage.new("RGB", (3000, 1000), (10, 200, 10))
+    exif = img.getexif()
+    exif[0x0112] = 6
+    img.save(sp.path, "JPEG", exif=exif)
+    r = world["api"].get(f"/api/photos/{sp.id}/thumb?w=160")
+    w, h = PILImage.open(io.BytesIO(r.content)).size
+    assert h == 160 and w < h
 
 
 def test_thumb_404s_and_traversal(world, tmp_path):
