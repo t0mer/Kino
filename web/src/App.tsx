@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
 import { ActivityPage } from "@/pages/ActivityPage";
+import { ClustersPage } from "@/pages/ClustersPage";
 import { EnrollPage } from "@/pages/EnrollPage";
 import { GalleryPage } from "@/pages/GalleryPage";
 import { GroupsPage } from "@/pages/GroupsPage";
@@ -31,6 +32,7 @@ const PAGES: Record<string, ReactNode> = {
   "/activity": <ActivityPage />,
   "/test": <TestPage />,
   "/gallery": <GalleryPage />,
+  "/clusters": <ClustersPage />,
 };
 
 export function AppRoutes() {
