@@ -263,6 +263,8 @@ class Digest(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     pending_count: Mapped[int] = mapped_column(Integer, nullable=False)
     dest_chat_id: Mapped[str | None] = mapped_column(String)
+    # sha256 of the pending review match ids this digest reported (change detection).
+    pending_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class Setting(Base):

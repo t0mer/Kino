@@ -809,3 +809,14 @@ def retention_cleanup() -> None:
     except Exception as e:
         logger.error("retention cleanup failed: {}", type(e).__name__)
 
+
+@huey.periodic_task(crontab(minute="*"))  # type: ignore[untyped-decorator]
+def review_digest() -> None:
+    """Per-minute tick; sends the review digest when the configured cron expression matches
+    (see kino.digest). Never raises into huey."""
+    from kino.digest import run_digest_if_due
+
+    try:
+        run_digest_if_due()
+    except Exception as e:
+        logger.error("review digest failed: {}", type(e).__name__)
