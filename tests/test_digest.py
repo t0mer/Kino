@@ -163,3 +163,17 @@ def test_on_drain_waits_for_idle_queue_and_gap(env):
     add_pending(2, 1)
     assert not digest.run_digest_on_drain(env, client_factory=factory)  # < 10 min since last
     assert len(fake.sent) == 1
+
+
+def test_default_client_reads_wizard_config(env):
+    from kino.openwa.client import OpenWAClient
+    from kino.services.openwa_cfg import OpenWANotConfiguredError, save_openwa_config
+
+    with pytest.raises(OpenWANotConfiguredError):
+        digest._default_client(env)
+    with dbs.get_session() as s:
+        save_openwa_config(
+            s, env, url="http://wizard-owa:2785", api_key="wiz-key", session_id="wiz-sess"
+        )
+    client = digest._default_client(env)
+    assert isinstance(client, OpenWAClient) and client._http.base_url.host == "wizard-owa"
