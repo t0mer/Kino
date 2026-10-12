@@ -10,6 +10,7 @@ import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
 import { ActivityPage } from "@/pages/ActivityPage";
 import { EnrollPage } from "@/pages/EnrollPage";
+import { GalleryPage } from "@/pages/GalleryPage";
 import { GroupsPage } from "@/pages/GroupsPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
@@ -27,6 +28,7 @@ const PAGES: Record<string, ReactNode> = {
   "/photos": <PhotosPage />,
   "/settings": <SettingsPage />,
   "/activity": <ActivityPage />,
+  "/gallery": <GalleryPage />,
 };
 
 export function AppRoutes() {
