@@ -16,8 +16,9 @@ let calls: Call[];
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-const photo = (id: number, image_id: number, kid_id: number, kid_name: string): Photo => ({
-  id, image_id, kid_id, kid_name, group_id: 10, group_name: "כיתה ב", thumb_url: `/api/photos/${id}/thumb`, sender_name: "Dana", kid_ids: [], kid_names: [],
+const photo = (id: number, image_id: number, kid_id: number, kid_name: string, others: [number, string, number][] = []): Photo => ({
+  id, image_id, kid_id, kid_name,
+  kids: [{ kid_id, kid_name, saved_photo_id: id }, ...others.map(([k, n, sp]) => ({ kid_id: k, kid_name: n, saved_photo_id: sp }))].sort((a, b) => a.kid_id - b.kid_id), group_id: 10, group_name: "כיתה ב", thumb_url: `/api/photos/${id}/thumb`, sender_name: "Dana", kid_ids: [], kid_names: [],
   sent_at: "2026-10-05T10:00:00", saved_at: "2026-10-05T10:01:00", file_url: `/api/images/${image_id}/file`,
 });
 const kid = (id: number, display_name: string) => ({
@@ -31,7 +32,7 @@ beforeEach(() => {
   routes = {
     "GET /api/kids": () => json(200, [kid(1, "Noa"), kid(2, "Itai")]),
     "GET /api/groups": () => json(200, [{ id: 10, chat_id: "10@g.us", name: "כיתה ב", slug: null, watched: true, kid_ids: [], is_forward_destination: false, created_at: "2026-10-01T00:00:00", last_seen_at: null }]),
-    "GET /api/photos": () => json(200, { items: [{ ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"] }, photo(2, 101, 2, "Itai")], next_cursor: null }),
+    "GET /api/photos": () => json(200, { items: [photo(1, 100, 1, "Noa", [[2, "Itai", 11]]), photo(2, 101, 2, "Itai")], next_cursor: null }),
     "GET /api/photos/counts": () => json(200, { total: 2, kids: [{ kid_id: 1, kid_name: "Noa", count: 1 }, { kid_id: 2, kid_name: "Itai", count: 2 }] }),
   };
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} unobserve() {} });
@@ -71,21 +72,29 @@ describe("GalleryPage", () => {
     routes["GET /api/photos"] = () =>
       json(200, {
         items: [
-          { ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"] },
+          photo(1, 100, 1, "Noa", [[2, "Itai", 11]]),
           { ...photo(2, 101, 2, "Itai"), sent_at: "2026-09-10T10:00:00" },
         ],
         next_cursor: null,
       });
     renderPage();
-    const btn = await screen.findByRole("button", { name: "Open photo of Noa from כיתה ב" });
+    const btn = await screen.findByRole("button", { name: "Open photo of Noa, Itai from כיתה ב" });
     expect(btn.querySelector("img")).toHaveAttribute("src", "/api/photos/1/thumb");
     expect(btn.querySelector("img")).toHaveAttribute("loading", "lazy");
+    expect(within(btn).getAllByTestId("kid-badge").map((b) => b.textContent)).toEqual(["Noa", "Itai"]);
     expect(within(btn).getByText("Noa")).toHaveAttribute("dir", "auto");
-    expect(within(btn).getByTestId("shared-badge")).toHaveTextContent("Itai");
     expect(screen.getByRole("heading", { name: "October 2026" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "September 2026" })).toBeInTheDocument();
     const itai = screen.getByRole("button", { name: /Open photo of Itai/ });
-    expect(within(itai).queryByTestId("shared-badge")).not.toBeInTheDocument();
+    expect(within(itai).getAllByTestId("kid-badge")).toHaveLength(1);
+  });
+
+  it("in a kid tab badges only the other kids", async () => {
+    routes["GET /api/photos"] = () => json(200, { items: [photo(1, 100, 1, "Noa", [[2, "Itai", 11]])], next_cursor: null });
+    renderPage("/gallery?kid=1");
+    const btn = await screen.findByRole("button", { name: /Open photo of Noa/ });
+    expect(within(btn).getByTestId("shared-badge")).toHaveTextContent("Itai");
+    expect(within(btn).queryByTestId("kid-badge")).not.toBeInTheDocument();
   });
 
   it("shows kid tabs with counts, zero for kids without photos, and remembers the kid in the URL", async () => {
@@ -154,7 +163,7 @@ describe("GalleryPage", () => {
 
   it("opens the lightbox with the original, details, and the unknown-sender fallback", async () => {
     routes["GET /api/photos"] = () =>
-      json(200, { items: [{ ...photo(1, 100, 1, "Noa"), kid_ids: [2], kid_names: ["Itai"], sender_name: null }, photo(2, 101, 2, "Itai")], next_cursor: null });
+      json(200, { items: [{ ...photo(1, 100, 1, "Noa", [[2, "Itai", 11]]), sender_name: null }, photo(2, 101, 2, "Itai")], next_cursor: null });
     renderPage();
     await open(/Open photo of Noa/);
     const dlg = await screen.findByRole("dialog");
@@ -214,5 +223,74 @@ describe("GalleryPage", () => {
     const confirm = (await screen.findAllByRole("dialog")).at(-1)!;
     await userEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  const openRemoveFor = async (kidName: string) => {
+    const dlg = await screen.findByRole("dialog");
+    await userEvent.click(within(dlg).getByRole("button", { name: new RegExp(`Remove from ${kidName}`) }));
+    await screen.findByRole("button", { name: "Remove photo" });
+    const confirm = screen.getAllByRole("dialog").at(-1)!;
+    expect(confirm).toHaveTextContent(`Remove from ${kidName}?`);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Remove photo" }));
+  };
+
+  it("offers one remove action per kid and deletes that kid's saved_photo_id, keeping the lightbox open for the rest", async () => {
+    let itaiGone = false;
+    routes["GET /api/photos"] = () =>
+      json(200, { items: [itaiGone ? photo(1, 100, 1, "Noa") : photo(1, 100, 1, "Noa", [[2, "Itai", 11]])], next_cursor: null });
+    routes["DELETE /api/photos/11"] = () => {
+      itaiGone = true;
+      return json(200, { id: 11, removed_files: 1, cancelled_forwards: 0, rejected_matches: 1, retired_references: 0 });
+    };
+    renderPage();
+    await open(/Open photo of Noa, Itai/);
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByRole("button", { name: /Remove from Noa/ })).toBeInTheDocument();
+    await openRemoveFor("Itai");
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.url === "/api/photos/11")).toBe(true));
+    expect(calls.some((c) => c.method === "DELETE" && c.url === "/api/photos/1")).toBe(false);
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Remove from Itai/ })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Remove from Noa/ })).toBeInTheDocument();
+  });
+
+  it("advances to the next photo after the last kid is removed, and closes when none is left", async () => {
+    let items = [photo(1, 100, 1, "Noa"), photo(2, 101, 2, "Itai")];
+    routes["GET /api/photos"] = () => json(200, { items, next_cursor: null });
+    routes["DELETE /api/photos/1"] = () => {
+      items = items.slice(1);
+      return json(200, { id: 1, removed_files: 1, cancelled_forwards: 0, rejected_matches: 0, retired_references: 0 });
+    };
+    routes["DELETE /api/photos/2"] = () => {
+      items = [];
+      return json(200, { id: 2, removed_files: 1, cancelled_forwards: 0, rejected_matches: 0, retired_references: 0 });
+    };
+    renderPage();
+    await open(/Open photo of Noa/);
+    await openRemoveFor("Noa");
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("img")).toHaveAttribute("src", "/api/images/101/file"));
+    await openRemoveFor("Itai");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("fetches the next page when navigating past the last loaded photo and stops at the real end", async () => {
+    routes["GET /api/photos"] = (c) =>
+      c.url.includes("cursor=2")
+        ? json(200, { items: [photo(3, 102, 1, "Noa")], next_cursor: null })
+        : json(200, { items: [photo(1, 100, 1, "Noa"), photo(2, 101, 2, "Itai")], next_cursor: 2 });
+    renderPage();
+    await open(/Open photo of Noa/);
+    const dlg = await screen.findByRole("dialog");
+    const src = () => within(dlg).getByRole("img").getAttribute("src");
+    const nextBtn = () => within(dlg).getByRole("button", { name: "Next photo" });
+    await userEvent.keyboard("{ArrowRight}");
+    expect(src()).toBe("/api/images/101/file");
+    expect(nextBtn()).toBeEnabled();
+    await userEvent.keyboard("{ArrowRight}");
+    await waitFor(() => expect(src()).toBe("/api/images/102/file"));
+    expect(photoGets().filter((c) => c.url.includes("cursor=2"))).toHaveLength(1);
+    expect(nextBtn()).toBeDisabled();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(src()).toBe("/api/images/102/file");
+    expect(photoGets().filter((c) => c.url.includes("cursor=2"))).toHaveLength(1);
   });
 });

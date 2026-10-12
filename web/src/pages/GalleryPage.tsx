@@ -21,12 +21,14 @@ import { groupKeys, groupLabel, groupsApi } from "@/lib/groups";
 import { kidKeys, kidsApi } from "@/lib/kids";
 import { useLive } from "@/lib/query";
 import {
+  badgeKids,
   flattenPages,
   hasActiveFilters,
   invalidRange,
-  type Photo,
+  type PhotoKid,
   type PhotoFilters,
   photoKeys,
+  photoKids,
   photosApi,
   groupByMonth,
   mergeTabs,
@@ -69,8 +71,11 @@ export function GalleryPage() {
   const [others, setOthers] = useState({ groupId: "", from: "", to: "" });
   const kidParam = params.get("kid") ?? "";
   const filters: PhotoFilters = { kidId: /^\d+$/.test(kidParam) ? kidParam : "", ...others };
-  const [openId, setOpenId] = useState<number | null>(null);
-  const [confirm, setConfirm] = useState<Photo | null>(null);
+  // The lightbox tracks the IMAGE, not a saved_photo row: an "All" row's id changes when its first kid is removed.
+  const [openImage, setOpenImage] = useState<number | null>(null);
+  const [wantNext, setWantNext] = useState(false);
+  const [confirm, setConfirm] = useState<PhotoKid | null>(null);
+  const tabKid = filters.kidId === "" ? null : Number(filters.kidId);
 
   const kids = useLive(kidKeys.list, kidsApi.list);
   const groups = useLive(groupKeys.list, groupsApi.list);
@@ -92,29 +97,56 @@ export function GalleryPage() {
   const months = useMemo(() => groupByMonth(all), [all]);
   const tabs = useMemo(() => mergeTabs(kids.data ?? [], counts.data), [kids.data, counts.data]);
 
-  const idx = openId === null ? -1 : all.findIndex((p) => p.id === openId);
+  const idx = openImage === null ? -1 : all.findIndex((p) => p.image_id === openImage);
   const current = idx >= 0 ? all[idx]! : null;
   const prev = idx > 0 ? all[idx - 1]! : null;
   const next = idx >= 0 && idx < all.length - 1 ? all[idx + 1]! : null;
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = photos;
+  const loadingNext = wantNext && isFetchingNextPage;
+  const nextDisabled = !next && (!hasNextPage || isFetchingNextPage);
+
+  const goNext = () => {
+    if (next) setOpenImage(next.image_id);
+    else if (hasNextPage && !isFetchingNextPage) {
+      setWantNext(true);
+      void fetchNextPage();
+    }
+  };
+  const goPrev = () => prev && setOpenImage(prev.image_id);
+
+  // Navigated past the last loaded photo: continue once the next page has arrived; stop at the real end.
+  useEffect(() => {
+    if (!wantNext) return;
+    if (next) {
+      setOpenImage(next.image_id);
+      setWantNext(false);
+    } else if (!isFetchingNextPage && (!hasNextPage || isFetchNextPageError)) setWantNext(false);
+  }, [wantNext, next, isFetchingNextPage, hasNextPage, isFetchNextPageError]);
+  useEffect(() => {
+    if (!current) setWantNext(false);
+  }, [current]);
 
   // Lightbox arrow keys: ignore auto-repeat, typing targets and the confirm dialog.
   useEffect(() => {
     if (!current || confirm) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || isTyping(e.target)) return;
-      if (e.key === "ArrowLeft" && prev) setOpenId(prev.id);
-      else if (e.key === "ArrowRight" && next) setOpenId(next.id);
+      if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "ArrowRight") goNext();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current, confirm, prev, next]);
+  });
 
   const remove = useMutation({
-    mutationFn: (p: Photo) => photosApi.remove(p.id),
-    onSuccess: (_r, p) => {
-      toast.success(`Removed from ${p.kid_name}`);
+    mutationFn: (k: PhotoKid) => photosApi.remove(k.saved_photo_id),
+    onSuccess: (_r, k) => {
+      toast.success(`Removed from ${k.kid_name}`);
       setConfirm(null);
-      setOpenId(next?.id ?? prev?.id ?? null);
+      // Keep the lightbox open while the photo is still listed (other kids remain in this view); else advance.
+      const remaining = current ? photoKids(current).filter((x) => x.kid_id !== k.kid_id) : [];
+      const stays = tabKid === null ? remaining.length > 0 : k.kid_id !== tabKid;
+      if (!stays) setOpenImage(next?.image_id ?? prev?.image_id ?? null);
       void qc.invalidateQueries({ queryKey: photoKeys.all });
       void qc.invalidateQueries({ queryKey: kidKeys.all });
       void qc.invalidateQueries({ queryKey: activityKeys.all });
@@ -207,12 +239,15 @@ export function GalleryPage() {
             <section key={m.key} aria-label={m.label}>
               <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{m.label}</h2>
               <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-                {m.items.map((p) => (
+                {m.items.map((p) => {
+                  const kids = photoKids(p);
+                  const badges = badgeKids(p, tabKid);
+                  return (
                   <li key={p.id}>
                     <button
                       type="button"
-                      onClick={() => setOpenId(p.id)}
-                      aria-label={`Open photo of ${p.kid_name}${p.group_name ? ` from ${p.group_name}` : ""}`}
+                      onClick={() => setOpenImage(p.image_id)}
+                      aria-label={`Open photo of ${(tabKid === null ? kids.map((k) => k.kid_name).join(", ") : p.kid_name)}${p.group_name ? ` from ${p.group_name}` : ""}`}
                       className="group relative block aspect-square w-full overflow-hidden rounded-lg border bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <img
@@ -222,23 +257,41 @@ export function GalleryPage() {
                         decoding="async"
                         className="h-full w-full object-cover transition group-hover:scale-105"
                       />
-                      <span dir="auto" className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-2 py-1 text-start text-xs text-white">
-                        {p.kid_name}
-                      </span>
-                      {p.kid_names.length > 0 && (
-                        <span
-                          data-testid="shared-badge"
-                          className="absolute end-1 top-1 flex max-w-[90%] items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground shadow"
-                        >
-                          <Users className="h-3 w-3 shrink-0" aria-hidden="true" />
-                          <span dir="auto" className="truncate">
-                            {p.kid_names.join(", ")}
-                          </span>
+                      {tabKid === null ? (
+                        <span className="absolute inset-x-0 bottom-0 flex flex-wrap gap-1 bg-black/60 p-1">
+                          {badges.map((k) => (
+                            <span
+                              key={k.kid_id}
+                              data-testid="kid-badge"
+                              dir="auto"
+                              className="max-w-full truncate rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+                            >
+                              {k.kid_name}
+                            </span>
+                          ))}
                         </span>
+                      ) : (
+                        <>
+                          <span dir="auto" className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-2 py-1 text-start text-xs text-white">
+                            {p.kid_name}
+                          </span>
+                          {badges.length > 0 && (
+                            <span
+                              data-testid="shared-badge"
+                              className="absolute end-1 top-1 flex max-w-[90%] items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground shadow"
+                            >
+                              <Users className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              <span dir="auto" className="truncate">
+                                {badges.map((k) => k.kid_name).join(", ")}
+                              </span>
+                            </span>
+                          )}
+                        </>
                       )}
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </section>
           ))}
@@ -258,7 +311,8 @@ export function GalleryPage() {
     );
   }
 
-  const together = current ? [current.kid_name, ...current.kid_names] : [];
+  const currentKids = current ? photoKids(current) : [];
+  const together = currentKids.map((k) => k.kid_name);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -311,7 +365,7 @@ export function GalleryPage() {
       </div>
       {body}
 
-      <Dialog open={current !== null} onOpenChange={(o) => !o && !remove.isPending && !confirm && setOpenId(null)}>
+      <Dialog open={current !== null} onOpenChange={(o) => !o && !remove.isPending && !confirm && setOpenImage(null)}>
         <DialogContent className="max-h-[95vh] max-w-4xl overflow-y-auto">
           {current && (
             <>
@@ -320,7 +374,7 @@ export function GalleryPage() {
                   Photo of <span dir="auto">{together.join(", ")}</span>
                 </DialogTitle>
                 <DialogDescription>
-                  {idx + 1} of {all.length}
+                  {idx + 1} of {all.length}{hasNextPage ? "+" : ""}
                 </DialogDescription>
               </DialogHeader>
               <div className="relative">
@@ -335,7 +389,7 @@ export function GalleryPage() {
                   size="icon"
                   aria-label="Previous photo"
                   disabled={!prev}
-                  onClick={() => prev && setOpenId(prev.id)}
+                  onClick={goPrev}
                   className="absolute start-1 top-1/2 -translate-y-1/2 opacity-90"
                 >
                   <ChevronLeft />
@@ -344,11 +398,11 @@ export function GalleryPage() {
                   variant="secondary"
                   size="icon"
                   aria-label="Next photo"
-                  disabled={!next}
-                  onClick={() => next && setOpenId(next.id)}
+                  disabled={nextDisabled || loadingNext}
+                  onClick={goNext}
                   className="absolute end-1 top-1/2 -translate-y-1/2 opacity-90"
                 >
-                  <ChevronRight />
+                  {loadingNext ? <Loader2 className="animate-spin" /> : <ChevronRight />}
                 </Button>
               </div>
               <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -364,9 +418,11 @@ export function GalleryPage() {
                 </Meta>
               </dl>
               <DialogFooter className="flex-wrap gap-2 sm:justify-start">
-                <Button variant="destructive" size="sm" onClick={() => setConfirm(current)}>
-                  <Trash2 /> Remove from <span dir="auto">{current.kid_name}</span>
-                </Button>
+                {currentKids.map((k) => (
+                  <Button key={k.saved_photo_id} variant="destructive" size="sm" onClick={() => setConfirm(k)}>
+                    <Trash2 /> Remove from <span dir="auto">{k.kid_name}</span>
+                  </Button>
+                ))}
               </DialogFooter>
             </>
           )}
