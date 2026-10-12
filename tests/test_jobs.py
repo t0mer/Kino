@@ -75,6 +75,7 @@ def test_stale_active_job_stops_blocking(db, monkeypatch):
     assert (j.status, j.error, j.finished_at) == ("failed", "interrupted", now)
     # a never-started queued job is aged by created_at
     q = jobs.create_job("backfill", {}, subject_id=4, exclusive=True)
+    jobs.update_job(q, created_at=now)  # created_at defaults to the real clock, pin it
     monkeypatch.setattr(jobs, "_utcnow", lambda: now + timedelta(hours=7))
     assert jobs.create_job("backfill", {}, subject_id=4, exclusive=True) != q
 
