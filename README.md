@@ -495,9 +495,10 @@ npm run build      # type-check and build into web/dist
 
 ### Re-recording the demo
 
-The narrated demo (`assets/demo/demo.mp4`, `demo-poster.png`, `demo.srt`) is produced by scripts in `demo/`. It needs Python 3.12, Node 22, Playwright with Chromium (resolved through `PLAYWRIGHT_REQUIRE_FROM`, see the header of `demo/record.mjs`), `ffmpeg` and `ffprobe`. The narration and captions come from `demo/script.json`. The recorder starts a throwaway Kino instance on a free local port with a temporary data directory and a fake local OpenWA, so it never contacts a real OpenWA or sends a message.
+The narrated demo (`assets/demo/demo.mp4`, `demo-poster.png`, `demo.srt`) is produced by scripts in `demo/`. It needs Python 3.12, Node 22, the repo `.venv` from the install step below, Playwright with Chromium (resolved through `PLAYWRIGHT_REQUIRE_FROM`, see the header of `demo/record.mjs`), `ffmpeg` and `ffprobe`. The narration and captions come from `demo/script.json`. The recorder starts a throwaway Kino instance on a free local port with a temporary data directory and a fake local OpenWA, so it never contacts a real OpenWA or sends a message.
 
 ```bash
+uv venv && uv pip install -e ".[dev]"   # repo .venv: record.mjs runs .venv/bin/kino for the throwaway instance
 python3.12 -m venv demo/.venv && demo/.venv/bin/pip install -r demo/requirements.txt
 # download the Kokoro model files into demo/models/ (URLs and checksums: demo/MODELS.md)
 W=/path/to/scratch-dir            # work files; default is $DEMO_WORK, then demo/work (gitignored)
