@@ -186,6 +186,11 @@ class ReferenceFace(Base):
     )
     # Estimated head yaw in degrees (coverage meter); None for references made before 0006.
     yaw: Mapped[float | None] = mapped_column(Float)
+    # Gallery health verdict, refreshed nightly (kino.health).
+    outlier: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    outlier_reason: Mapped[str | None] = mapped_column(String(32))
 
 
 class TempFace(Base):

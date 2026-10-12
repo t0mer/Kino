@@ -820,3 +820,14 @@ def review_digest() -> None:
         run_digest_if_due()
     except Exception as e:
         logger.error("review digest failed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(hour="4", minute="10"))  # type: ignore[untyped-decorator]
+def gallery_health() -> None:
+    """Nightly outlier flagging of reference faces (CLAUDE.md section 10)."""
+    from kino.health import run_gallery_health
+
+    try:
+        run_gallery_health()
+    except Exception as e:
+        logger.error("gallery health failed: {}", type(e).__name__)

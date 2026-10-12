@@ -378,6 +378,8 @@ class ReferenceOut(BaseModel):
     weight: float
     yaw: float | None
     crop_url: str | None
+    outlier: bool = False
+    outlier_reason: str | None = None
 
 
 class ReferencesAdded(BaseModel):
@@ -749,3 +751,18 @@ class ClusterSplitOut(BaseModel):
 class ClusterRunOut(BaseModel):
     status: str
     job_id: str | None
+
+
+class OutlierOut(BaseModel):
+    reference_id: int
+    similarity: float
+    reason: str
+
+
+class KidHealthOut(BaseModel):
+    kid_id: int
+    active_refs: int
+    evaluated: bool  # False when the kid has fewer than 5 active references
+    mean_similarity: float | None
+    threshold: float | None
+    outliers: list[OutlierOut]
