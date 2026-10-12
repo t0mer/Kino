@@ -762,3 +762,27 @@ def purge_temp_faces_task() -> None:
         purge_expired_temp_faces()
     except Exception as e:
         logger.error("temp face purge failed: {}", type(e).__name__)
+
+
+def cluster_unknown_faces() -> None:
+    """Rebuild the unlabeled "Who is this?" clusters (CLAUDE.md §10)."""
+    from kino.services.clusters import run_clustering
+
+    run_clustering()
+
+
+@huey.task()  # type: ignore[untyped-decorator]
+def cluster_unknown_faces_task() -> None:
+    """On-demand run (POST /api/clusters/run); never raises into huey."""
+    try:
+        cluster_unknown_faces()
+    except Exception as e:
+        logger.error("clustering failed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(hour="3", minute="30"))  # type: ignore[untyped-decorator]
+def nightly_cluster_unknown_faces() -> None:
+    try:
+        cluster_unknown_faces()
+    except Exception as e:
+        logger.error("nightly clustering failed: {}", type(e).__name__)
