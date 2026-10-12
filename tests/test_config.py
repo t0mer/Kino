@@ -38,9 +38,11 @@ def test_env_wins_over_yaml(monkeypatch, tmp_path):
     assert Settings().workers == 3
 
 
-def test_missing_webhook_secret_raises():
-    with pytest.raises(RuntimeError):
-        Settings().require_webhook_secret()
+def test_missing_webhook_secret_is_not_fatal_at_load():
+    s = Settings()  # Kino starts without it; the setup wizard can provide it later
+    assert s.webhook_secret is None
+    with pytest.raises(RuntimeError, match="setup wizard"):
+        s.require_webhook_secret()
 
 
 def test_webhook_secret_returned(monkeypatch):

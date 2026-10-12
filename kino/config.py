@@ -112,9 +112,12 @@ class Settings(BaseSettings):
         return (init_settings, env_settings, _YamlSource(settings_cls))
 
     def require_webhook_secret(self) -> str:
+        """The env value only; runtime code uses ``OpenWAConfig.require_webhook_secret``."""
         value = self.webhook_secret.get_secret_value() if self.webhook_secret else ""
         if not value:
-            raise RuntimeError("KINO_WEBHOOK_SECRET is required; refusing to start without it")
+            raise RuntimeError(
+                "KINO_WEBHOOK_SECRET is not set; set it or connect OpenWA with the setup wizard"
+            )
         return value
 
 
