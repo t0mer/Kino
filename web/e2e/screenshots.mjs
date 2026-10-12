@@ -394,7 +394,11 @@ await surface('activity-forwards', async (p) => {
   await p.waitForSelector('text=timed out waiting for OpenWA');
 });
 await surface('test', (p) => open(p, '/test', '[aria-label="Would auto-save"], section[aria-label]'));
-await surface('settings-forwarding', (p) => open(p, '/settings', 'text=Forwarding'));
+await surface('settings-forwarding', async (p) => {
+  // the OpenWA card is first on /settings: scroll to the Forwarding card itself
+  await open(p, '/settings', 'text=Forwarding');
+  await p.evaluate(() => { const h = [...document.querySelectorAll('h2,h3')].find((e) => e.textContent.trim() === 'Forwarding'); h?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -80); });
+});
 await surface('settings-thresholds', async (p) => {
   await open(p, '/settings', 'text=Forwarding');
   await p.getByRole('heading', { name: /Thresholds/ }).first().scrollIntoViewIfNeeded();
