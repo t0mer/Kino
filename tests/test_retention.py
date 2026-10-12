@@ -144,3 +144,19 @@ def test_settings_override_and_path_safety(env, tmp_path_factory):
     res = retention.run_retention(st, NOW)
     assert res.raw_files == 1  # 3-day-old image goes with raw_days=2
     assert outside.exists()  # outside the raw dir: refused
+
+
+def test_stale_thumb_tmp_files_are_purged(env):
+    import os
+
+    st, tmp = env
+    base = tmp / "thumbs"
+    base.mkdir()
+    old, fresh, keep = base / ".tmp-old.jpg", base / ".tmp-new.jpg", base / "1_400_abc.jpg"
+    for p in (old, fresh, keep):
+        p.write_bytes(b"x")
+    two_h = (NOW - timedelta(hours=2)).replace(tzinfo=UTC).timestamp()
+    os.utime(old, (two_h, two_h))
+    os.utime(keep, (two_h, two_h))
+    retention.run_retention(st, NOW)
+    assert not old.exists() and fresh.exists() and keep.exists()
