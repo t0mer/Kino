@@ -105,8 +105,11 @@ export function shouldIgnoreKey(e: {
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
+  repeat?: boolean;
   target: EventTarget | null;
 }): boolean {
+  // A held key auto-repeats; it must never decide items the reviewer has not seen.
+  if (e.repeat) return true;
   if (e.ctrlKey || e.metaKey || e.altKey) return true;
   const t = e.target;
   if (t instanceof HTMLElement) {

@@ -48,6 +48,11 @@ describe("shouldIgnoreKey", () => {
     expect(shouldIgnoreKey({ key: "y", target: document.body })).toBe(true);
     d.remove();
   });
+  it("ignores auto-repeat keydown events", () => {
+    expect(shouldIgnoreKey({ key: "y", repeat: true, target: document.body })).toBe(true);
+    expect(shouldIgnoreKey(new KeyboardEvent("keydown", { key: "y", repeat: true }))).toBe(true);
+    expect(shouldIgnoreKey(new KeyboardEvent("keydown", { key: "y" }))).toBe(false);
+  });
 });
 
 describe("queueOrder", () => {
