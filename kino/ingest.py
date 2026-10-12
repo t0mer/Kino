@@ -90,14 +90,16 @@ class _Outcome:
     image_id: int | None = None
 
 
-def _handle_group(ev: WebhookEvent, name: str | None) -> tuple[bool, int | None]:
+def _handle_group(
+    ev: WebhookEvent, name: str | None, include_unwatched: bool = False
+) -> tuple[bool, int | None]:
     """Upsert the group; return (watched, id of a still-`queued` image for this message)."""
     now = datetime.now(UTC).replace(tzinfo=None)
     with get_session() as s:
         g = _upsert_group(s, ev.chat_id, name, now)
         watched = g.watched
         queued_id = None
-        if watched:
+        if watched or include_unwatched:
             queued_id = s.scalar(
                 select(Image.id).where(Image.message_id == ev.message_id, Image.status == "queued")
             )
@@ -195,6 +197,8 @@ async def ingest_message(
     *,
     get_name: Callable[[], str | None] = lambda: None,
     after_upsert: Callable[[], None] | None = None,
+    allow_unwatched: bool = False,
+    requeue: bool = True,
 ) -> str:
     """Ingest one image message; returns a result code (see webhook `_reply` mapping).
 
@@ -202,17 +206,19 @@ async def ingest_message(
     media_unavailable (503), too_large (413), not_an_image, store_failed (503),
     enqueue_failed. `get_name` runs after the echo check; `after_upsert` after the group row
     exists (the webhook starts its background name refresh there).
+    `requeue=False` (backfill) reports a still-queued message as a duplicate instead of
+    enqueueing it again. `allow_unwatched` lets an explicit backfill ingest an unwatched group.
     """
     # The user's own (fromMe) photos are processed like anyone else's; only messages Kino
     # itself sent as forwards are dropped, whoever they appear to come from.
     if await run_in_threadpool(_is_forward_echo, ev.message_id):
         return "ignored"
-    watched, queued_id = await run_in_threadpool(_handle_group, ev, get_name())
+    watched, queued_id = await run_in_threadpool(_handle_group, ev, get_name(), allow_unwatched)
     if after_upsert is not None:
         after_upsert()
-    if not watched:
+    if not watched and not allow_unwatched:
         return "unwatched"
-    if queued_id is not None:
+    if queued_id is not None and requeue:
         # Redelivery of a message whose earlier enqueue may have failed. Enqueueing twice
         # is safe only because process_image is idempotent (guards on status).
         return await _enqueue(queued_id, "requeued")
