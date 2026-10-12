@@ -1,11 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createQueryClient } from "@/lib/query";
+import type { OpenWASetupStatus } from "@/lib/openwaSetup";
 import type { Chat, SettingsOut } from "@/lib/settings";
 import { SettingsPage } from "./SettingsPage";
 
@@ -32,6 +34,7 @@ const baseSettings = (): SettingsOut => ({
   version: "2026.10.0",
 });
 let settings: SettingsOut;
+let setupStatus: OpenWASetupStatus;
 
 beforeEach(() => {
   // Radix Slider measures its thumb with ResizeObserver, which jsdom lacks.
@@ -39,8 +42,14 @@ beforeEach(() => {
   document.cookie = "kino_csrf=tok; path=/";
   calls = [];
   settings = baseSettings();
+  setupStatus = {
+    configured: true, url: "http://openwa:2785", session_id: "main", session_name: "Main phone",
+    has_api_key: true, has_webhook_secret: true, webhook_secret_pending: false, webhook_url: "http://kino-api:8080/api/webhook/openwa",
+    env_overrides: [],
+  };
   routes = {
     "GET /api/settings": () => json(200, settings),
+    "GET /api/openwa/setup/status": () => json(200, setupStatus),
     "GET /api/kids": () => json(200, [kid(1, "Noa"), kid(2, "איתי")]),
     "GET /api/openwa/chats": (c) => {
       const q = new URL(c.url, "http://x").searchParams.get("q");
@@ -67,7 +76,9 @@ function renderPage() {
     <QueryClientProvider client={createQueryClient()}>
       <ThemeProvider>
         <TooltipProvider>
-          <SettingsPage />
+          <MemoryRouter>
+            <SettingsPage />
+          </MemoryRouter>
           <Toaster />
         </TooltipProvider>
       </ThemeProvider>
@@ -271,5 +282,30 @@ describe("SettingsPage", () => {
     const sys = await section("system");
     expect(await sys.findByText(/OpenWA unreachable/)).toBeInTheDocument();
     expect(sys.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+  });
+
+  it("openwa: shows the saved connection without secrets and links to the wizard", async () => {
+    renderPage();
+    const s = await section("openwa");
+    expect(await s.findByText("http://openwa:2785")).toBeInTheDocument();
+    expect(s.getByText("Main phone (main)")).toHaveAttribute("dir", "auto");
+    expect(s.getAllByText("Saved")).toHaveLength(2);
+    expect(s.getByRole("link", { name: /Reconnect/ })).toHaveAttribute("href", "/setup/openwa");
+  });
+
+  it("openwa: marks env-locked fields read-only", async () => {
+    setupStatus = { ...setupStatus, env_overrides: ["url", "webhook_secret"] };
+    renderPage();
+    const s = await section("openwa");
+    expect(await s.findByText(/KINO_OPENWA_URL/)).toBeInTheDocument();
+    expect(s.getByText(/KINO_WEBHOOK_SECRET/)).toBeInTheDocument();
+  });
+
+  it("openwa: shows when nothing is configured", async () => {
+    setupStatus = { ...setupStatus, configured: false, url: null, session_id: null, session_name: null, has_api_key: false, has_webhook_secret: false };
+    renderPage();
+    const s = await section("openwa");
+    expect(await s.findByText("Not configured")).toBeInTheDocument();
+    expect(s.getAllByText("Not set").length).toBeGreaterThanOrEqual(4);
   });
 });

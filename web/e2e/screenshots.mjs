@@ -119,6 +119,14 @@ function refsFor(kid) {
   }));
 }
 const NAMES = { 1: 'Noa', 2: 'Itai', 3: 'Maya' };
+const OWA_STATUS = {
+  configured: true, url: 'http://openwa:2785', session_id: 'main', session_name: 'Home phone',
+  has_api_key: true, has_webhook_secret: true, webhook_secret_pending: false, webhook_url: 'http://kino-api:8080/api/webhook/openwa', env_overrides: [],
+};
+const OWA_SESSIONS = [
+  { id: 'main', name: 'Home phone', status: 'ready', phone_masked: '9725****123' },
+  { id: 'work', name: 'טלפון עבודה', status: 'qr', phone_masked: null },
+];
 const KEYNAME = { 1: 'noa', 2: 'itai', 3: 'maya' };
 const reviewItem = (i, kid, score, tier, method = 'face') => ({
   match_id: 500 + i, face_id: 700 + i, image_id: 300 + i, kid_id: kid, kid_name: NAMES[kid], score, margin: 0.06 + (i % 3) * 0.02, tier, method,
@@ -287,6 +295,9 @@ function mockApi(state) {
     if (p === '/api/test/score') return json(SCORE);
     if (p === '/api/clusters') return json({ items: CLUSTERS, next_cursor: null });
     if ((r = p.match(/^\/api\/clusters\/(\d+)$/))) return json(clusterDetail(Number(r[1])));
+    if (p === '/api/openwa/setup/status') return json(state.unconfigured ? { ...OWA_STATUS, configured: false, url: null, session_id: null, session_name: null, has_api_key: false, has_webhook_secret: false } : OWA_STATUS);
+    if (p === '/api/openwa/setup/connect') return json({ sessions: OWA_SESSIONS, generated_webhook_secret: false });
+    if (p === '/api/openwa/setup/session') return json({ session_id: 'main', registered: true, action: 'created', webhook_id: 'wh-1', webhook_url: OWA_STATUS.webhook_url, error: null });
     unmocked.add(`${m} ${p}`);
     return json({ detail: 'not mocked' }, 404);
   };
@@ -383,7 +394,11 @@ await surface('activity-forwards', async (p) => {
   await p.waitForSelector('text=timed out waiting for OpenWA');
 });
 await surface('test', (p) => open(p, '/test', '[aria-label="Would auto-save"], section[aria-label]'));
-await surface('settings-forwarding', (p) => open(p, '/settings', 'text=Forwarding'));
+await surface('settings-forwarding', async (p) => {
+  // the OpenWA card is first on /settings: scroll to the Forwarding card itself
+  await open(p, '/settings', 'text=Forwarding');
+  await p.evaluate(() => { const h = [...document.querySelectorAll('h2,h3')].find((e) => e.textContent.trim() === 'Forwarding'); h?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -80); });
+});
 await surface('settings-thresholds', async (p) => {
   await open(p, '/settings', 'text=Forwarding');
   await p.getByRole('heading', { name: /Thresholds/ }).first().scrollIntoViewIfNeeded();
@@ -395,6 +410,16 @@ await surface('clusters-open', async (p) => {
   await p.click('[aria-label^="Open cluster of"]');
   await p.waitForSelector('[aria-label="Faces in this cluster"]');
 });
+
+await surface('openwa-wizard', async (p) => {
+  await open(p, '/setup/openwa', 'text=Connect Kino to OpenWA');
+  await p.getByLabel('OpenWA URL', { exact: true }).fill('http://openwa:2785');
+  await p.getByLabel('API key', { exact: true }).fill('example-api-key');
+  await p.getByRole('button', { name: 'Generate' }).click();
+  await p.getByRole('button', { name: 'Test and continue' }).click();
+  await p.waitForSelector('text=Home phone');
+}, { unconfigured: true });
+await surface('settings-openwa', (p) => open(p, '/settings', '[data-testid=section-openwa]'));
 
 await browser.close();
 stop();

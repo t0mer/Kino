@@ -27,6 +27,7 @@ from kino.db.models import Forward, Group, Image, Kid, Setting
 from kino.db.session import get_session
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.pipeline.save import to_local
+from kino.services.openwa_cfg import OpenWANotConfiguredError, load_openwa_config
 from kino.tasks import forward_huey
 
 DEFAULT_CAPTION = "📸 {kids} · {group} · {date}"
@@ -341,10 +342,10 @@ def _read_saved_file(path: str | None) -> bytes:
 
 
 def _default_client() -> OpenWAClient:
-    st = get_settings()
-    if not (st.openwa_url and st.openwa_api_key and st.openwa_session_id):
-        raise ForwardError("OpenWA is not configured")
-    return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
+    try:
+        return OpenWAClient(*load_openwa_config(get_settings()).client_args())
+    except OpenWANotConfiguredError:
+        raise ForwardError("OpenWA is not configured") from None
 
 
 def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None:

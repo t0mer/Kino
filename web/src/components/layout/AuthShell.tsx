@@ -3,7 +3,7 @@ import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 
 /** Centered card frame for Login and Setup, with viewfinder corner marks. */
-export function AuthShell({ children }: { children: ReactNode }) {
+export function AuthShell({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   return (
     <div className="relative flex min-h-svh flex-col overflow-hidden bg-background">
       <div
@@ -19,7 +19,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
         <ThemeToggle />
       </header>
       <main className="relative flex flex-1 items-center justify-center px-4 pb-16">
-        <div className="relative w-full max-w-sm">
+        <div className={wide ? "relative w-full max-w-lg" : "relative w-full max-w-sm"}>
           {(["start-0 top-0 border-s-2 border-t-2", "end-0 top-0 border-e-2 border-t-2", "start-0 bottom-0 border-s-2 border-b-2", "end-0 bottom-0 border-e-2 border-b-2"] as const).map((c) => (
             <span
               key={c}

@@ -288,3 +288,25 @@ def test_enqueue_failure_marks_job_failed(api, monkeypatch):
     with pytest.raises(RuntimeError):
         api.post(f"/api/groups/{gid}/backfill?days=3")
     assert jobs.list_jobs("backfill", 1)[0].status == "failed"
+
+
+def test_backfill_group_not_configured_fails_job(env):
+    jid = jobs.create_job("backfill", {"days": 7}, subject_id=add_group())
+    backfill.backfill_group(jid)
+    j = jobs.get_job(jid)
+    assert j is not None and j.status == "failed" and j.error == "RuntimeError"
+
+
+def test_backfill_group_uses_wizard_config(env, monkeypatch):
+    from kino.services.openwa_cfg import save_openwa_config
+
+    seen = {}
+
+    async def fake_run(job_id, settings, client, now=None, *, session_id=None):
+        seen.update(host=client._http.base_url.host, session_id=session_id)
+
+    monkeypatch.setattr(backfill, "run_backfill", fake_run)
+    with dbs.get_session() as s:
+        save_openwa_config(s, get_settings(), url="http://wizard-owa:2785", api_key="wiz-key")
+    backfill.backfill_group(jobs.create_job("backfill", {"days": 7}, subject_id=add_group()))
+    assert seen == {"host": "wizard-owa", "session_id": "sess"}  # session from the env

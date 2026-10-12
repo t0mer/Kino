@@ -58,7 +58,14 @@ If your OpenWA differs, the first webhook delivery is where it will show up (see
 ### First run and signing in
 
 1. **Set the admin password from the LAN.** With no password configured, opening the UI shows a one-time setup page where you choose the admin password (at least 12 characters, stored as an argon2 hash in the database). The API refuses the setup from a request that came through a proxy or tunnel (it looks for `Cf-Ray`, `Cf-Connecting-Ip`, `X-Forwarded-For` or the Cloudflare Access token), so do it on `http://127.0.0.1:8080` or your LAN address **before** exposing Kino through a tunnel. Setup works once; afterwards the page returns an error. To skip it, set `KINO_ADMIN_PASSWORD_HASH` (an argon2 hash; it takes precedence over the stored one).
-2. **Sign in.** Two methods are active at the same time:
+2. **Connect OpenWA.** Right after the password, the setup wizard asks for the OpenWA URL (for example `http://openwa:2785`), the API key and a webhook secret (type one with 16+ characters or press **Generate**), tests the connection, lists your OpenWA sessions (phone numbers masked) and registers Kino's webhook for the one you pick. The API key and secret are stored encrypted in the database; the encryption key is `/data/secret.key` (mode 600), so keep the `/data` volume together. Values set with `KINO_OPENWA_*` / `KINO_WEBHOOK_SECRET` win and show read-only. Reconnect later from **Settings > OpenWA**.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/openwa-wizard-dark.png">
+  <img alt="OpenWA setup wizard: session step" src="assets/screenshots/openwa-wizard-light.png">
+</picture>
+
+3. **Sign in.** Two methods are active at the same time:
    - **Local login** (LAN): the user from `KINO_ADMIN_USER` (default `admin`) and the password. Sessions last 7 days in a secure, HTTP-only cookie; after 5 failed logins from one IP within 15 minutes that IP is locked out for a while.
    - **Cloudflare Access** (tunnel): when `KINO_CF_ACCESS_TEAM_DOMAIN` and `KINO_CF_ACCESS_AUD` are set, a request carrying a valid `Cf-Access-Jwt-Assertion` token is signed in automatically. Only the signed token counts (never the e-mail header). An invalid or expired token is rejected, with no fallback to the local login. `KINO_CF_ACCESS_ALLOWED_EMAILS` limits which e-mails are accepted.
 
@@ -193,11 +200,17 @@ Unknown faces from the last 60 days are grouped nightly (03:30 server time) and 
 
 ### Settings
 
+- **OpenWA**: the current connection (URL, session, whether the API key and webhook secret are saved, webhook URL; values from environment variables marked read-only) and a **Reconnect** button that opens the setup wizard.
 - **Forwarding**: switch it on, pick the default destination chat or group from a searchable list (watched groups are disabled, otherwise Kino would ingest its own photos), optional per-kid destinations, and the caption template with a live preview (`{kids}`, `{group}`, `{sender}`, `{date}`, `{time}`). **Send test photo** sends a real message. Optionally also forward photos you confirm in the review queue.
 - **Digest**: the chat that receives the review digest, the schedule (a 5-field cron expression, empty disables it) and the public base URL used in the message link.
 - **Thresholds**: auto-save and review values per size tier plus the group bonus, unmapped-group penalty and minimum margin. Auto-save never goes below the floor of 0.30.
 - **Retention**: days to keep unmatched raw images and unmatched faces.
 - **System**: embedder, model files with licence and checksum, the OpenWA webhook status with a **Register webhook** (or **Repair webhook**) button, and the version.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-openwa-dark.png">
+  <img alt="OpenWA settings" src="assets/screenshots/settings-openwa-light.png">
+</picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-forwarding-dark.png">
@@ -244,7 +257,7 @@ flowchart LR
 ```bash
 git clone https://github.com/t0mer/kino && cd kino
 cp .env.example .env
-# edit .env: KINO_OPENWA_API_KEY, KINO_OPENWA_SESSION_ID, KINO_WEBHOOK_SECRET (openssl rand -hex 32)
+# optional: put OpenWA settings in .env, or connect OpenWA in the web UI after the first sign-in
 mkdir -p photos && sudo chown 1000:1000 photos   # the container runs as uid 1000
 docker compose up -d
 ```
@@ -259,7 +272,7 @@ Open the [Web UI](#web-ui) to set the admin password and teach faces there, or d
 # 1. Download the models (otherwise they are fetched on first use)
 docker compose exec kino-api kino models download
 
-# 2. Register Kino's webhook in OpenWA
+# 2. Register Kino's webhook in OpenWA (the setup wizard already did this if you used it)
 docker compose exec kino-api kino openwa register-webhook
 
 # 3. Enroll each kid from a folder of clear photos (10 or more, varied angles)
@@ -282,7 +295,7 @@ Until auto-save is on for a kid, matches are not saved (they go to the review qu
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-KINO_DATA_DIR=./data KINO_PHOTOS_DIR=./data/photos KINO_WEBHOOK_SECRET=$(openssl rand -hex 32) .venv/bin/kino migrate
+KINO_DATA_DIR=./data KINO_PHOTOS_DIR=./data/photos .venv/bin/kino migrate
 ```
 
 ## Configuration
@@ -291,6 +304,8 @@ Precedence: environment variables (`KINO_*`) > `/data/config.yaml` (in `KINO_DAT
 
 Settings you edit in the web UI (forwarding, digest, thresholds, retention) are stored in the database and take precedence over the matching `KINO_*` defaults below.
 
+OpenWA settings saved by the setup wizard live in the database too, but here the environment wins: a set `KINO_OPENWA_*` or `KINO_WEBHOOK_SECRET` overrides the wizard field by field.
+
 | Variable | Default | Description |
 |---|---|---|
 | `KINO_DATA_DIR` | `/data` | Root for the database, queues, raw images, crops, models and `config.yaml` |
@@ -298,10 +313,10 @@ Settings you edit in the web UI (forwarding, digest, thresholds, retention) are 
 | `KINO_PHOTOS_DIR` | `/data/photos` | Output root for saved photos |
 | `KINO_STRIP_GPS` | `true` | Remove GPS EXIF from saved (and therefore forwarded) photos |
 | `KINO_TIMEZONE` | `UTC` | IANA zone used for photo folders, file names and EXIF local time (for example `Asia/Jerusalem`) |
-| `KINO_OPENWA_URL` | unset | OpenWA base URL, for example `http://openwa:2785` |
-| `KINO_OPENWA_API_KEY` | unset | OpenWA API key; needed by the api, the forward worker and the OpenWA CLI commands |
-| `KINO_OPENWA_SESSION_ID` | unset | The single OpenWA session; webhooks from other sessions are rejected |
-| `KINO_WEBHOOK_SECRET` | unset | HMAC secret for webhook verification. Required: Kino refuses to start without it |
+| `KINO_OPENWA_URL` | unset | OpenWA base URL, for example `http://openwa:2785`. Optional: or set it in the setup wizard; when set here it wins and is read-only in the UI |
+| `KINO_OPENWA_API_KEY` | unset | OpenWA API key. Optional: or set it in the setup wizard (stored encrypted) |
+| `KINO_OPENWA_SESSION_ID` | unset | The single OpenWA session; webhooks from other sessions are rejected. Optional: or pick it in the setup wizard |
+| `KINO_WEBHOOK_SECRET` | unset | HMAC secret for webhook verification (16+ characters). Optional: or set/generate it in the setup wizard (stored encrypted). Until one is configured the webhook answers 503 |
 | `KINO_ADMIN_USER` | `admin` | Admin user name for the local login |
 | `KINO_ADMIN_PASSWORD_HASH` | unset | Argon2 hash of the admin password. Takes precedence over the password chosen on the first-run setup page |
 | `KINO_SECRET_KEY` | unset | Cookie signing key. When unset, one is generated once and kept in the database |
@@ -404,6 +419,9 @@ Interactive docs are not served; this table is the reference. All routes need a 
 | `POST /api/settings/forward/preview` | Render the caption template for a sample |
 | `GET /api/openwa/chats` | Contacts and groups for the destination pickers |
 | `GET /api/openwa/webhook`, `POST /api/openwa/webhook/register` | Webhook status; register or repair it |
+| `GET /api/openwa/setup/status` | OpenWA connection for the wizard: configured flag, URL (no credentials), session, `has_api_key` / `has_webhook_secret`, webhook URL, fields locked by env |
+| `POST /api/openwa/setup/connect` | Test URL + API key against OpenWA, then save them and the webhook secret (blank keeps the stored value; a missing secret is generated); returns the sessions |
+| `POST /api/openwa/setup/session` | Save the picked session (checked against the live list) and register the webhook; a failed registration is reported in `error` and can be retried |
 | `GET /api/stats` | Counters used by the Activity page |
 
 `/metrics` merges the counters written by all Kino processes (prometheus_client multiprocess mode, files in `KINO_METRICS_DIR`) and adds gauges read from the database at scrape time: `kino_queue_depth`, `kino_review_queue_size`, `kino_gallery_refs{kid,source}` and `kino_forward_queue_depth`. `kino_model_info` is set by each worker process once its models are loaded. Each process deletes the metric files of dead processes from its own container when it starts; after recreating containers you can clear stale files by deleting the directory while all Kino containers are stopped.
@@ -418,7 +436,8 @@ Interactive docs are not served; this table is the reference. All routes need a 
 
 ## Security notes
 
-- The webhook requires a valid HMAC signature and the configured session id; without `KINO_WEBHOOK_SECRET` the service refuses to start.
+- The webhook requires a valid HMAC signature and the configured session id; until a webhook secret is configured (env or setup wizard) it answers 503.
+- The OpenWA API key and webhook secret saved by the wizard are encrypted with AES-256-GCM; the key is `/data/secret.key` (mode 600), never in the database. Losing it only means re-running the wizard.
 - `/metrics` is not public by default.
 - Keep `.env` out of version control; secrets are never baked into the image and no model files are included.
 - The webhook is meant to be reached by OpenWA over the internal Docker network only; do not expose it publicly.
@@ -437,8 +456,9 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 
 ## Troubleshooting
 
-- **API exits at start with a message about `KINO_WEBHOOK_SECRET`**: set it in `.env`.
-- **Webhook returns 401 or 403**: the HMAC secret differs between OpenWA and `KINO_WEBHOOK_SECRET`, or the payload's session id is not `KINO_OPENWA_SESSION_ID`.
+- **Kino keeps showing the OpenWA setup page**: OpenWA is not fully configured (URL, API key, session and webhook secret). Finish the wizard, or set the missing `KINO_*` variables. If `/data/secret.key` was lost, saved secrets can no longer be read and the wizard asks again.
+- **Some OpenWA values are set by env, but Kino still opens the wizard**: an install configured only partly by env (for example `KINO_WEBHOOK_SECRET` and `KINO_OPENWA_SESSION_ID` but no URL or API key) is sent to the wizard until the URL and API key are saved there. Fields set in the environment or `config.yaml` are shown read-only.
+- **Webhook returns 401 or 403**: the HMAC secret differs between OpenWA and `KINO_WEBHOOK_SECRET`, or the payload's session id is not the configured session (env or wizard).
 - **Photos from a group are ignored**: the group is not watched; check `kino groups list` and run `kino groups watch`.
 - **Matches are not saved**: auto-save is off for the kid (`kino kids set-auto-save`), or the face is below the auto-save size tier.
 - **Nothing is forwarded**: run `kino forward show`; forwarding needs a destination, the OpenWA settings, and the `forward-worker` running. Failed sends are listed by `kino forward list --status failed`.

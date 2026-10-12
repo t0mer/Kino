@@ -36,6 +36,7 @@ from kino.db.models import Digest, Face, Image, Kid, Match
 from kino.db.session import get_session
 from kino.forward import sanitize_error
 from kino.openwa.client import OpenWAClient, mask_path
+from kino.services.openwa_cfg import load_openwa_config
 from kino.services.settings_svc import DigestConfig, get_digest
 
 _RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
@@ -129,9 +130,8 @@ def render_message(p: Pending, base_url: str | None) -> str:
 
 
 def _default_client(st: Settings) -> OpenWAClient:
-    if not (st.openwa_url and st.openwa_api_key and st.openwa_session_id):
-        raise RuntimeError("OpenWA is not configured")
-    return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
+    # raises OpenWANotConfiguredError (a RuntimeError), logged by run_digest
+    return OpenWAClient(*load_openwa_config(st).client_args())
 
 
 def run_digest(

@@ -36,6 +36,7 @@ from kino.models.registry import MODELS
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.services import groups as groups_svc
 from kino.services import kids as kids_svc
+from kino.services.openwa_cfg import NOT_CONFIGURED_HINT, OpenWAConfig, get_openwa_config
 
 app = typer.Typer(help="Kino: find your kids in WhatsApp group photos.", no_args_is_help=True)
 models_app = typer.Typer(help="Model files.", no_args_is_help=True)
@@ -128,7 +129,6 @@ def api(
     port: Annotated[int, typer.Option(help="Port to listen on.")] = 8080,
 ) -> None:
     """Run the HTTP API (uvicorn)."""
-    _settings().require_webhook_secret()
     open_db()
     uvicorn.run("kino.api.app:create_app", factory=True, host=host, port=port)
 
@@ -242,11 +242,23 @@ def enroll(
     )
 
 
-def _openwa_client() -> OpenWAClient:
+def _openwa_config() -> OpenWAConfig:
+    """OpenWA settings from env, else what the setup wizard saved (opens the database)."""
     st = _settings()
-    if not (st.openwa_url and st.openwa_api_key and st.openwa_session_id):
-        raise CliError("set KINO_OPENWA_URL, KINO_OPENWA_API_KEY and KINO_OPENWA_SESSION_ID")
-    return OpenWAClient(st.openwa_url, st.openwa_api_key.get_secret_value(), st.openwa_session_id)
+    open_db()
+    with get_session() as s:
+        return get_openwa_config(s, st)
+
+
+def _client_from(cfg: OpenWAConfig) -> OpenWAClient:
+    if not cfg.client_ready:
+        raise CliError(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
+    url, api_key, session_id = cfg.client_args()
+    return OpenWAClient(url, api_key, session_id)
+
+
+def _openwa_client() -> OpenWAClient:
+    return _client_from(_openwa_config())
 
 
 def _fetch_groups() -> list[dict[str, Any]]:
@@ -453,11 +465,11 @@ def openwa_register_webhook(
     """Register (or update) Kino's webhook in OpenWA."""
     from kino.openwa.register import EVENTS, register_webhook
 
-    st = _settings()
-    secret = st.require_webhook_secret()
+    cfg = _openwa_config()
+    secret = cfg.require_webhook_secret()
 
     async def go() -> tuple[str, str]:
-        client = _openwa_client()
+        client = _client_from(cfg)
         try:
             return await register_webhook(client, url, secret)
         finally:
@@ -466,7 +478,7 @@ def openwa_register_webhook(
     action, hook_id = asyncio.run(go())
     typer.echo(
         f"{action} webhook {hook_id}: url {url}, events {', '.join(EVENTS)}, "
-        f"session {st.openwa_session_id}, secret {mask_secret(secret)}"
+        f"session {cfg.session_id}, secret {mask_secret(secret)}"
     )
 
 

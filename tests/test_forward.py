@@ -464,3 +464,28 @@ def test_caption_uses_configured_timezone(s, monkeypatch):
 def test_caption_cap_counts_utf16_units():
     out = fw.render_caption("📸" * 600, [], "", "", SENT)  # each emoji is 2 UTF-16 units
     assert len(out.encode("utf-16-le")) // 2 <= 1024 and out == "📸" * 512
+
+
+def test_default_client_reads_wizard_config(tmp_path, monkeypatch):
+    from kino.config import Settings
+    from kino.openwa.client import OpenWAClient
+    from kino.services.openwa_cfg import save_openwa_config
+
+    for k in ("KINO_OPENWA_URL", "KINO_OPENWA_API_KEY", "KINO_OPENWA_SESSION_ID"):
+        monkeypatch.delenv(k, raising=False)
+    eng = dbs.init_engine(f"sqlite:///{tmp_path / 'fw.db'}")
+    dbs.run_migrations()
+    st = Settings(data_dir=tmp_path)
+    monkeypatch.setattr(fw, "get_settings", lambda: st)
+    try:
+        with pytest.raises(ForwardError, match="not configured"):
+            fw._default_client()
+        with dbs.get_session() as s:
+            save_openwa_config(
+                s, st, url="http://wizard-owa:2785", api_key="wiz-key", session_id="wiz-sess"
+            )
+        client = fw._default_client()
+        assert isinstance(client, OpenWAClient)
+        assert client._http.base_url.host == "wizard-owa" and client._session == "wiz-sess"
+    finally:
+        eng.dispose()

@@ -8,10 +8,12 @@ import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
 import { AppRoutes } from "./App";
 
+let setupStatus: unknown = null;
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 beforeEach(() => {
+  setupStatus = null;
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} unobserve() {} });
   vi.stubGlobal(
     "fetch",
@@ -22,6 +24,7 @@ beforeEach(() => {
       if (path === "/api/photos/counts") return json(200, { total: 0, kids: [] });
       if (path === "/api/review/count") return json(200, { total: 0, by_kid: {} });
       if (path === "/api/kids" || path === "/api/groups") return json(200, []);
+      if (path === "/api/openwa/setup/status") return setupStatus ? json(200, setupStatus) : json(404, { detail: "x" });
       return json(404, { detail: "x" });
     }),
   );
@@ -63,6 +66,26 @@ describe("routes and nav", () => {
   });
 
   it("serves the references page at /references", async () => {
+    renderAt("/references");
+    expect(await screen.findByRole("heading", { name: "References" })).toBeInTheDocument();
+  });
+});
+
+describe("OpenWA setup gate", () => {
+  const base = {
+    url: null, session_id: null, session_name: null, has_api_key: false, has_webhook_secret: false, webhook_secret_pending: false,
+    webhook_url: "http://kino-api:8080/api/webhook/openwa", env_overrides: [],
+  };
+
+  it("sends a signed-in user to the wizard until OpenWA is configured", async () => {
+    setupStatus = { ...base, configured: false };
+    renderAt("/references");
+    expect(await screen.findByRole("heading", { name: "Connect Kino to OpenWA" })).toBeInTheDocument();
+    expect(screen.getByTestId("where")).toHaveTextContent("/setup/openwa");
+  });
+
+  it("lets the app through once configured", async () => {
+    setupStatus = { ...base, configured: true };
     renderAt("/references");
     expect(await screen.findByRole("heading", { name: "References" })).toBeInTheDocument();
   });

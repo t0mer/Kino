@@ -33,6 +33,73 @@ def mask_path(path: str) -> str:
     return _ID_RE.sub(lambda m: f"{m.group(1)}****{m.group(2)}", path)
 
 
+LIST_SESSIONS_TIMEOUT = 10.0
+
+
+def mask_phone(phone: object) -> str | None:
+    """`972501234567` -> `9725****567`; a value without a long digit run becomes `****`."""
+    if phone is None or phone == "":
+        return None
+    text = str(phone)
+    masked = mask_path(text)
+    return masked if masked != text else "****"
+
+
+async def list_sessions(
+    url: str,
+    api_key: str,
+    *,
+    timeout: float = LIST_SESSIONS_TIMEOUT,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> list[dict[str, Any]]:
+    """``GET /api/sessions`` (no session id needed): the connection test and the picker.
+
+    Verified live (OpenWA 0.24.0): a bare list of ``{id, name, status, phone, ...}``.
+    Returns ``[{id, name, status, phone_masked}]``; the phone never leaves unmasked.
+    Raises :class:`OpenWAError`: status 401/403 = key refused, None = unreachable.
+    Redirects are not followed.
+    """
+    path = "/api/sessions"
+    failure: OpenWAError | None = None
+    data: Any = None
+    async with httpx.AsyncClient(
+        base_url=url.rstrip("/"),
+        headers={API_KEY_HEADER: api_key},
+        timeout=timeout,
+        transport=transport,
+        follow_redirects=False,
+    ) as http:
+        try:
+            r = await http.get(path)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            failure = OpenWAError("http error", e.response.status_code, path)
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
+            failure = OpenWAError(type(e).__name__, None, path)
+        else:
+            try:
+                data = r.json()
+            except ValueError:
+                failure = OpenWAError("invalid json", r.status_code, path)
+    if failure is not None:
+        raise failure  # raised outside except: no chained context with the key
+    if not isinstance(data, list):
+        raise OpenWAError("unexpected sessions response", None, path)
+    out: list[dict[str, Any]] = []
+    for s in data:
+        if not isinstance(s, dict) or not s.get("id"):
+            continue
+        out.append(
+            {
+                "id": str(s["id"]),
+                "name": str(s["name"]) if s.get("name") else None,
+                "status": str(s.get("status") or "unknown"),
+                "phone_masked": mask_phone(s.get("phone")),
+            }
+        )
+    return out
+
+
 class OpenWAClient:
     def __init__(
         self,

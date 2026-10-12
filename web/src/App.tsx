@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { RequireAuth, UnauthorizedRedirect } from "@/components/layout/AuthGate";
+import { RequireAuth, RequireConfigured, UnauthorizedRedirect } from "@/components/layout/AuthGate";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -15,6 +15,7 @@ import { GalleryPage } from "@/pages/GalleryPage";
 import { GroupsPage } from "@/pages/GroupsPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
+import { OpenWASetupPage } from "@/pages/OpenWASetupPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
 import { ReferencesPage } from "@/pages/ReferencesPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -47,14 +48,17 @@ export function AppRoutes() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup" element={<SetupPage />} />
       <Route element={<RequireAuth />}>
-        <Route element={<AppLayout />}>
-          <Route index element={<Navigate to="/review" replace />} />
-          {NAV.map((item) => (
-            <Route key={item.to} path={item.to.slice(1)} element={PAGES[item.to] ?? <PlaceholderPage item={item} />} />
-          ))}
-          <Route path="photos" element={<PhotosRedirect />} />
-          <Route path="kids/:id/enroll" element={<EnrollPage />} />
-          <Route path="*" element={<NotFoundPage />} />
+        <Route path="setup/openwa" element={<OpenWASetupPage />} />
+        <Route element={<RequireConfigured />}>
+          <Route element={<AppLayout />}>
+            <Route index element={<Navigate to="/review" replace />} />
+            {NAV.map((item) => (
+              <Route key={item.to} path={item.to.slice(1)} element={PAGES[item.to] ?? <PlaceholderPage item={item} />} />
+            ))}
+            <Route path="photos" element={<PhotosRedirect />} />
+            <Route path="kids/:id/enroll" element={<EnrollPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
         </Route>
       </Route>
     </Routes>

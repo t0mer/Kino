@@ -110,13 +110,51 @@ def images():
         return list(s.scalars(select(ImageRow).order_by(ImageRow.id)))
 
 
-def test_startup_refuses_without_secret(env, monkeypatch):
+def test_unconfigured_webhook_answers_503_and_app_starts(env, monkeypatch, enqueued):
     from kino.api.app import create_app
 
     monkeypatch.delenv("KINO_WEBHOOK_SECRET")
     get_settings.cache_clear()
-    with pytest.raises(RuntimeError):
-        create_app()
+    with TestClient(create_app()) as c:
+        r = post(c, payload())
+        assert r.status_code == 503 and r.json() == {"result": "not_configured"}
+        assert c.get("/healthz").status_code == 200
+
+
+def _configure_from_wizard(**fields):
+    from kino.services.openwa_cfg import save_openwa_config
+
+    with dbs.get_session() as s:
+        save_openwa_config(s, get_settings(), **fields)
+
+
+def test_webhook_uses_wizard_config_without_restart(env, monkeypatch, enqueued):
+    from kino.api.app import create_app
+
+    monkeypatch.delenv("KINO_WEBHOOK_SECRET")
+    monkeypatch.delenv("KINO_OPENWA_SESSION_ID")
+    get_settings.cache_clear()
+    with TestClient(create_app()) as c:
+        watch()
+        img = with_media(payload(), jpeg())
+        assert post(c, img).status_code == 503
+        _configure_from_wizard(session_id="kino-session", webhook_secret=SECRET)
+        r = post(c, img)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"result": "queued"}
+        assert post(c, img, secret="wrong").status_code == 401
+
+
+def test_lost_secret_key_gives_503_not_500(env, monkeypatch, enqueued):
+    from kino.api.app import create_app
+
+    monkeypatch.delenv("KINO_WEBHOOK_SECRET")
+    get_settings.cache_clear()
+    with TestClient(create_app()) as c:
+        _configure_from_wizard(webhook_secret=SECRET)
+        (env / "secret.key").unlink()
+        r = post(c, payload())
+        assert r.status_code == 503 and r.json() == {"result": "not_configured"}
 
 
 def test_bad_signature_401(client):
