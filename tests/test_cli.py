@@ -109,11 +109,13 @@ def test_api_runs_uvicorn_factory_after_migrations(env, monkeypatch):
     assert (env.data_dir / "kino.db").exists()
 
 
-def test_api_without_webhook_secret_fails_cleanly(env, monkeypatch):
+def test_api_starts_without_webhook_secret(env, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: Settings(data_dir=env.data_dir))
-    monkeypatch.setattr(cli.uvicorn, "run", lambda *a, **kw: pytest.fail("must not start"))
-    msg = one_line_error(run("api"))
-    assert "KINO_WEBHOOK_SECRET" in msg
+    calls = {}
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *a, **kw: calls.update(args=a))
+    r = run("api")
+    assert r.exit_code == 0, r.output
+    assert calls["args"] == ("kino.api.app:create_app",)
 
 
 def test_worker_runs_main_queue_with_process_workers(env, monkeypatch):
@@ -754,3 +756,37 @@ def test_import_groups_fills_missing_slug_only(env):
         by_id = {g.chat_id: g for g in s.scalars(select(Group))}
         assert by_id[GID].slug == "gn-shmsh"
         assert (by_id["2@g.us"].name, by_id["2@g.us"].slug) == ("New", "old")
+
+
+def test_register_webhook_uses_wizard_config(env, monkeypatch):
+    from kino.services.openwa_cfg import save_openwa_config
+
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"id": "h-9"})
+
+    monkeypatch.setattr(
+        cli,
+        "OpenWAClient",
+        lambda url, key, sid: OpenWAClient(url, key, sid, transport=httpx.MockTransport(handler)),
+    )
+    bare = Settings(data_dir=env.data_dir)
+    monkeypatch.setattr(cli, "get_settings", lambda: bare)
+    cli.open_db()
+    with dbs.get_session() as s:
+        save_openwa_config(
+            s,
+            bare,
+            url="http://openwa",
+            api_key="key",
+            session_id="wiz-sess",
+            webhook_secret=SECRET,
+        )
+    r = run("openwa", "register-webhook")
+    assert r.exit_code == 0, r.output
+    assert "session wiz-sess" in r.output and SECRET not in r.output
+    assert calls[-1] == ("POST", "/api/sessions/wiz-sess/webhooks")
