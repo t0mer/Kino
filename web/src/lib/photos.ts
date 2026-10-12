@@ -3,6 +3,13 @@
 import { api } from "./api";
 import { parseApiDate } from "./format";
 
+/** One kid saved for an image, with the saved_photo row to delete to remove that kid. */
+export interface PhotoKid {
+  kid_id: number;
+  kid_name: string;
+  saved_photo_id: number;
+}
+
 export interface Photo {
   id: number;
   image_id: number;
@@ -19,6 +26,8 @@ export interface Photo {
   /** The OTHER kids saved from the same photo. */
   kid_ids: number[];
   kid_names: string[];
+  /** ALL kids saved for this image (ordered by kid id). */
+  kids: PhotoKid[];
 }
 
 export interface KidPhotoCount {
@@ -133,9 +142,15 @@ export function mergeTabs(kids: { id: number; display_name: string }[], counts: 
 
 export const UNKNOWN_SENDER = "Unknown sender";
 
-/** Every saved row (one per kid) for the same image, so the lightbox can name all kids. */
-export function siblingsOf(photo: Photo, all: Photo[]): Photo[] {
-  return all.filter((p) => p.image_id === photo.image_id);
+/** All kids saved for the photo; falls back to the row's own kid for older payloads. */
+export function photoKids(p: Photo): PhotoKid[] {
+  return p.kids?.length ? p.kids : [{ kid_id: p.kid_id, kid_name: p.kid_name, saved_photo_id: p.id }];
+}
+
+/** Kids to badge on a thumbnail: everyone in the "All" tab, only the OTHER kids in a kid tab. */
+export function badgeKids(p: Photo, tabKidId: number | null): PhotoKid[] {
+  const kids = photoKids(p);
+  return tabKidId === null ? kids : kids.filter((k) => k.kid_id !== tabKidId);
 }
 
 /** Flatten pages, dropping rows repeated across page boundaries. */

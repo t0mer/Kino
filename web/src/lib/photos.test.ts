@@ -15,6 +15,7 @@ const p = (id: number, image_id: number): Photo => ({
   sender_name: null,
   kid_ids: [],
   kid_names: [],
+  kids: [],
 });
 
 describe("photos helpers", () => {
