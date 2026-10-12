@@ -141,3 +141,56 @@ def test_identity_among_strangers_forms_a_cluster() -> None:
 
 def test_pure_noise_forms_nothing() -> None:
     assert (clustering.cluster_embeddings(noise(5, 30)) == -1).all()
+
+
+def _use(fid: int, kind: str) -> None:
+    from kino.db.models import NegativeFace, ReferenceFace
+
+    with dbs.get_session() as s:
+        k = Kid(display_name=f"K{kind}{fid}", slug=f"k{kind}{fid}")
+        s.add(k)
+        s.flush()
+        emb = dbs.embedding_to_blob(identity(9, 1)[0])
+        if kind == "ref":
+            s.add(
+                ReferenceFace(kid_id=k.id, face_id=fid, embedding=emb, source="upload", quality=0.9)
+            )
+        else:
+            s.add(NegativeFace(kid_id=k.id, embedding=emb, source_face_id=fid))
+
+
+def test_build_excludes_reference_and_negative_source_faces(api) -> None:  # type: ignore[no-untyped-def]
+    ids = add_many(identity(1, 10))
+    add_many(identity(2, 6))  # HDBSCAN needs a second group to split from
+    with dbs.get_session() as s:
+        svc.build_clusters(s, NOW)
+    members = [f for f in ids if cluster_of(f) is not None]
+    assert len(members) >= 6
+    _use(members[0], "ref")
+    _use(members[1], "neg")
+    with dbs.get_session() as s:
+        res = svc.build_clusters(s, NOW)
+    assert res.candidates == 16 - 2
+    assert cluster_of(members[0]) is None and cluster_of(members[1]) is None
+
+
+def test_label_skips_reference_and_negative_source_faces(api) -> None:  # type: ignore[no-untyped-def]
+    from kino.config import get_settings
+
+    ids = add_many(identity(1, 10))
+    add_many(identity(2, 6))  # HDBSCAN needs a second group to split from
+    with dbs.get_session() as s:
+        svc.build_clusters(s, NOW)
+        k = Kid(display_name="K", slug="kk")
+        s.add(k)
+        s.flush()
+        kid_id = k.id
+    members = [f for f in ids if cluster_of(f) is not None]
+    cid = cluster_of(members[0])
+    assert cid is not None and len(members) >= 6
+    # enrolled / rejected after the cluster was built
+    _use(members[0], "ref")
+    _use(members[1], "neg")
+    res = svc.label_cluster(get_settings(), cid, kid_id)
+    assert res.skipped == 2 and res.selected == len(members) - 2
+    assert cluster_of(members[0]) is None and cluster_of(members[1]) is None

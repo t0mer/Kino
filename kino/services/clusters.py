@@ -18,10 +18,20 @@ import numpy as np
 from loguru import logger
 from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from kino import clustering
 from kino.config import Settings
-from kino.db.models import CLUSTER_LABEL, Cluster, Face, Group, Kid, Match
+from kino.db.models import (
+    CLUSTER_LABEL,
+    Cluster,
+    Face,
+    Group,
+    Kid,
+    Match,
+    NegativeFace,
+    ReferenceFace,
+)
 from kino.db.models import Image as ImageRow
 from kino.db.session import blob_to_embedding, get_session
 from kino.pipeline.quality import Tier, tier_for
@@ -62,11 +72,25 @@ def _crop_files(faces: list[Face], settings: Settings) -> list[Path]:
 
 
 def _held_ids(s: Session, ids: list[int]) -> set[int]:
-    """Faces among ``ids`` that must survive ignore/label: they carry a live kid match."""
+    """Faces among ``ids`` that must survive ignore/label: they carry a live kid match, are
+    an enrolled reference or the source of a "someone else" negative."""
     if not ids:
         return set()
-    q = select(Match.face_id).where(Match.face_id.in_(ids), Match.decision.in_(ACTIVE_MATCH))
-    return set(s.scalars(q))
+    held: set[int] = set()
+    for q in (
+        select(Match.face_id).where(Match.face_id.in_(ids), Match.decision.in_(ACTIVE_MATCH)),
+        select(ReferenceFace.face_id).where(ReferenceFace.face_id.in_(ids)),
+        select(NegativeFace.source_face_id).where(NegativeFace.source_face_id.in_(ids)),
+    ):
+        held.update(i for i in s.scalars(q) if i is not None)
+    return held
+
+
+def _in_use() -> ColumnElement[bool]:
+    """SQL predicate: the face is a reference or negative source (mirrors retention)."""
+    ref = exists().where(ReferenceFace.face_id == Face.id)
+    neg = exists().where(NegativeFace.source_face_id == Face.id)
+    return ref | neg
 
 
 def prune_unlabeled(s: Session) -> int:
@@ -75,7 +99,9 @@ def prune_unlabeled(s: Session) -> int:
     unlabeled = select(Cluster.id).where(Cluster.label_status == "unlabeled")
     matched = exists().where(Match.face_id == Face.id, Match.decision.in_(ACTIVE_MATCH))
     res = s.execute(
-        update(Face).where(Face.cluster_id.in_(unlabeled), matched).values(cluster_id=None),
+        update(Face)
+        .where(Face.cluster_id.in_(unlabeled), matched | _in_use())
+        .values(cluster_id=None),
         execution_options={"synchronize_session": False},
     )
     s.expire_all()
@@ -112,6 +138,7 @@ def _candidates(s: Session, now: datetime) -> list[Face]:
             Face.created_at >= now - timedelta(days=CANDIDATE_DAYS),
             (Face.cluster_id.is_(None)) | (Face.cluster_id.in_(unlabeled)),
             ~matched,
+            ~_in_use(),
         )
         .order_by(Face.id)
     )
