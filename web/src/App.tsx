@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NAV } from "@/lib/nav";
 import { createQueryClient } from "@/lib/query";
+import { ActivityPage } from "@/pages/ActivityPage";
 import { EnrollPage } from "@/pages/EnrollPage";
 import { GroupsPage } from "@/pages/GroupsPage";
 import { KidsPage } from "@/pages/KidsPage";
@@ -25,6 +26,7 @@ const PAGES: Record<string, ReactNode> = {
   "/groups": <GroupsPage />,
   "/photos": <PhotosPage />,
   "/settings": <SettingsPage />,
+  "/activity": <ActivityPage />,
 };
 
 export function AppRoutes() {
