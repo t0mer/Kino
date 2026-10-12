@@ -1,6 +1,11 @@
 /** "Who is this?" cluster API (CLAUDE.md §11.3) and its pure helpers. */
 
+import type { QueryKey } from "@tanstack/react-query";
+import { activityKeys } from "./activity";
 import { api } from "./api";
+import { kidKeys } from "./kids";
+import { photoKeys } from "./photos";
+import { reviewKeys } from "./review";
 import { formatDate } from "./format";
 
 export interface ClusterCard {
@@ -52,6 +57,16 @@ export const clusterKeys = {
   detail: (id: number) => ["clusters", "detail", id] as const,
 };
 
+/** Labelling adds references and re-scores, which creates review items and may save photos. */
+export const labelInvalidations: readonly QueryKey[] = [
+  kidKeys.all,
+  reviewKeys.all,
+  reviewKeys.count,
+  photoKeys.all,
+  activityKeys.all,
+  ["stats"],
+];
+
 export const clusterApi = {
   list: (cursor?: string | null) =>
     api.get<ClusterPage>("/api/clusters", { query: { status: "unlabeled", cursor } }),
@@ -88,6 +103,22 @@ export function faceCountLabel(n: number): string {
 export function labelFaceIds(loaded: number[], deselected: ReadonlySet<number>, moreUnloaded: boolean): number[] | null {
   const chosen = loaded.filter((id) => !deselected.has(id));
   return deselected.size === 0 && moreUnloaded ? null : chosen;
+}
+
+/** Face ids of every page after `cursor` (the loaded pages are not re-fetched). */
+export async function remainingFaceIds(
+  clusterId: number,
+  cursor: number | null,
+  fetchPage: (id: number, cursor: number | null) => Promise<ClusterDetail> = clusterApi.get,
+): Promise<number[]> {
+  const ids: number[] = [];
+  let next = cursor;
+  while (next !== null) {
+    const page = await fetchPage(clusterId, next);
+    ids.push(...page.faces.map((f) => f.face_id));
+    next = page.next_cursor;
+  }
+  return ids;
 }
 
 export function labelToast(r: ClusterLabelResult, kidName: string): { title: string; description: string } {

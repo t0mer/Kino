@@ -13,7 +13,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/sonner";
 import { isApiError } from "@/lib/api";
-import { clusterApi, clusterKeys, faceCountLabel, labelFaceIds, labelToast } from "@/lib/clusters";
+import { clusterApi, clusterKeys, faceCountLabel, labelFaceIds, labelInvalidations, labelToast, remainingFaceIds } from "@/lib/clusters";
+import { invalidateKeys } from "@/lib/review";
 import type { Kid } from "@/lib/kids";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +44,7 @@ export function ClusterDialog({ clusterId, kids, onClose }: Props) {
   const loadedIds = useMemo(() => faces.map((f) => f.face_id), [faces]);
   const total = detail.data?.pages[0]?.size ?? faces.length;
   const more = detail.hasNextPage;
-  const selectedCount = more && deselected.size === 0 ? total : loadedIds.filter((id) => !deselected.has(id)).length;
+  const selectedCount = more ? total - deselected.size : loadedIds.filter((id) => !deselected.has(id)).length;
 
   const refreshList = () => void qc.invalidateQueries({ queryKey: clusterKeys.list });
   const stale = () => {
@@ -71,12 +72,20 @@ export function ClusterDialog({ clusterId, kids, onClose }: Props) {
   }, [loadStale]);
 
   const label = useMutation({
-    mutationFn: () => clusterApi.label(clusterId, Number(kidId), labelFaceIds(loadedIds, deselected, !!more)),
+    mutationFn: async () => {
+      // A partial selection must name every face, so pull in any pages not loaded yet.
+      let ids = loadedIds;
+      if (more && deselected.size > 0) {
+        const cursor = detail.data?.pages.at(-1)?.next_cursor ?? null;
+        ids = [...loadedIds, ...(await remainingFaceIds(clusterId, cursor))];
+      }
+      return clusterApi.label(clusterId, Number(kidId), labelFaceIds(ids, deselected, !!more));
+    },
     onSuccess: (r) => {
       const kidName = kids.find((k) => k.id === r.kid_id)?.display_name ?? "the kid";
       const t = labelToast(r, kidName);
       toast.success(t.title, { description: t.description });
-      void qc.invalidateQueries({ queryKey: ["kids"] });
+      invalidateKeys(qc, labelInvalidations);
       onClose();
       refreshList();
     },
