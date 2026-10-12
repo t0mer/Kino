@@ -152,9 +152,17 @@ def run_digest(
     if count and last == pending.fingerprint:
         return False
     text = render_message(pending, cfg.public_base_url)
-    try:
+    chat_id = cfg.chat_id
+
+    async def send() -> None:
         client = (client_factory or _default_client)(st)
-        asyncio.run(client.send_text(cfg.chat_id, text))
+        try:
+            await client.send_text(chat_id, text)
+        finally:
+            await client.aclose()
+
+    try:
+        asyncio.run(send())
     except Exception as e:
         logger.warning("digest to {} failed: {}", mask_path(cfg.chat_id), sanitize_error(e))
         return False

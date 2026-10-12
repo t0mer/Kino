@@ -20,12 +20,16 @@ class FakeClient:
     def __init__(self, fail: bool = False) -> None:
         self.sent: list[tuple[str, str]] = []
         self.fail = fail
+        self.closed = 0
 
     async def send_text(self, chat_id: str, text: str) -> str:
         if self.fail:
             raise RuntimeError(f"boom for {chat_id}")
         self.sent.append((chat_id, text))
         return "id"
+
+    async def aclose(self) -> None:
+        self.closed += 1
 
 
 @pytest.fixture
@@ -133,3 +137,13 @@ def test_run_if_due_honours_cron_and_timezone(env):
         )
     add_pending(2, 1)
     assert not digest.run_digest_if_due(on, env_tz, client_factory=f)  # empty cron disables
+
+
+def test_client_is_closed_after_send_and_after_failure(env):
+    add_pending(1, 1)
+    bad = FakeClient(fail=True)
+    assert not digest.run_digest(env, client_factory=lambda _s: bad)
+    assert bad.closed == 1
+    good = FakeClient()
+    assert digest.run_digest(env, client_factory=lambda _s: good)
+    assert good.closed == 1
