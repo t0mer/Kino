@@ -10,6 +10,7 @@ from kino.api.schemas import KidCreate, KidDeleted, KidHealthOut, KidOut, KidUpd
 from kino.config import Settings
 from kino.db.session import get_session
 from kino.services import kids as svc
+from kino.services import thumbs
 
 router = protected_router(prefix="/api/kids", tags=["kids"])
 
@@ -98,6 +99,7 @@ def delete_kid(request: Request, kid_id: int) -> KidDeleted:
     with get_session() as s:
         result = svc.delete_kid(s, kid_id)
     removed = svc.remove_saved_files(result.files, _settings(request).photos_dir)
+    thumbs.remove_thumbs(_settings(request).data_dir, result.saved_photo_ids)
     return KidDeleted(
         id=result.kid_id, removed_files=removed, cancelled_forwards=result.cancelled_forwards
     )
