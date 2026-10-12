@@ -64,11 +64,7 @@ export const enrollApi = {
     api.get<ImagePage>("/api/images", {
       query: { status: "done", group_id: groupId, cursor, limit: 48 },
     }),
-  imageBlob: async (id: number): Promise<Blob> => {
-    const res = await fetch(`/api/images/${id}/file`, { credentials: "same-origin" });
-    if (!res.ok) throw new Error(`Could not load photo ${id} (HTTP ${res.status})`);
-    return res.blob();
-  },
+  imageBlob: (id: number): Promise<Blob> => api.blob(`/api/images/${id}/file`),
 };
 
 export const imageKeys = {

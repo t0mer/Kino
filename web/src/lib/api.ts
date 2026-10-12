@@ -99,6 +99,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Do not trigger the global 401 handler (e.g. the login form itself). */
   skipAuthRedirect?: boolean;
+  /** Return the response body as a Blob instead of parsing it. */
+  asBlob?: boolean;
 }
 
 export function buildUrl(path: string, query?: RequestOptions["query"]): string {
@@ -113,7 +115,7 @@ export function buildUrl(path: string, query?: RequestOptions["query"]): string 
 
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const method = (opts.method ?? "GET").toUpperCase();
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: opts.asBlob ? "*/*" : "application/json" };
   let body: BodyInit | undefined;
 
   if (opts.body instanceof FormData) {
@@ -157,6 +159,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
       Number.isFinite(retry) && retry > 0 ? retry : null,
     );
   }
+  if (opts.asBlob) return (await res.blob()) as T;
   if (res.status === 204 || res.headers.get("Content-Length") === "0") {
     return undefined as T;
   }
@@ -175,6 +178,8 @@ export const api = {
     request<T>(path, { ...opts, method: "PUT", body }),
   patch: <T>(path: string, body?: unknown, opts?: Body) =>
     request<T>(path, { ...opts, method: "PATCH", body }),
+  /** GET a binary body (images) with the same CSRF/401 handling as every other call. */
+  blob: (path: string, opts?: Body) => request<Blob>(path, { ...opts, method: "GET", asBlob: true }),
   delete: <T>(path: string, opts?: Body) => request<T>(path, { ...opts, method: "DELETE" }),
   /** Multipart upload: `files` go under `field` (repeated), plus optional extra form fields. */
   upload: <T>(
