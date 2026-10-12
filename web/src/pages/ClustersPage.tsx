@@ -2,12 +2,12 @@ import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-q
 import { Loader2, RefreshCw, ScanFace, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import { ClusterImport } from "@/components/backfill/ClusterImport";
 import { ClusterDialog } from "@/components/clusters/ClusterDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/sonner";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clusterApi, clusterKeys, dateRange, faceCountLabel, groupsSummary, SAMPLE_COUNT } from "@/lib/clusters";
 import { kidKeys, kidsApi } from "@/lib/kids";
 import { useLive } from "@/lib/query";
@@ -81,15 +81,7 @@ export function ClustersPage() {
               You have no kids yet. <Link className="font-medium underline" to="/kids">Add a kid first</Link> so you can label clusters.
             </p>
           )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              {/* span so the tooltip works on a disabled button */}
-              <span tabIndex={0}>
-                <Button disabled aria-describedby="backfill-hint">Import last 30 days</Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent id="backfill-hint">Backfill arrives in a later update</TooltipContent>
-          </Tooltip>
+          <ClusterImport onFindClusters={() => run.mutate()} finding={run.isPending} />
         </CardContent>
       </Card>
     );

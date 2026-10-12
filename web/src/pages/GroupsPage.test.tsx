@@ -38,6 +38,7 @@ beforeEach(() => {
   routes = {
     "GET /api/groups": () => json(200, [grp(10, "כיתה ב", { watched: true, kid_ids: [1] }), grp(11, "Football"), grp(12, "Dest", { is_forward_destination: true })]),
     "GET /api/kids": () => json(200, [kid(1, "Noa"), kid(2, "Itai")]),
+    "GET /api/jobs": () => json(200, []),
   };
   vi.stubGlobal(
     "fetch",
@@ -67,16 +68,15 @@ function renderPage() {
 const patches = () => calls.filter((c) => c.method === "PATCH");
 
 describe("GroupsPage", () => {
-  it("lists groups with dir=auto names, watched first, and a disabled backfill", async () => {
+  it("lists groups with dir=auto names, watched first, and a backfill button", async () => {
     renderPage();
     const row = await screen.findByTestId("group-10");
     expect(within(row).getByRole("heading", { name: "כיתה ב" })).toHaveAttribute("dir", "auto");
     expect(within(row).getByRole("switch", { name: "Watch כיתה ב" })).toBeChecked();
     expect(within(row).getByRole("button", { name: "Noa" })).toHaveAttribute("aria-pressed", "true");
     expect(within(row).getByRole("button", { name: "Itai" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "Backfill" })).toBeDisabled();
-    expect(screen.getByLabelText("Backfill arrives in a later update")).toBeInTheDocument();
-    expect(calls.some((c) => c.url.includes("backfill"))).toBe(false);
+    expect(within(row).getByRole("button", { name: "Backfill כיתה ב" })).toBeEnabled();
+    expect(calls.some((c) => c.method === "POST" && c.url.includes("backfill"))).toBe(false);
   });
 
   it("toggles watched and shows feedback", async () => {

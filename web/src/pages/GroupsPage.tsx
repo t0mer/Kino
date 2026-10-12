@@ -1,18 +1,20 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessagesSquare, RefreshCw, Send } from "lucide-react";
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+import { BackfillDialog } from "@/components/backfill/BackfillDialog";
+import { JobProgress } from "@/components/backfill/JobProgress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/sonner";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatRelative } from "@/lib/format";
 import { type GroupItem, groupKeys, groupLabel, groupsApi, refreshSummary, sortGroups, toggleKid } from "@/lib/groups";
 import { type Kid, kidKeys, kidsApi } from "@/lib/kids";
 import { useLive } from "@/lib/query";
 import { cn } from "@/lib/utils";
+import { useBackfill } from "@/lib/useBackfill";
 import { usePageTitle } from "@/lib/usePageTitle";
 import { PageHeader } from "./PlaceholderPage";
 
@@ -20,14 +22,18 @@ function GroupRow({
   group,
   kids,
   busy,
+  jobId,
   onWatch,
   onKids,
+  onBackfill,
 }: {
   group: GroupItem;
   kids: Kid[];
   busy: boolean;
+  jobId: number | undefined;
   onWatch: (g: GroupItem, watched: boolean) => void;
   onKids: (g: GroupItem, ids: number[]) => void;
+  onBackfill: (g: GroupItem) => void;
 }) {
   const name = groupLabel(group);
   return (
@@ -43,6 +49,9 @@ function GroupRow({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => onBackfill(group)} aria-label={`Backfill ${name}`}>
+              Backfill
+            </Button>
             {busy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />}
             <label className="flex items-center gap-2 text-sm">
               <span>{group.watched ? "Watched" : "Not watched"}</span>
@@ -62,6 +71,8 @@ function GroupRow({
             This group is the forward destination, so it cannot be watched (forwarded photos would be ingested again).
           </p>
         )}
+
+        {jobId !== undefined && <JobProgress jobId={jobId} />}
 
         <div>
           <p className="mb-1.5 text-xs font-medium text-muted-foreground" id={`kids-label-${group.id}`}>
@@ -104,6 +115,8 @@ export function GroupsPage() {
   const qc = useQueryClient();
   const groups = useLive(groupKeys.list, groupsApi.list);
   const kids = useLive(kidKeys.list, kidsApi.list);
+  const { jobByGroup, start, starting } = useBackfill();
+  const [backfillFor, setBackfillFor] = useState<GroupItem | null>(null);
 
   const update = useMutation({
     mutationFn: ({ group, body }: { group: GroupItem; body: Parameters<typeof groupsApi.update>[1] }) =>
@@ -138,20 +151,6 @@ export function GroupsPage() {
     <Button variant="outline" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
       {refresh.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
     </Button>
-  );
-
-  const backfill = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        {/* A disabled button emits no pointer events; wrap it so the tooltip still opens. */}
-        <span tabIndex={0} className="inline-flex" aria-label="Backfill arrives in a later update">
-          <Button variant="outline" disabled>
-            Backfill
-          </Button>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>Backfill arrives in a later update</TooltipContent>
-    </Tooltip>
   );
 
   let body: ReactNode;
@@ -205,6 +204,8 @@ export function GroupsPage() {
               group={g}
               kids={kids.data ?? []}
               busy={update.isPending && update.variables?.group.id === g.id}
+              jobId={jobByGroup[g.id]}
+              onBackfill={setBackfillFor}
               onWatch={(group, watched) => update.mutate({ group, body: { watched } })}
               onKids={(group, ids) => update.mutate({ group, body: { kid_ids: ids } })}
             />
@@ -219,11 +220,18 @@ export function GroupsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <PageHeader title="Groups" description="Choose which WhatsApp groups Kino watches and which kids appear in them." />
         <div className="flex gap-2">
-          {backfill}
           {groups.data && groups.data.length > 0 && refreshButton}
         </div>
       </div>
       {body}
+      {backfillFor && (
+        <BackfillDialog
+          groupName={groupLabel(backfillFor)}
+          starting={starting}
+          onStart={(days) => start(backfillFor.id, days)}
+          onClose={() => setBackfillFor(null)}
+        />
+      )}
     </div>
   );
 }

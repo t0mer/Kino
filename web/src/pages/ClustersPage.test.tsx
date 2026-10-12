@@ -32,6 +32,8 @@ beforeEach(() => {
   calls = [];
   routes = {
     "GET /api/kids": () => json(200, [kid(1, "Noa"), kid(2, "Itai"), kid(3, "Old", false)]),
+    "GET /api/groups": () => json(200, []),
+    "GET /api/jobs": () => json(200, []),
     "GET /api/clusters": () => json(200, { items: [card(1, 3), card(2)], next_cursor: null }),
     "GET /api/clusters/1": () => json(200, detail),
   };
@@ -166,12 +168,12 @@ describe("ClustersPage", () => {
     expect(await screen.findByText("Looking for clusters")).toBeInTheDocument();
   });
 
-  it("shows the empty state with a disabled import button and kids hint", async () => {
+  it("shows the empty state with the import control and kids hint", async () => {
     routes["GET /api/clusters"] = () => json(200, { items: [], next_cursor: null });
     routes["GET /api/kids"] = () => json(200, []);
     renderPage();
     expect(await screen.findByText(/Import the last 30 days from your groups, then label the clusters/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Import last 30 days" })).toBeDisabled();
+    expect(await screen.findByText(/No groups seen yet/)).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "Add a kid first" })).toHaveAttribute("href", "/kids");
     expect(writes()).toHaveLength(0);
   });
