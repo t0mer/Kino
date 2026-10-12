@@ -300,6 +300,7 @@ class OpenWASetupStatus(BaseModel):
     session_name: str | None
     has_api_key: bool
     has_webhook_secret: bool
+    webhook_secret_pending: bool  # a new secret is saved but OpenWA does not have it yet
     webhook_url: str
     env_overrides: list[str]
 

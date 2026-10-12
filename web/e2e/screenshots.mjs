@@ -121,7 +121,7 @@ function refsFor(kid) {
 const NAMES = { 1: 'Noa', 2: 'Itai', 3: 'Maya' };
 const OWA_STATUS = {
   configured: true, url: 'http://openwa:2785', session_id: 'main', session_name: 'Home phone',
-  has_api_key: true, has_webhook_secret: true, webhook_url: 'http://kino-api:8080/api/webhook/openwa', env_overrides: [],
+  has_api_key: true, has_webhook_secret: true, webhook_secret_pending: false, webhook_url: 'http://kino-api:8080/api/webhook/openwa', env_overrides: [],
 };
 const OWA_SESSIONS = [
   { id: 'main', name: 'Home phone', status: 'ready', phone_masked: '9725****123' },

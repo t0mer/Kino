@@ -43,6 +43,9 @@ K_SESSION_ID = "openwa.session_id"
 K_SESSION_NAME = "openwa.session_name"
 K_API_KEY = "openwa.api_key_enc"
 K_WEBHOOK_SECRET = "openwa.webhook_secret_enc"
+# A replacement secret the wizard accepted but OpenWA has not been told yet. The webhook check
+# keeps using the active secret; registering the webhook promotes this one.
+K_WEBHOOK_SECRET_PENDING = "openwa.webhook_secret_pending_enc"
 _KEYS: dict[Field, str] = {
     "url": K_URL,
     "api_key": K_API_KEY,
@@ -72,6 +75,7 @@ class OpenWAConfig:
     session_id: str | None
     webhook_secret: str | None
     session_name: str | None = None
+    pending_webhook_secret: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -95,11 +99,16 @@ class OpenWAConfig:
             )
         return self.webhook_secret
 
+    def registration_secret(self) -> str:
+        """The secret to register with OpenWA: the pending one if any, else the active one."""
+        return self.pending_webhook_secret or self.require_webhook_secret()
+
     def __repr__(self) -> str:
         return (
             f"OpenWAConfig(url={self.url!r}, session_id={self.session_id!r}, "
             f"api_key={'set' if self.api_key else None}, "
-            f"webhook_secret={'set' if self.webhook_secret else None})"
+            f"webhook_secret={'set' if self.webhook_secret else None}, "
+            f"pending_webhook_secret={'set' if self.pending_webhook_secret else None})"
         )
 
 
@@ -149,6 +158,12 @@ def _put(session: Session, key: str, value: str) -> None:
         row.value = value
 
 
+def _delete(session: Session, key: str) -> None:
+    row = session.get(Setting, key)
+    if row is not None:
+        session.delete(row)
+
+
 _warned_undecryptable = False
 
 
@@ -179,12 +194,14 @@ def get_openwa_config(session: Session, env: Settings) -> OpenWAConfig:
             continue
         stored = _get(session, _KEYS[f])
         values[f] = _decrypt(stored, env) if stored and f in _ENCRYPTED else stored
+    pending_token = None if from_env["webhook_secret"] else _get(session, K_WEBHOOK_SECRET_PENDING)
     return OpenWAConfig(
         url=values["url"],
         api_key=values["api_key"],
         session_id=values["session_id"],
         webhook_secret=values["webhook_secret"],
         session_name=None if from_env["session_id"] else _get(session, K_SESSION_NAME),
+        pending_webhook_secret=_decrypt(pending_token, env) if pending_token else None,
     )
 
 
@@ -217,14 +234,46 @@ def save_openwa_config(
     for f, value in given.items():
         if f in _ENCRYPTED:
             if key is None:
-                try:
-                    key = secrets_store.load_key(env.data_dir)
-                except (OSError, secrets_store.SecretKeyError) as e:
-                    raise StorageError(
-                        f"cannot read or create {secrets_store.KEY_FILE} in the data directory"
-                    ) from e
+                key = _load_key(env)
             value = secrets_store.encrypt(value, key)
         _put(session, _KEYS[f], value)
     if "session_id" in given:
         _put(session, K_SESSION_NAME, session_name or "")
+    session.flush()
+
+
+def _load_key(env: Settings) -> bytes:
+    try:
+        return secrets_store.load_key(env.data_dir)
+    except (OSError, secrets_store.SecretKeyError) as e:
+        raise StorageError(
+            f"cannot read or create {secrets_store.KEY_FILE} in the data directory"
+        ) from e
+
+
+def save_webhook_secret(session: Session, env: Settings, secret: str) -> None:
+    """Store a secret from the wizard without breaking a webhook OpenWA already signs.
+
+    No active secret yet (fresh install): it becomes the active one. Otherwise a different
+    secret is kept as pending until :func:`promote_webhook_secret`; re-entering the active
+    secret drops any pending one."""
+    active = get_openwa_config(session, env).webhook_secret
+    if active is None:
+        save_openwa_config(session, env, webhook_secret=secret)
+        _delete(session, K_WEBHOOK_SECRET_PENDING)
+    elif secret == active:
+        _delete(session, K_WEBHOOK_SECRET_PENDING)
+    else:
+        ensure_unlocked(env, ["webhook_secret"])
+        _put(session, K_WEBHOOK_SECRET_PENDING, secrets_store.encrypt(secret, _load_key(env)))
+    session.flush()
+
+
+def promote_webhook_secret(session: Session, env: Settings, registered: str) -> None:
+    """OpenWA now signs with ``registered``: make it active if it is the pending secret."""
+    cfg = get_openwa_config(session, env)
+    if cfg.pending_webhook_secret is None or cfg.pending_webhook_secret != registered:
+        return
+    save_openwa_config(session, env, webhook_secret=registered)
+    _delete(session, K_WEBHOOK_SECRET_PENDING)
     session.flush()

@@ -17,7 +17,7 @@ from kino.db.session import get_session
 from kino.openwa.client import OpenWAClient
 from kino.openwa.register import EVENTS, register_webhook
 from kino.services import settings_svc
-from kino.services.openwa_cfg import load_openwa_config
+from kino.services.openwa_cfg import load_openwa_config, promote_webhook_secret
 
 router = protected_router(prefix="/api/openwa", tags=["openwa"])
 Client = Annotated[OpenWAClient, Depends(openwa_client)]
@@ -94,7 +94,7 @@ async def webhook_register(
         with get_session() as s:
             return settings_svc.default_webhook_url(s, env)
 
-    secret = (await run_in_threadpool(load_openwa_config, env)).require_webhook_secret()
+    secret = (await run_in_threadpool(load_openwa_config, env)).registration_secret()
     previous = await run_in_threadpool(_stored_url)
     url = body.url if body.url else await run_in_threadpool(default_url)
     action, hook_id = await register_webhook(client, url, secret, previous_url=previous)
@@ -102,6 +102,7 @@ async def webhook_register(
     def remember() -> None:
         with get_session() as s:
             settings_svc.remember_webhook_url(s, url)
+            promote_webhook_secret(s, env, secret)
 
     await run_in_threadpool(remember)
     return WebhookRegistered(action=action, id=hook_id, url=url, events=list(EVENTS))

@@ -361,6 +361,13 @@ export function OpenWASetupPage() {
                 </fieldset>
               )}
 
+              {s.webhook_secret_pending && (
+                <p className="text-sm text-muted-foreground">
+                  New webhook secret not applied yet: finish the wizard so OpenWA signs with it. Until then
+                  Kino keeps checking webhooks with the old secret.
+                </p>
+              )}
+
               <div className="space-y-1.5">
                 <Label htmlFor="owa-hook">Webhook URL</Label>
                 <Input

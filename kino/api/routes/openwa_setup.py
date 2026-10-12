@@ -33,7 +33,9 @@ from kino.services.openwa_cfg import (
     env_overrides,
     get_openwa_config,
     load_openwa_config,
+    promote_webhook_secret,
     save_openwa_config,
+    save_webhook_secret,
 )
 
 router = protected_router(prefix="/api/openwa/setup", tags=["openwa-setup"])
@@ -93,6 +95,7 @@ def setup_status(request: Request) -> OpenWASetupStatus:
         session_name=cfg.session_name,
         has_api_key=cfg.api_key is not None,
         has_webhook_secret=cfg.webhook_secret is not None,
+        webhook_secret_pending=cfg.pending_webhook_secret is not None,
         webhook_url=webhook_url,
         env_overrides=list(env_overrides(env)),
     )
@@ -131,7 +134,9 @@ async def connect(request: Request, body: OpenWAConnectIn) -> OpenWAConnectOut:
 
     def save() -> None:
         with get_session() as s:
-            save_openwa_config(s, env, url=body.url, api_key=body.api_key, webhook_secret=secret)
+            save_openwa_config(s, env, url=body.url, api_key=body.api_key)
+            if secret is not None:  # pending while OpenWA may still sign with the old one
+                save_webhook_secret(s, env, secret)
 
     await run_in_threadpool(save)
     await reset_openwa(request.app)
@@ -170,7 +175,7 @@ async def pick_session(request: Request, body: OpenWASessionIn) -> OpenWASession
     hook_url, previous = await run_in_threadpool(save)
     await reset_openwa(request.app)
     try:
-        secret = (await run_in_threadpool(load_openwa_config, env)).require_webhook_secret()
+        secret = (await run_in_threadpool(load_openwa_config, env)).registration_secret()
         client = await run_in_threadpool(current_openwa, request.app)
         if client is None:
             raise OpenWANotConfiguredError("OpenWA is not configured")
@@ -187,6 +192,7 @@ async def pick_session(request: Request, body: OpenWASessionIn) -> OpenWASession
     def remember() -> None:
         with get_session() as s:
             settings_svc.remember_webhook_url(s, hook_url)
+            promote_webhook_secret(s, env, secret)
 
     await run_in_threadpool(remember)
     return OpenWASessionResult(

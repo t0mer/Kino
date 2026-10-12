@@ -20,6 +20,8 @@ export interface OpenWASetupStatus {
   session_name: string | null;
   has_api_key: boolean;
   has_webhook_secret: boolean;
+  /** A new webhook secret is saved but not registered with OpenWA yet (finish the wizard). */
+  webhook_secret_pending: boolean;
   webhook_url: string;
   env_overrides: OpenWAField[];
 }

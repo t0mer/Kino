@@ -91,6 +91,7 @@ def test_status_when_nothing_is_set(api, owa):
         "session_name": None,
         "has_api_key": False,
         "has_webhook_secret": False,
+        "webhook_secret_pending": False,
         "webhook_url": HOOK,
         "env_overrides": [],
     }
@@ -274,3 +275,96 @@ def test_validation_errors_do_not_echo_input(api, owa):
         assert r.json()["detail"][0]["loc"] and r.json()["detail"][0]["msg"]
         for leak in ("key-value-XYZ", "with space", "hunter2pw", "t=1"):
             assert leak not in r.text, leak
+
+
+# --- F1: a new webhook secret stays pending until OpenWA has it --------------------------
+
+NEW_SECRET = "rotated-webhook-secret-9876543210"
+
+
+def deliver(api, secret: str) -> int:
+    """A signed non-message event: 200 ("ignored") when the signature matches, else 401."""
+    import hashlib
+    import hmac
+
+    from kino.openwa.schemas import SIGNATURE_HEADER
+
+    body = json.dumps({"event": "session.status"}).encode()
+    mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    r = api.post("/api/webhook/openwa", content=body, headers={SIGNATURE_HEADER: f"sha256={mac}"})
+    return r.status_code
+
+
+def configured(api, owa) -> None:
+    assert connect(api, url="http://openwa:2785", api_key=API_KEY, webhook_secret=SECRET).is_success
+    r = api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    assert r.json()["registered"] is True
+
+
+def test_fresh_install_stores_secret_directly(api, owa):
+    connect(api, url="http://openwa:2785", api_key=API_KEY, webhook_secret=SECRET)
+    assert status(api)["webhook_secret_pending"] is False
+    assert deliver(api, SECRET) == 200
+
+
+def test_new_secret_without_session_step_keeps_old_active(api, owa):
+    configured(api, owa)
+    r = connect(api, webhook_secret=NEW_SECRET)
+    assert r.status_code == 200, r.text
+    assert status(api)["webhook_secret_pending"] is True
+    assert deliver(api, SECRET) == 200
+    assert deliver(api, NEW_SECRET) == 401
+
+
+def test_session_step_promotes_pending_secret(api, owa):
+    configured(api, owa)
+    connect(api, webhook_secret=NEW_SECRET)
+    r = api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    assert r.json()["registered"] is True
+    assert owa.calls[-1][2]["secret"] == NEW_SECRET
+    assert status(api)["webhook_secret_pending"] is False
+    assert deliver(api, NEW_SECRET) == 200
+    assert deliver(api, SECRET) == 401
+
+
+def test_registration_failure_keeps_pending_and_old_active(api, owa):
+    configured(api, owa)
+    connect(api, webhook_secret=NEW_SECRET)
+    owa.fail_webhooks = True
+    r = api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    assert r.status_code == 200 and r.json()["registered"] is False and r.json()["error"]
+    assert status(api)["webhook_secret_pending"] is True
+    assert deliver(api, SECRET) == 200
+    assert deliver(api, NEW_SECRET) == 401
+
+
+def test_retry_route_registers_and_promotes_pending(api, owa):
+    configured(api, owa)
+    connect(api, webhook_secret=NEW_SECRET)
+    owa.fail_webhooks = True
+    api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    owa.fail_webhooks = False
+    r = api.post("/api/openwa/webhook/register", json={})
+    assert r.status_code == 200, r.text
+    assert owa.calls[-1][2]["secret"] == NEW_SECRET
+    assert status(api)["webhook_secret_pending"] is False
+    assert deliver(api, NEW_SECRET) == 200
+    assert deliver(api, SECRET) == 401
+
+
+def test_reentering_the_active_secret_drops_pending(api, owa):
+    configured(api, owa)
+    connect(api, webhook_secret=NEW_SECRET)
+    connect(api, webhook_secret=SECRET)
+    assert status(api)["webhook_secret_pending"] is False
+    assert deliver(api, SECRET) == 200
+
+
+def test_pending_secret_never_returned(api, owa):
+    configured(api, owa)
+    texts = [connect(api, webhook_secret=NEW_SECRET).text]
+    texts.append(api.get("/api/openwa/setup/status").text)
+    texts.append(api.post("/api/openwa/setup/session", json={"session_id": "main"}).text)
+    texts.append(api.post("/api/openwa/webhook/register", json={}).text)
+    for t in texts:
+        assert NEW_SECRET not in t and SECRET not in t

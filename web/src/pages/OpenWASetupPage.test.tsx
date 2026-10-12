@@ -19,7 +19,7 @@ const json = (code: number, body: unknown) =>
 const HOOK = "http://kino-api:8080/api/webhook/openwa";
 const emptyStatus = (): OpenWASetupStatus => ({
   configured: false, url: null, session_id: null, session_name: null, has_api_key: false,
-  has_webhook_secret: false, webhook_url: HOOK, env_overrides: [],
+  has_webhook_secret: false, webhook_secret_pending: false, webhook_url: HOOK, env_overrides: [],
 });
 const SESSIONS = [
   { id: "main", name: "Main phone", status: "ready", phone_masked: "9725****567" },
@@ -165,6 +165,18 @@ describe("OpenWASetupPage", () => {
     await user.click(screen.getByRole("button", { name: "Retry registration" }));
     expect(await screen.findByText("Webhook created")).toBeInTheDocument();
     expect(posts("/api/openwa/webhook/register")[0]?.body).toEqual({ url: HOOK });
+  });
+
+  it("warns on the Session step that a new webhook secret is not applied yet", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndConnect(user);
+    await screen.findByRole("radio", { name: /Main phone/ });
+    expect(screen.queryByText(/New webhook secret not applied yet/)).not.toBeInTheDocument();
+    status = { ...status, configured: true, has_webhook_secret: true, webhook_secret_pending: true };
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Test and continue" }));
+    expect(await screen.findByText(/New webhook secret not applied yet/)).toBeInTheDocument();
   });
 
   it("explains an empty session list", async () => {
