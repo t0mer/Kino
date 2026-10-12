@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   cappedNote,
   defaultRange,
@@ -33,8 +33,8 @@ describe("dryrun helpers", () => {
   it("scoreBody maps kid and day range to the API shape", () => {
     const b = scoreBody({ kidId: "3", from: "2026-10-01", to: "2026-10-12", thresholds: DEFAULT_THRESHOLDS });
     expect(b.kid_ids).toEqual([3]);
-    expect(b.from).toBe("2026-10-01T00:00:00");
-    expect(b.to).toBe("2026-10-12T23:59:59");
+    expect(b.from).toBe(new Date(2026, 9, 1, 0, 0, 0).toISOString());
+    expect(b.to).toBe(new Date(2026, 9, 12, 23, 59, 59).toISOString());
     expect(scoreBody({ kidId: "", from: "", to: "", thresholds: DEFAULT_THRESHOLDS }).kid_ids).toBeUndefined();
   });
   it("thresholdChanges lists only differing tier values; withValue rounds", () => {
@@ -48,5 +48,20 @@ describe("dryrun helpers", () => {
   it("threshold validation: auto below review and below the floor are rejected", () => {
     expect(validateThresholds(withValue(DEFAULT_THRESHOLDS, "L.auto", 0.2), 0.3)["L.auto"]).toBeTruthy();
     expect(validateThresholds(DEFAULT_THRESHOLDS, 0.3)).toEqual({});
+  });
+});
+
+describe("scoreBody time zone", () => {
+  const prev = process.env.TZ;
+  afterEach(() => {
+    process.env.TZ = prev;
+  });
+  it("maps a Jerusalem local day to the right UTC instants", () => {
+    process.env.TZ = "Asia/Jerusalem"; // UTC+3 in October 2026 (DST ends Oct 25)
+    const b = scoreBody({ kidId: "", from: "2026-10-12", to: "2026-10-12", thresholds: DEFAULT_THRESHOLDS });
+    expect(b.from).toBe("2026-10-11T21:00:00.000Z");
+    expect(b.to).toBe("2026-10-12T20:59:59.000Z");
+    const w = scoreBody({ kidId: "", from: "2026-11-01", to: "2026-11-01", thresholds: DEFAULT_THRESHOLDS });
+    expect(w.from).toBe("2026-10-31T22:00:00.000Z"); // UTC+2 after DST
   });
 });

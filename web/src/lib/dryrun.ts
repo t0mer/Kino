@@ -75,11 +75,17 @@ export const dryrunKeys = {
   all: ["test", "score"] as const,
 };
 
+/** The real instant of local midnight (or the last second) of a `YYYY-MM-DD` day, as an aware ISO string. */
+export function localInstant(day: string, end: boolean): string {
+  const [y = 0, m = 1, d = 1] = day.split("-").map(Number);
+  return (end ? new Date(y, m - 1, d, 23, 59, 59) : new Date(y, m - 1, d, 0, 0, 0)).toISOString();
+}
+
 export function scoreBody(r: ScoreRequest) {
   return {
     kid_ids: r.kidId ? [Number(r.kidId)] : undefined,
-    from: r.from ? `${r.from}T00:00:00` : undefined,
-    to: r.to ? `${r.to}T23:59:59` : undefined,
+    from: r.from ? localInstant(r.from, false) : undefined,
+    to: r.to ? localInstant(r.to, true) : undefined,
     thresholds: r.thresholds,
   };
 }

@@ -87,7 +87,7 @@ describe("TestPage", () => {
     const body = scoreCalls()[0]!.body as { thresholds: { L: { auto: number } }; kid_ids?: number[]; from: string };
     expect(body.thresholds.L.auto).toBe(0.45);
     expect(body.kid_ids).toBeUndefined();
-    expect(body.from).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00$/);
+    expect(body.from).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
   });
 
   it("a slider change triggers one debounced score call with the new value", async () => {
