@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { RequireAuth, UnauthorizedRedirect } from "@/components/layout/AuthGate";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -16,7 +16,7 @@ import { GroupsPage } from "@/pages/GroupsPage";
 import { KidsPage } from "@/pages/KidsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage, PlaceholderPage } from "@/pages/PlaceholderPage";
-import { PhotosPage } from "@/pages/PhotosPage";
+import { ReferencesPage } from "@/pages/ReferencesPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ReviewPage } from "@/pages/ReviewPage";
 import { SetupPage } from "@/pages/SetupPage";
@@ -27,13 +27,19 @@ const PAGES: Record<string, ReactNode> = {
   "/review": <ReviewPage />,
   "/kids": <KidsPage />,
   "/groups": <GroupsPage />,
-  "/photos": <PhotosPage />,
+  "/references": <ReferencesPage />,
   "/settings": <SettingsPage />,
   "/activity": <ActivityPage />,
   "/test": <TestPage />,
   "/gallery": <GalleryPage />,
   "/clusters": <ClustersPage />,
 };
+
+/** The old /photos page is now the Gallery; keep bookmarks and the query string working. */
+function PhotosRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: "/gallery", search }} replace />;
+}
 
 export function AppRoutes() {
   return (
@@ -46,6 +52,7 @@ export function AppRoutes() {
           {NAV.map((item) => (
             <Route key={item.to} path={item.to.slice(1)} element={PAGES[item.to] ?? <PlaceholderPage item={item} />} />
           ))}
+          <Route path="photos" element={<PhotosRedirect />} />
           <Route path="kids/:id/enroll" element={<EnrollPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

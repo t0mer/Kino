@@ -493,6 +493,12 @@ class ReviewBulkOut(BaseModel):
     results: list[ReviewBulkItem]
 
 
+class PhotoKidOut(BaseModel):
+    kid_id: int
+    kid_name: str
+    saved_photo_id: int
+
+
 class PhotoOut(BaseModel):
     id: int
     image_id: int
@@ -503,6 +509,22 @@ class PhotoOut(BaseModel):
     sent_at: datetime | None
     saved_at: datetime
     file_url: str
+    thumb_url: str
+    sender_name: str | None = None
+    kid_ids: list[int] = []
+    kid_names: list[str] = []
+    kids: list[PhotoKidOut] = []
+
+
+class KidPhotoCount(BaseModel):
+    kid_id: int
+    kid_name: str
+    count: int
+
+
+class PhotoCounts(BaseModel):
+    total: int
+    kids: list[KidPhotoCount]
 
 
 class PhotoPage(BaseModel):

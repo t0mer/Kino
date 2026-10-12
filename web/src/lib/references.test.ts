@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { countOutliers, dateOnly, onlyOutliers, outlierReasonText, filterByDate, hasRefFilters, invalidRefRange, monthHistogram, monthLabel, sortRefs } from "./gallery";
+import { countOutliers, dateOnly, onlyOutliers, outlierReasonText, filterByDate, hasRefFilters, invalidRefRange, monthHistogram, monthLabel, sortRefs } from "./references";
 
 const r = (id: number, photo_date: string | null) => ({ id, photo_date });
 
-describe("gallery helpers", () => {
+describe("references helpers", () => {
   it("dateOnly takes the date part", () => {
     expect(dateOnly("2026-10-05T10:00:00")).toBe("2026-10-05");
     expect(dateOnly(null)).toBe("");

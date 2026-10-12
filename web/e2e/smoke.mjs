@@ -266,20 +266,29 @@ if (haveFaces) {
     await page.keyboard.press('y');
     await until(async () => (await getJson('/api/review')).items.length === reviewCount - 1, 15000, 'queue to shrink by one');
   });
-  await run('photos: confirmed photo appears', async () => {
-    await nav('Photos');
-    await until(async () => ((await getJson('/api/photos')).items ?? []).length > 0, 15000, 'saved photo');
-    await page.locator('img').first().waitFor();
+  await run('gallery: confirmed photo appears', async () => {
+    await nav('Gallery');
+    const photo = await until(async () => ((await getJson('/api/photos')).items ?? [])[0], 15000, 'saved photo');
+    const kid = photo.kids[0];
+    // the kid's tab lists the photo with a thumbnail that actually loads (JPEG over the authenticated route)
+    await page.getByRole('tab', { name: new RegExp(`^${kid.kid_name}\\s*\\d+`) }).click();
+    await page.getByRole('button', { name: new RegExp(`^Open photo of ${kid.kid_name}`) }).first().waitFor();
+    const thumb = page.locator(`img[src="${photo.thumb_url}"]`).first();
+    await thumb.waitFor();
+    await until(() => thumb.evaluate((el) => el.complete && el.naturalWidth > 0), 10000, 'thumbnail to render');
+    const r = await page.request.get(base + photo.thumb_url);
+    if (r.status() !== 200 || !String(r.headers()['content-type']).startsWith('image/jpeg')) throw new Error(`thumb ${r.status()} ${r.headers()['content-type']}`);
+    return `thumb ${r.status()} ${r.headers()['content-type']}`;
   });
   await run('activity: shows outcomes', async () => {
     await nav('Activity');
     await page.getByText(/\d+ faces?/).first().waitFor(); // not 'done': the status <option> matches first
   });
-  await run('gallery: references and histogram', async () => {
-    await nav('Gallery');
+  await run('references: faces and histogram', async () => {
+    await nav('References');
     await page.locator('img').first().waitFor();
   });
-} else for (const n of ['webhook/groups/worker', 'review', 'photos', 'activity', 'gallery']) skip(n, 'models/faces not available');
+} else for (const n of ['webhook/groups/worker', 'review', 'gallery', 'activity', 'references']) skip(n, 'models/faces not available');
 
 await run('test page: sliders change buckets', async () => {
   await nav('Test');
@@ -333,7 +342,7 @@ await run('groups: backfill fails gracefully with a sanitised error', async () =
 });
 
 // responsive + theme sweep
-const PAGES = ['/review', '/kids', '/gallery', '/groups', '/photos', '/activity', '/test', '/clusters', '/settings'];
+const PAGES = ['/review', '/kids', '/references', '/groups', '/gallery', '/photos', '/activity', '/test', '/clusters', '/settings'];
 for (const scheme of ['light', 'dark']) {
   for (const [w, h] of [[1280, 800], [390, 844]]) {
     await run(`layout ${scheme} ${w}px: no horizontal scroll, no errors`, async () => {

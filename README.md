@@ -4,7 +4,7 @@ Kino is a self-hosted service that listens to WhatsApp group messages through [O
 
 Named after the floating recording drones of Stargate Universe.
 
-<!-- TODO: re-record demo to cover enroll, review, gallery -->
+<!-- TODO: re-record demo to cover enroll, review, references, gallery -->
 <video src="https://raw.githubusercontent.com/t0mer/Kino/main/assets/demo/demo.mp4" controls muted width="100%"></video>
 
 [![Demo](assets/demo/demo-poster.png)](https://github.com/t0mer/Kino/blob/main/assets/demo/demo.mp4)
@@ -17,7 +17,7 @@ Named after the floating recording drones of Stargate Universe.
 
 ## Status / known gaps
 
-Kino has the processing pipeline, the CLI and a web UI for teaching faces (kids, enrollment, review queue, gallery, groups with backfill, saved photos, activity, a dry-run Test page, "Who is this?" clusters and settings). Retention cleanup and the review digest run in the background.
+Kino has the processing pipeline, the CLI and a web UI for teaching faces (kids, enrollment, review queue, references, groups with backfill, a gallery of saved photos, activity, a dry-run Test page, "Who is this?" clusters and settings). Retention cleanup and the review digest run in the background.
 
 Not implemented yet, although their settings are accepted:
 
@@ -44,7 +44,7 @@ If your OpenWA differs, the first webhook delivery is where it will show up (see
 - Matching against per-kid reference galleries, with thresholds per size tier, per-kid offset, group prior and a margin check
 - Auto-save per kid (opt-in) to `photos/<kid>/<YYYY>/<MM>/<date>_<group>_<id>.jpg`, with EXIF date, description and artist; siblings in one photo are hardlinked
 - Forwarding of saved photos to a configured WhatsApp chat through a single rate-limited queue, with retries
-- Web UI to teach faces: enroll from photos or received images, a review queue with keyboard shortcuts, "Who is this?" clustering of unknown faces, gallery management with outlier detection, and a Test page to dry-run thresholds before enabling auto-save
+- Web UI to teach faces: enroll from photos or received images, a review queue with keyboard shortcuts, "Who is this?" clustering of unknown faces, reference management with outlier detection, a per-kid Gallery of saved photos, and a Test page to dry-run thresholds before enabling auto-save
 - Backfill of the last 1 to 90 days of a group's history through OpenWA
 - Retention cleanup of raw images, crops and embeddings, and a review digest message sent to a WhatsApp chat
 - Two ways to sign in: a local admin login (LAN) and Cloudflare Access (tunnel)
@@ -113,13 +113,13 @@ Shortcuts are ignored while you type in a field or while a dialog is open, and a
   <img alt="Review queue, bulk grid" src="assets/screenshots/review-bulk-light.png">
 </picture>
 
-### Gallery
+### References
 
-Per kid: all reference faces with filters for source (upload, cluster, review, auto), status and date, a coverage meter and a histogram of photo dates by month, so age drift is visible. References that look wrong are flagged as **outliers** (far from the kid's other references, or closer to another kid) by a nightly check and listed first. Each reference can be retired or reactivated, re-dated, moved to another kid, marked as someone else, or deleted.
+Teach Kino each kid's face. Pick a kid to see all of their reference faces, with filters for source (upload, cluster, review, auto), status and date, a coverage meter and a histogram of photo dates by month, so age drift is visible. **Add references** opens the enroll page. References that look wrong are flagged as **outliers** (far from the kid's other references, or closer to another kid) by a nightly check and listed first. Each reference can be retired or reactivated, re-dated, moved to another kid, marked as someone else, or deleted. (This page was called "Gallery" before the photos page was renamed; it lives at `/references`.)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/gallery-dark.png">
-  <img alt="Gallery with outlier badges and date histogram" src="assets/screenshots/gallery-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/references-dark.png">
+  <img alt="References with outlier badges and date histogram" src="assets/screenshots/references-light.png">
 </picture>
 
 ### Groups
@@ -131,13 +131,18 @@ Groups are discovered when a message arrives, or imported from OpenWA with **Ref
   <img alt="Groups with a running backfill" src="assets/screenshots/groups-light.png">
 </picture>
 
-### Photos
+### Gallery
 
-Everything saved for your kids, filterable by kid, group and date range, with a lightbox. **Remove from kid** deletes that kid's file and cancels its unsent forward (already sent WhatsApp messages are not deleted).
+The photos Kino identified and saved, at `/gallery` (the old `/photos` address redirects here). Tabs for **All** and each kid show how many photos each has; photos are grouped under month headings and shown as thumbnails. In a kid's tab, a photo that was also saved for another kid carries a badge with their name; in the All tab every thumbnail lists all of its kids. Filter by group and date range. Open a photo for the lightbox: the original, the kids, group, sent time and sender (hidden when it would be a phone number), previous/next paging that continues across pages, and a **Remove from kid** button per kid. Removing deletes that kid's file and cancels its unsent forward (already sent WhatsApp messages are not deleted).
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/photos-dark.png">
-  <img alt="Saved photos" src="assets/screenshots/photos-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/gallery-dark.png">
+  <img alt="Gallery with kid tabs, month headings and a shared-photo badge" src="assets/screenshots/gallery-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/gallery-lightbox-dark.png">
+  <img alt="Gallery lightbox with per-kid remove buttons" src="assets/screenshots/gallery-lightbox-light.png">
 </picture>
 
 ### Activity
@@ -383,7 +388,10 @@ Interactive docs are not served; this table is the reference. All routes need a 
 | `GET /api/clusters`, `GET /api/clusters/{id}` | Unlabeled clusters of unknown faces and their faces |
 | `POST /api/clusters/{id}/label`, `/ignore`, `/split` | Label a cluster as a kid, ignore it (deletes its data), or split it |
 | `POST /api/clusters/run` | Run clustering now |
-| `GET /api/photos`, `DELETE /api/photos/{id}` | Saved photos (filter by kid, group, dates); remove one from a kid |
+| `GET /api/photos` | Saved photos (filter by `kid_id`, `group_id`, `from`, `to`; cursor paging). Each item has `kids` (every kid the image was saved for, with that kid's `saved_photo_id`), `thumb_url`, `file_url` and `sender_name` (null when it would be a phone number) |
+| `GET /api/photos/counts` | Photo counts for the Gallery tabs: `{total, kids: [{kid_id, kid_name, count}]}`, honouring the group and date filters |
+| `GET /api/photos/{id}/thumb` | JPEG thumbnail of a saved photo (`?w=` is rounded up to 160, 240, 320, 400, 640, 800 or 1024; default 400), cached under `/data/thumbs` |
+| `DELETE /api/photos/{id}` | Remove a saved photo from one kid |
 | `GET /api/images`, `GET /api/images/{id}` | Processed images and the detail of one (faces, matches, forwards) |
 | `GET /api/images/{id}/file`, `GET /api/crops/{face_id}` | Original image and face crop files |
 | `GET /api/forwards`, `POST /api/forwards/{id}/retry` | List forwards by status; retry a failed one |

@@ -1,4 +1,4 @@
-import { type Histogram, monthLabel } from "@/lib/gallery";
+import { type Histogram, monthLabel } from "@/lib/references";
 
 /** Pure-CSS bar chart of reference photo dates by month, so age drift is visible at a glance. */
 export function DateHistogram({ data }: { data: Histogram }) {

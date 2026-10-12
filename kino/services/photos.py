@@ -10,7 +10,8 @@ retired, and ``gallery_version`` is bumped when any were; uploaded and cluster r
 are left alone.
 
 Listing is newest saved first (descending ``saved_photos.id``); ``cursor`` is the last id
-seen. ``from``/``to`` filter on the message's ``sent_at`` (naive UTC).
+seen. Without ``kid_id`` there is one row per image (its lowest saved_photos id); with it,
+one per that kid's saved photo. ``from``/``to`` filter on the message's ``sent_at`` (naive UTC).
 """
 
 from __future__ import annotations
@@ -18,8 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from kino import metrics
@@ -37,6 +39,27 @@ class PhotoRow:
     image: Image
     kid: Kid
     group: Group | None
+    siblings: list[tuple[int, str]] = field(default_factory=list)  # other kids, same image
+    kids: list[tuple[int, str, int]] = field(default_factory=list)  # all: kid id, name, sp id
+
+
+def _filtered(
+    q: Any,
+    kid_id: int | None,
+    group_id: int | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> Any:
+    q = q.join(Image, Image.id == SavedPhoto.image_id).join(Kid, Kid.id == SavedPhoto.kid_id)
+    if kid_id is not None:
+        q = q.where(SavedPhoto.kid_id == kid_id)
+    if group_id is not None:
+        q = q.where(Image.group_id == group_id)
+    if date_from is not None:
+        q = q.where(Image.sent_at >= date_from)
+    if date_to is not None:
+        q = q.where(Image.sent_at <= date_to)
+    return q
 
 
 def list_photos(
@@ -48,26 +71,67 @@ def list_photos(
     cursor: int | None = None,
     limit: int = 100,
 ) -> tuple[list[PhotoRow], int | None]:
-    q = (
-        select(SavedPhoto, Image, Kid, Group)
-        .join(Image, Image.id == SavedPhoto.image_id)
-        .join(Kid, Kid.id == SavedPhoto.kid_id)
-        .outerjoin(Group, Group.id == Image.group_id)
-    )
-    if kid_id is not None:
-        q = q.where(SavedPhoto.kid_id == kid_id)
-    if group_id is not None:
-        q = q.where(Image.group_id == group_id)
-    if date_from is not None:
-        q = q.where(Image.sent_at >= date_from)
-    if date_to is not None:
-        q = q.where(Image.sent_at <= date_to)
+    q = _filtered(
+        select(SavedPhoto, Image, Kid, Group).select_from(SavedPhoto),
+        kid_id,
+        group_id,
+        date_from,
+        date_to,
+    ).outerjoin(Group, Group.id == Image.group_id)
+    if kid_id is None:  # one row per image: its lowest saved_photos id
+        q = q.where(
+            SavedPhoto.id.in_(select(func.min(SavedPhoto.id)).group_by(SavedPhoto.image_id))
+        )
     if cursor is not None:
         q = q.where(SavedPhoto.id < cursor)
     rows = session.execute(q.order_by(SavedPhoto.id.desc()).limit(limit + 1)).all()
     more = len(rows) > limit
     out = [PhotoRow(p, i, k, g) for p, i, k, g in rows[:limit]]
+    if out:
+        image_ids = {r.image.id for r in out}
+        by_image: dict[int, list[tuple[int, str, int]]] = {}
+        for img_id, kid_pk, name, sp_id in session.execute(
+            select(SavedPhoto.image_id, Kid.id, Kid.display_name, SavedPhoto.id)
+            .join(Kid, Kid.id == SavedPhoto.kid_id)
+            .where(SavedPhoto.image_id.in_(image_ids))
+            .order_by(Kid.id)
+        ):
+            by_image.setdefault(img_id, []).append((kid_pk, name, sp_id))
+        for r in out:
+            r.kids = by_image.get(r.image.id, [])
+            r.siblings = [(k, n) for k, n, _ in r.kids if k != r.kid.id]
     return out, (out[-1].photo.id if more and out else None)
+
+
+def photo_counts(
+    session: Session,
+    group_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> tuple[int, list[tuple[int, str, int]]]:
+    """Per-kid saved-photo counts and the number of distinct images, with the list filters."""
+    per_kid = (
+        _filtered(
+            select(Kid.id, Kid.display_name, func.count(SavedPhoto.id)).select_from(SavedPhoto),
+            None,
+            group_id,
+            date_from,
+            date_to,
+        )
+        .group_by(Kid.id, Kid.display_name)
+        .order_by(Kid.id)
+    )
+    total = _filtered(
+        select(func.count(func.distinct(SavedPhoto.image_id))).select_from(SavedPhoto),
+        None,
+        group_id,
+        date_from,
+        date_to,
+    )
+    return (
+        int(session.scalar(total) or 0),
+        [(k, n, int(c)) for k, n, c in session.execute(per_kid)],
+    )
 
 
 @dataclass
@@ -139,4 +203,4 @@ def remove_photo(
     return out
 
 
-__all__ = ["PhotoRemoval", "PhotoRow", "list_photos", "remove_photo"]
+__all__ = ["PhotoRemoval", "PhotoRow", "list_photos", "photo_counts", "remove_photo"]

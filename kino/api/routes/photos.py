@@ -8,17 +8,36 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Query, Request
+from fastapi import HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from loguru import logger
 
 from kino.api.deps import protected_router
-from kino.api.schemas import PhotoOut, PhotoPage, PhotoRemoved
+from kino.api.schemas import (
+    KidPhotoCount,
+    PhotoCounts,
+    PhotoKidOut,
+    PhotoOut,
+    PhotoPage,
+    PhotoRemoved,
+)
 from kino.config import Settings
+from kino.db.models import SavedPhoto
 from kino.db.session import get_session
 from kino.pipeline import save as save_mod
 from kino.services import photos as svc
+from kino.services import thumbs
+from kino.services.files import existing_file
+from kino.services.images import display_sender
 
 router = protected_router(prefix="/api/photos", tags=["photos"])
+
+_THUMB_HEADERS = {
+    "Cache-Control": "private, max-age=86400",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Content-Disposition": "inline",
+}
 
 
 def _settings(request: Request) -> Settings:
@@ -56,10 +75,47 @@ def list_photos(
                 sent_at=r.image.sent_at,
                 saved_at=r.photo.saved_at,
                 file_url=f"/api/images/{r.image.id}/file",
+                thumb_url=f"/api/photos/{r.photo.id}/thumb",
+                sender_name=display_sender(r.image.sender_name),
+                kid_ids=[k for k, _ in r.siblings],
+                kid_names=[n for _, n in r.siblings],
+                kids=[PhotoKidOut(kid_id=k, kid_name=n, saved_photo_id=sp) for k, n, sp in r.kids],
             )
             for r in rows
         ]
     return PhotoPage(items=items, next_cursor=nxt)
+
+
+@router.get("/counts", response_model=PhotoCounts)
+def photo_counts(
+    group_id: int | None = None,
+    date_from: Annotated[datetime | None, Query(alias="from")] = None,
+    date_to: Annotated[datetime | None, Query(alias="to")] = None,
+) -> PhotoCounts:
+    with get_session() as s:
+        total, per_kid = svc.photo_counts(s, group_id, _naive_utc(date_from), _naive_utc(date_to))
+    return PhotoCounts(
+        total=total,
+        kids=[KidPhotoCount(kid_id=k, kid_name=n, count=c) for k, n, c in per_kid],
+    )
+
+
+@router.get("/{saved_photo_id}/thumb")
+def photo_thumb(
+    request: Request,
+    saved_photo_id: int,
+    w: Annotated[int | None, Query()] = None,
+) -> FileResponse:
+    settings = _settings(request)
+    with get_session() as s:
+        sp = s.get(SavedPhoto, saved_photo_id)
+        path = existing_file(settings.photos_dir, sp.path) if sp else None
+    if path is None:
+        raise HTTPException(404, "photo not found")
+    thumb = thumbs.get_thumb(settings.data_dir, saved_photo_id, thumbs.clamp_width(w), path)
+    if thumb is None:
+        raise HTTPException(404, "photo not readable")
+    return FileResponse(thumb, media_type="image/jpeg", headers=_THUMB_HEADERS)
 
 
 @router.delete("/{saved_photo_id}", response_model=PhotoRemoved)
@@ -74,6 +130,7 @@ def remove_photo(request: Request, saved_photo_id: int) -> PhotoRemoved:
             removed += int(existed)
         except (OSError, ValueError) as e:  # outside the photos dir, or unremovable
             logger.warning("could not delete a saved photo: {}", type(e).__name__)
+    thumbs.remove_thumbs(_settings(request).data_dir, [res.saved_photo_id])
     return PhotoRemoved(
         id=res.saved_photo_id,
         removed_files=removed,

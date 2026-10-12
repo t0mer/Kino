@@ -206,6 +206,7 @@ class KidDeletion:
 
     kid_id: int
     files: list[Path] = field(default_factory=list)
+    saved_photo_ids: list[int] = field(default_factory=list)
     cancelled_forwards: int = 0
 
 
@@ -230,6 +231,9 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
         )
     )
     result.files = [Path(p) for p in paths if p not in shared]
+    result.saved_photo_ids = list(
+        session.scalars(select(SavedPhoto.id).where(SavedPhoto.kid_id == kid.id))
+    )
     cfg = get_forward_config(session)
     for f in session.scalars(select(Forward).where(Forward.status == "pending")):
         if kid.id in (f.kid_ids or []) and not drop_kid_from_forward(

@@ -1,0 +1,315 @@
+# ruff: noqa: F811  (fixtures imported from test_api_review)
+"""REST: photo thumbnails, sender/sibling fields and per-kid counts."""
+
+from __future__ import annotations
+
+import io
+import os
+from pathlib import Path
+
+from PIL import Image as PILImage
+from sqlalchemy import event
+
+from kino.db import session as dbs
+from kino.db.models import Image, SavedPhoto
+from tests.test_api_review import (  # noqa: F401  (fixtures + seed helpers)
+    act,
+    data_dir,
+    enqueued,
+    seed_face,
+    seed_group,
+    seed_image,
+    seed_match,
+    unit,
+    world,
+)
+
+
+def confirm_all(world) -> list[SavedPhoto]:
+    f2 = seed_face(world["img"], unit(5), n=1)
+    m2 = seed_match(f2, world["itai"])
+    assert act(world["api"], world["m"], "confirm").status_code == 200
+    assert act(world["api"], m2, "confirm").status_code == 200
+    with dbs.get_session() as s:
+        rows = list(s.query(SavedPhoto).order_by(SavedPhoto.id))
+        s.expunge_all()
+    return rows
+
+
+def test_thumb_generated_cached_and_headers(world):
+    api = world["api"]
+    sp = confirm_all(world)[0]
+    r = api.get(f"/api/photos/{sp.id}/thumb")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.headers["cache-control"] == "private, max-age=86400"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    im = PILImage.open(io.BytesIO(r.content))
+    assert max(im.size) == 400 and im.mode == "RGB"
+    (cached,) = (data_dir() / "thumbs").glob(f"{sp.id}_400_*.jpg")
+    # cache reused: replace with a marker thumb that is still a valid JPEG
+    PILImage.new("RGB", (10, 7)).save(cached, "JPEG")
+    assert PILImage.open(io.BytesIO(api.get(f"/api/photos/{sp.id}/thumb").content)).size == (10, 7)
+    # garbled cache is a miss
+    cached.write_bytes(b"garbage")
+    r = api.get(f"/api/photos/{sp.id}/thumb")
+    assert max(PILImage.open(io.BytesIO(r.content)).size) == 400
+    # width clamped
+    r = api.get(f"/api/photos/{sp.id}/thumb?w=5")
+    assert max(PILImage.open(io.BytesIO(r.content)).size) == 160
+    r = api.get(f"/api/photos/{sp.id}/thumb?w=99999")
+    assert max(PILImage.open(io.BytesIO(r.content)).size) == 400  # source is only 400 wide
+    assert list((data_dir() / "thumbs").glob(f"{sp.id}_1024_*.jpg"))
+
+
+def test_clamp_width_snaps_up_to_allowed_sizes():
+    from kino.services.thumbs import clamp_width
+
+    assert clamp_width(None) == 400
+    assert [clamp_width(w) for w in (1, 160, 161, 300, 401, 1024, 5000)] == [
+        160,
+        160,
+        240,
+        320,
+        640,
+        1024,
+        1024,
+    ]
+
+
+def test_thumb_not_stale_when_source_replaced_or_id_reused(world):
+    api = world["api"]
+    sp = confirm_all(world)[0]
+    first = api.get(f"/api/photos/{sp.id}/thumb")
+    assert PILImage.open(io.BytesIO(first.content)).getpixel((5, 5)) != (250, 0, 0)
+    PILImage.new("RGB", (333, 222), (250, 0, 0)).save(sp.path, "JPEG", quality=95)
+    st = Path(sp.path).stat()
+    os.utime(sp.path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    im = PILImage.open(io.BytesIO(api.get(f"/api/photos/{sp.id}/thumb").content))
+    assert im.size == (333, 222) and im.getpixel((5, 5))[0] > 200
+    # only the fresh variant is kept for this id and width
+    assert len(list((data_dir() / "thumbs").glob(f"{sp.id}_400_*.jpg"))) == 1
+
+
+def test_thumb_applies_exif_orientation(world):
+    sp = confirm_all(world)[0]
+    img = PILImage.new("RGB", (300, 100), (200, 30, 30))
+    exif = img.getexif()
+    exif[0x0112] = 6  # rotate 90 CW on display
+    img.save(sp.path, "JPEG", exif=exif)
+    r = world["api"].get(f"/api/photos/{sp.id}/thumb")
+    w, h = PILImage.open(io.BytesIO(r.content)).size
+    assert (w, h) == (100, 300)
+
+
+def test_thumb_orientation_with_large_jpeg_draft(world):
+    sp = confirm_all(world)[0]
+    img = PILImage.new("RGB", (3000, 1000), (10, 200, 10))
+    exif = img.getexif()
+    exif[0x0112] = 6
+    img.save(sp.path, "JPEG", exif=exif)
+    r = world["api"].get(f"/api/photos/{sp.id}/thumb?w=160")
+    w, h = PILImage.open(io.BytesIO(r.content)).size
+    assert h == 160 and w < h
+
+
+def test_thumb_404s_and_traversal(world, tmp_path):
+    api = world["api"]
+    sp = confirm_all(world)[0]
+    assert api.get("/api/photos/9999/thumb").status_code == 404
+    Path(sp.path).unlink()
+    assert api.get(f"/api/photos/{sp.id}/thumb").status_code == 404
+    outside = tmp_path / "secret.jpg"
+    PILImage.new("RGB", (50, 50)).save(outside, "JPEG")
+    with dbs.get_session() as s:
+        s.get(SavedPhoto, sp.id).path = str(outside)
+    assert api.get(f"/api/photos/{sp.id}/thumb").status_code == 404
+    with dbs.get_session() as s:
+        s.get(SavedPhoto, sp.id).path = "../../etc/passwd"
+    assert api.get(f"/api/photos/{sp.id}/thumb").status_code == 404
+    assert not (data_dir() / "thumbs").exists() or not list((data_dir() / "thumbs").glob("*.jpg"))
+
+
+def test_thumb_and_counts_require_auth(world):
+    api = world["api"]
+    sp = confirm_all(world)[0]
+    api.cookies.clear()
+    assert api.get(f"/api/photos/{sp.id}/thumb").status_code == 401
+    assert api.get("/api/photos/counts").status_code == 401
+
+
+def test_thumb_deleted_with_photo_and_kid(world):
+    api = world["api"]
+    a, b = confirm_all(world)
+    for sp in (a, b):
+        assert api.get(f"/api/photos/{sp.id}/thumb?w=200").status_code == 200
+        assert api.get(f"/api/photos/{sp.id}/thumb").status_code == 200
+    assert api.delete(f"/api/photos/{a.id}").status_code == 200
+    assert not list((data_dir() / "thumbs").glob(f"{a.id}_*.jpg"))
+    assert list((data_dir() / "thumbs").glob(f"{b.id}_*.jpg"))
+    assert api.delete(f"/api/kids/{b.kid_id}").status_code == 200
+    assert not list((data_dir() / "thumbs").glob("*.jpg"))
+
+
+def test_list_sender_siblings_and_thumb_url(world):
+    api = world["api"]
+    a, b = confirm_all(world)
+    items = api.get("/api/photos").json()["items"]
+    assert len(items) == 1  # one row per image when no kid is selected
+    pa = items[0]
+    assert pa["id"] == a.id and pa["kid_id"] == a.kid_id
+    assert pa["thumb_url"] == f"/api/photos/{a.id}/thumb" and pa["sender_name"] == "Dana"
+    assert pa["kid_ids"] == [b.kid_id] and pa["kid_names"] == ["איתי"]
+    assert pa["kids"] == [
+        {"kid_id": a.kid_id, "kid_name": "Noa", "saved_photo_id": a.id},
+        {"kid_id": b.kid_id, "kid_name": "איתי", "saved_photo_id": b.id},
+    ]
+    only = api.get(f"/api/photos?kid_id={a.kid_id}").json()["items"]
+    assert only[0]["kid_ids"] == [b.kid_id]  # siblings ignore the kid filter
+    assert len(only[0]["kids"]) == 2
+    other = api.get(f"/api/photos?kid_id={b.kid_id}").json()["items"]
+    assert len(other) == 1 and other[0]["id"] == b.id and other[0]["kid_ids"] == [a.kid_id]
+    with dbs.get_session() as s:
+        s.get(Image, world["img"]).sender_name = "972501234567@c.us"
+    assert api.get("/api/photos").json()["items"][0]["sender_name"] is None
+    with dbs.get_session() as s:
+        s.get(Image, world["img"]).sender_name = "Dana 0501234567 Levi"
+    name = api.get("/api/photos").json()["items"][0]["sender_name"]
+    assert name and "0501234567" not in name
+
+
+def _seed_pair(world, msg: str) -> int:
+    """An image saved for both kids; returns the image id."""
+    im = seed_image(world["gid"], msg=msg)
+    for kid in (world["noa"], world["itai"]):
+        f = seed_face(im, unit(0), n=0 if kid == world["noa"] else 1)
+        assert act(world["api"], seed_match(f, kid), "confirm").status_code == 200
+    return im
+
+
+def _walk(api, qs: str, limit: int) -> list[dict]:
+    out: list[dict] = []
+    cursor = None
+    for _ in range(50):
+        url = f"/api/photos?limit={limit}{qs}" + (f"&cursor={cursor}" if cursor else "")
+        page = api.get(url).json()
+        assert len(page["items"]) <= limit
+        out += page["items"]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return out
+    raise AssertionError("pagination did not terminate")
+
+
+def test_pagination_with_siblings_straddling_pages(world):
+    api = world["api"]
+    confirm_all(world)
+    images = [world["img"]] + [_seed_pair(world, f"p{i}") for i in range(4)]
+    # a single-kid image, saved after the pairs
+    solo = seed_image(world["gid"], msg="solo")
+    assert (
+        act(api, seed_match(seed_face(solo, unit(2)), world["itai"]), "confirm").status_code == 200
+    )
+    images.append(solo)
+    for limit in (1, 2, 3, 4, 100):
+        seen = [p["image_id"] for p in _walk(api, "", limit)]
+        assert sorted(seen) == sorted(images), limit
+        assert len(set(seen)) == len(seen)
+        ids = [p["id"] for p in _walk(api, "", limit)]
+        assert ids == sorted(ids, reverse=True)
+        per_kid = _walk(api, f"&kid_id={world['itai']}", limit)
+        assert len(per_kid) == len(images) and len({p["id"] for p in per_kid}) == len(images)
+    for p in _walk(api, "", 2):
+        want = 1 if p["image_id"] == solo else 2
+        assert len(p["kids"]) == want
+        assert [k["kid_id"] for k in p["kids"]] == sorted(k["kid_id"] for k in p["kids"])
+
+
+def test_list_filters_group_and_dates_group_by_image(world):
+    api = world["api"]
+    confirm_all(world)
+    g2 = seed_group(chat="120363000000000002@g.us", name="Dance", slug="dance")
+    img2 = seed_image(g2, msg="d1")
+    for n, kid in enumerate((world["noa"], world["itai"])):
+        assert (
+            act(api, seed_match(seed_face(img2, unit(0), n=n), kid), "confirm").status_code == 200
+        )
+    assert [p["image_id"] for p in api.get(f"/api/photos?group_id={g2}").json()["items"]] == [img2]
+    assert len(api.get("/api/photos").json()["items"]) == 2
+    assert api.get("/api/photos?from=2026-05-07T00:00:00").json()["items"] == []
+    assert len(api.get("/api/photos?to=2026-05-07T00:00:00Z").json()["items"]) == 2
+
+
+def test_counts_consistent_with_grouped_list(world):
+    api = world["api"]
+    confirm_all(world)
+    _seed_pair(world, "c1")
+    counts = api.get("/api/photos/counts").json()
+    assert counts["total"] == len(_walk(api, "", 1)) == 2
+    for k in counts["kids"]:
+        assert k["count"] == len(_walk(api, f"&kid_id={k['kid_id']}", 1))
+
+
+def test_remove_for_one_kid_keeps_the_other(world):
+    api = world["api"]
+    a, b = confirm_all(world)
+    assert api.delete(f"/api/photos/{a.id}").status_code == 200
+    items = api.get("/api/photos").json()["items"]
+    assert len(items) == 1 and items[0]["id"] == b.id and items[0]["kid_id"] == b.kid_id
+    assert [k["saved_photo_id"] for k in items[0]["kids"]] == [b.id]
+    assert api.get(f"/api/photos?kid_id={a.kid_id}").json()["items"] == []
+    assert api.get("/api/photos/counts").json()["total"] == 1
+
+
+def test_counts_and_filters(world):
+    api = world["api"]
+    confirm_all(world)
+    g2 = seed_group(chat="120363000000000002@g.us", name="Dance", slug="dance")
+    img2 = seed_image(g2, msg="m2")
+    assert (
+        act(api, seed_match(seed_face(img2, unit(0)), world["noa"]), "confirm").status_code == 200
+    )
+    r = api.get("/api/photos/counts").json()
+    assert r["total"] == 2
+    assert r["kids"] == [
+        {"kid_id": world["noa"], "kid_name": "Noa", "count": 2},
+        {"kid_id": world["itai"], "kid_name": "איתי", "count": 1},
+    ]
+    r = api.get(f"/api/photos/counts?group_id={g2}").json()
+    assert r["total"] == 1 and r["kids"] == [
+        {"kid_id": world["noa"], "kid_name": "Noa", "count": 1}
+    ]
+    assert api.get("/api/photos/counts?from=2026-05-07T00:00:00").json() == {"total": 0, "kids": []}
+    assert api.get("/api/photos/counts?to=2026-05-07T00:00:00Z").json()["total"] == 2
+
+
+def test_list_photos_has_no_n_plus_one(world):
+    api = world["api"]
+    confirm_all(world)
+    n = 0
+
+    def count(*_a, **_k):
+        nonlocal n
+        n += 1
+
+    def run():
+        nonlocal n
+        n = 0
+        eng = dbs.get_engine()
+        event.listen(eng, "before_cursor_execute", count)
+        try:
+            return api.get("/api/photos")
+        finally:
+            event.remove(eng, "before_cursor_execute", count)
+
+    assert len(run().json()["items"]) == 1
+    small = n
+    for i in range(3, 9):
+        im = seed_image(world["gid"], msg=f"m{i}")
+        assert (
+            act(api, seed_match(seed_face(im, unit(0)), world["noa"]), "confirm").status_code == 200
+        )
+    assert len(run().json()["items"]) == 7
+    assert n == small
+    _seed_pair(world, "extra")  # sibling rows add no queries
+    assert len(run().json()["items"]) == 8
+    assert n == small

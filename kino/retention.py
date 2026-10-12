@@ -148,6 +148,27 @@ def purge_faces(s: Session, days: int, now: datetime) -> tuple[int, list[str]]:
         s.flush()
 
 
+TMP_THUMB_MAX_AGE = timedelta(hours=1)
+
+
+def purge_stale_thumb_tmp(data_dir: Path, now: datetime) -> int:
+    """Delete ``.tmp-*`` files in the thumbs dir left behind by a crashed write."""
+    base = data_dir / "thumbs"
+    if not base.is_dir():
+        return 0
+    cutoff = now.replace(tzinfo=UTC).timestamp() - TMP_THUMB_MAX_AGE.total_seconds()
+    count = 0
+    for p in base.glob(".tmp-*"):
+        try:
+            safe_join(base, p.name)
+            if p.is_file() and not p.is_symlink() and p.stat().st_mtime < cutoff:
+                p.unlink()
+                count += 1
+        except (ValueError, OSError):
+            continue
+    return count
+
+
 def run_retention(settings: Settings | None = None, now: datetime | None = None) -> RetentionResult:
     st = settings or get_settings()
     now = now or _utcnow()
@@ -160,6 +181,7 @@ def run_retention(settings: Settings | None = None, now: datetime | None = None)
     result.raw_files = sum(_unlink(st.data_dir / "raw", p) for p in raw_paths)
     result.face_crops = sum(_unlink(st.data_dir / "crops", p) for p in crop_paths)
     result.face_embeddings = face_count
+    purge_stale_thumb_tmp(st.data_dir, now)
     if raw_paths or face_count:
         logger.info(
             "retention: {} raw file(s), {} face embedding(s), {} crop(s) removed",
