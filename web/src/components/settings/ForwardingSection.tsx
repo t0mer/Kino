@@ -61,8 +61,8 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
 
   const sample = sampleCaption(kids.map((k) => k.display_name));
   const unknown = unknownPlaceholders(form.caption_template);
-  const emptyCaption = form.caption_template.trim() === "";
-  const tooLong = form.caption_template.length > CAPTION_MAX;
+  const emptyCaption = form.send_caption && form.caption_template.trim() === "";
+  const tooLong = form.send_caption && form.caption_template.length > CAPTION_MAX;
   const captionError =
     (errors && fieldError(errors, "caption_template")) ||
     (emptyCaption ? "The caption cannot be empty" : tooLong ? `At most ${CAPTION_MAX} characters` : undefined);
@@ -144,6 +144,15 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
         )}
       </div>
 
+      <label className="flex items-center justify-between gap-3">
+        <span className="text-sm">Send photos with a caption</span>
+        <Switch
+          aria-label="Send photos with a caption"
+          checked={form.send_caption}
+          onCheckedChange={(v) => set({ send_caption: v })}
+        />
+      </label>
+
       <Field
         id="fwd-caption"
         label="Caption template"
@@ -154,6 +163,7 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
           id="fwd-caption"
           dir="auto"
           rows={2}
+          disabled={!form.send_caption}
           value={form.caption_template}
           aria-invalid={captionError ? true : undefined}
           aria-describedby={captionError ? "fwd-caption-error" : undefined}
@@ -168,7 +178,7 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
       <div className="rounded-md bg-muted px-3 py-2 text-sm">
         <p className="mb-1 text-xs font-medium text-muted-foreground">Preview</p>
         <p dir="auto" data-testid="caption-preview" className="whitespace-pre-wrap break-words">
-          {previewCaption(form.caption_template, sample)}
+          {form.send_caption ? previewCaption(form.caption_template, sample) : "(photo is sent without a caption)"}
         </p>
       </div>
 
