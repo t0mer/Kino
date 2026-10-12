@@ -170,7 +170,7 @@ class OpenWAClient:
                 "chatId": chat_id,
                 "base64": base64.b64encode(data).decode("ascii"),
                 "mimetype": mimetype,
-                "caption": caption,
+                **({"caption": caption} if caption else {}),
             },
         )
         return self._message_id(res, "send-image")
