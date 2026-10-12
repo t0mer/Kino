@@ -125,3 +125,38 @@ async def test_lists_are_paged_by_offset(what):
     items = await (c.list_groups() if what == "groups" else c.list_chats())
     assert len(items) == 1003 and items[-1]["id"] == "1002@g.us"
     assert calls == [(1000, 0), (1000, 1000)]
+
+
+async def test_list_chat_messages_filters_images_and_age():
+    from datetime import datetime
+
+    seen = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["path"] = req.url.path
+        seen["q"] = dict(req.url.params)
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "a", "type": "image", "timestamp": 1_700_000_100},
+                {"id": "b", "type": "text", "timestamp": 1_700_000_100},
+                {"id": "c", "type": "image", "timestamp": 1_600_000_000},
+                {"id": "d", "type": "image"},
+                "junk",
+            ],
+        )
+
+    msgs = await make(h).list_chat_messages("1@g.us", since=datetime(2023, 11, 14))
+    assert [m["id"] for m in msgs] == ["a"]
+    assert seen["path"] == "/api/sessions/sess/messages/1@g.us/history"
+    assert seen["q"] == {"limit": "2000", "includeMedia": "false", "deep": "true"}
+
+
+async def test_list_chat_messages_error_is_sanitised():
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="secret body")
+
+    with pytest.raises(OpenWAError) as ei:
+        await make(h).list_chat_messages("972501234567@g.us")
+    assert "secret" not in str(ei.value)
+    assert "972501234567" not in str(ei.value)
