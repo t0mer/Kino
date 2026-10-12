@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from kino import health
 from kino.api.deps import protected_router
-from kino.api.schemas import KidCreate, KidDeleted, KidOut, KidUpdate
+from kino.api.schemas import KidCreate, KidDeleted, KidHealthOut, KidOut, KidUpdate, OutlierOut
 from kino.config import Settings
 from kino.db.session import get_session
 from kino.services import kids as svc
@@ -46,6 +47,25 @@ def _one(request: Request, kid_id: int) -> KidOut:
 def list_kids(request: Request) -> list[KidOut]:
     with get_session() as s:
         return [_out(k) for k in svc.summarize_kids(s, _settings(request).timezone)]
+
+
+@router.get("/{kid_id}/health", response_model=KidHealthOut)
+def kid_health(kid_id: int) -> KidHealthOut:
+    """Live outlier check of the kid's active references (CLAUDE.md section 11.6)."""
+    with get_session() as s:
+        svc.get_kid(s, kid_id)
+        h = health.evaluate_kid(s, kid_id)
+    return KidHealthOut(
+        kid_id=h.kid_id,
+        active_refs=h.active_refs,
+        evaluated=h.evaluated,
+        mean_similarity=h.mean_similarity,
+        threshold=h.threshold,
+        outliers=[
+            OutlierOut(reference_id=o.reference_id, similarity=o.similarity, reason=o.reason)
+            for o in h.outliers
+        ],
+    )
 
 
 @router.post("", response_model=KidOut, status_code=201)

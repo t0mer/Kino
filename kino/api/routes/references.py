@@ -50,6 +50,8 @@ def _out(r: ReferenceFace) -> ReferenceOut:
         weight=r.weight,
         yaw=r.yaw,
         crop_url=f"/api/references/{r.id}/crop" if r.crop_path else None,
+        outlier=r.outlier,
+        outlier_reason=r.outlier_reason,
     )
 
 

@@ -144,4 +144,16 @@ describe("buildUrl", () => {
     );
     expect(buildUrl("/api/x")).toBe("/api/x");
   });
+
+  it("blob() returns the body and a 401 triggers the global handler", async () => {
+    responder = () => new Response("PNG", { status: 200, headers: { "Content-Type": "image/png" } });
+    const b = await api.blob("/api/images/1/file");
+    expect(b).toBeInstanceOf(Blob);
+    expect(b.size).toBe(3);
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    responder = () => jsonResponse(401, { detail: "no" });
+    await expect(api.blob("/api/images/1/file")).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
 });

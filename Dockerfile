@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1
 
-# --- M2 placeholder: web frontend build -------------------------------------
-# FROM --platform=$BUILDPLATFORM node:22-alpine AS web
-# WORKDIR /web
-# COPY web/package*.json ./
-# RUN npm ci
-# COPY web/ ./
-# RUN npm run build        # outputs /web/dist, copied into the runtime stage below
-# -----------------------------------------------------------------------------
+# Web UI: static JS/CSS, built once on the native build platform (never under QEMU).
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build        # outputs /web/dist, copied into the runtime stage below
 
 FROM python:3.12-slim AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
@@ -29,7 +28,8 @@ ENV PYTHONUNBUFFERED=1 \
 # on python:3.12-slim (verified by importing cv2/onnxruntime/pillow-heif and running cv2 ops).
 
 COPY --from=builder /opt/venv /opt/venv
-# M2: COPY --from=web /web/dist /opt/venv/share/kino/web
+# The SPA served by `kino api` (KINO_WEB_DIR defaults to this path).
+COPY --from=web /web/dist /opt/venv/share/kino/web
 
 RUN useradd --create-home --uid 1000 kino \
     && mkdir -p /data/photos \

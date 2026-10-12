@@ -17,6 +17,7 @@ from kino.db.session import get_session
 from kino.forward import validate_destination
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.services import forwards as svc
+from kino.services.images import mask_ids, sanitize_error
 
 router = protected_router(tags=["forwards"])
 
@@ -28,12 +29,12 @@ def _out(f: Forward) -> ForwardOut:
     return ForwardOut(
         id=f.id,
         image_id=f.image_id,
-        dest_chat_id=f.dest_chat_id,
+        dest_chat_id=mask_ids(f.dest_chat_id) or "",
         kid_ids=list(f.kid_ids or []),
-        caption=f.caption,
+        caption=mask_ids(f.caption),
         status=f.status,
         attempts=f.attempts,
-        last_error=f.last_error,
+        last_error=sanitize_error(f.last_error),
         created_at=f.created_at,
         sent_at=f.sent_at,
         next_attempt_at=f.next_attempt_at,

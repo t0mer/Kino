@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("/data")
     photos_dir: Path = Path("/data/photos")
+    # Built web UI (index.html + assets/). The Docker image ships it here; when the directory
+    # is missing (dev, tests) the API runs without serving the UI.
+    web_dir: Path = Path("/opt/venv/share/kino/web")
     strip_gps: bool = True
     # IANA zone used for photo folders/filenames and EXIF local time (sent_at is stored in UTC).
     timezone: str = "UTC"
@@ -93,6 +96,7 @@ class Settings(BaseSettings):
     digest_cron: str = "0 20 * * *"
     apprise_urls: str | None = None
     forward_rate_per_min: int = Field(6, ge=1)
+    backfill_delay_seconds: float = Field(1.0, ge=0)  # pause after each fetched history photo
     log_level: str = "INFO"
     log_json: bool = False
 

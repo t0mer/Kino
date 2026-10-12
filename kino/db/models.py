@@ -38,6 +38,7 @@ DECIDED_BY = ("system", "user")
 REF_SOURCE = ("upload", "cluster", "review", "auto")
 REF_STATUS = ("active", "retired")
 CLUSTER_LABEL = ("unlabeled", "labeled", "ignored")
+JOB_STATUS = ("queued", "running", "done", "failed")
 FORWARD_STATUS = ("pending", "sent", "failed", "cancelled")
 
 
@@ -185,6 +186,11 @@ class ReferenceFace(Base):
     )
     # Estimated head yaw in degrees (coverage meter); None for references made before 0006.
     yaw: Mapped[float | None] = mapped_column(Float)
+    # Gallery health verdict, refreshed nightly (kino.health).
+    outlier: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    outlier_reason: Mapped[str | None] = mapped_column(String(32))
 
 
 class TempFace(Base):
@@ -262,6 +268,8 @@ class Digest(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     pending_count: Mapped[int] = mapped_column(Integer, nullable=False)
     dest_chat_id: Mapped[str | None] = mapped_column(String)
+    # sha256 of the pending review match ids this digest reported (change detection).
+    pending_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class Setting(Base):
@@ -269,3 +277,26 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[Any] = mapped_column(JSON)
+
+
+class Job(Base):
+    """A background job (backfill, ...) whose progress the UI polls (CLAUDE.md section 12)."""
+
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_kind_subject_status", "kind", "subject_id", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_id: Mapped[int | None] = mapped_column(Integer)  # e.g. the group being backfilled
+    status: Mapped[str] = mapped_column(
+        _enum("job_status", *JOB_STATUS), default="queued", nullable=False
+    )
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    errors: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)

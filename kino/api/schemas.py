@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from huey import crontab
@@ -90,6 +90,26 @@ class GroupOut(BaseModel):
 class GroupsRefreshed(BaseModel):
     imported: int
     total: int
+
+
+class JobOut(BaseModel):
+    id: int
+    kind: str
+    status: Literal["queued", "running", "done", "failed"]
+    group_id: int | None
+    params: dict[str, Any]
+    total: int
+    processed: int
+    skipped: int
+    errors: int
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class JobStarted(BaseModel):
+    job_id: int
 
 
 # --- settings -----------------------------------------------------------------------------
@@ -358,6 +378,8 @@ class ReferenceOut(BaseModel):
     weight: float
     yaw: float | None
     crop_url: str | None
+    outlier: bool = False
+    outlier_reason: str | None = None
 
 
 class ReferencesAdded(BaseModel):
@@ -667,3 +689,82 @@ class FlagOut(BaseModel):
     changed: bool
     match_id: int | None
     negative_id: int | None
+
+
+class ClusterCardOut(BaseModel):
+    id: int
+    size: int
+    label_status: str
+    kid_id: int | None
+    sample_crop_urls: list[str]
+    groups: list[str]
+    date_from: datetime | None
+    date_to: datetime | None
+
+
+class ClusterPageOut(BaseModel):
+    items: list[ClusterCardOut]
+    next_cursor: str | None
+
+
+class ClusterFaceOut(BaseModel):
+    face_id: int
+    crop_url: str | None
+    quality: float | None
+    size_px: float
+    group_name: str | None
+    sent_at: datetime | None
+
+
+class ClusterDetailOut(BaseModel):
+    id: int
+    size: int
+    label_status: str
+    kid_id: int | None
+    faces: list[ClusterFaceOut]
+    next_cursor: int | None
+
+
+class ClusterLabelIn(In):
+    kid_id: int
+    face_ids: list[int] | None = Field(default=None, max_length=1000)
+
+
+class ClusterLabelOut(BaseModel):
+    cluster_id: int
+    kid_id: int
+    selected: int
+    references_created: int
+    duplicates: int
+    skipped: int = 0
+    rescore: RescoreOut | None
+
+
+class ClusterIgnoreOut(BaseModel):
+    faces_deleted: int
+    files_removed: int
+    faces_skipped: int = 0
+
+
+class ClusterSplitOut(BaseModel):
+    cluster_ids: list[int]
+
+
+class ClusterRunOut(BaseModel):
+    status: str
+    job_id: str | None
+
+
+class OutlierOut(BaseModel):
+    reference_id: int
+    similarity: float
+    reason: str
+
+
+class KidHealthOut(BaseModel):
+    kid_id: int
+    active_refs: int
+    evaluated: bool  # False when the kid has fewer than 5 active references
+    mean_similarity: float | None
+    threshold: float | None
+    outliers: list[OutlierOut]

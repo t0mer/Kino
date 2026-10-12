@@ -25,11 +25,11 @@ services:
   kino-api:
     <<: *kino
     command: ["api"]
-    # Loopback only by default. M1 has no UI login: the webhook is HMAC-protected and
-    # /metrics answers 403 unless KINO_METRICS_PUBLIC=true, but nothing else is meant
-    # to be reachable from the network. To expose Kino, put a Cloudflare Tunnel or a
-    # reverse proxy in front of it (and keep /api/webhook/openwa unrouted there), or
-    # change this to "8080:8080" on a trusted LAN only.
+    # Serves the web UI and the API on port 8080. Loopback only by default: the first
+    # visit shows the one-time admin password setup page, so set the password before
+    # exposing it. Then put a Cloudflare Tunnel or a reverse proxy in front of it (and
+    # keep /api/webhook/openwa unrouted there), or change this to "8080:8080" on a
+    # trusted LAN only.
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

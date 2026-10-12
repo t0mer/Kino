@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -21,6 +22,7 @@ class OpenWAError(Exception):
         super().__init__(f"OpenWA {what} (status={status}, path={path})")
 
 
+HISTORY_LIMIT = 2000  # deep window (spec: 2000 ceiling with deep=true)
 PAGE_SIZE = 1000  # list endpoints are paged by limit/offset
 
 _ID_RE = re.compile(r"(\d{4})\d{2,}(\d{3})")
@@ -108,6 +110,44 @@ class OpenWAClient:
     async def get_media(self, chat_id: str, message_id: str) -> bytes:
         path = self._p(f"messages/{quote(chat_id, safe='@')}/{quote(message_id, safe='')}/media")
         return (await self._request("GET", path)).content
+
+    async def list_chat_messages(
+        self,
+        chat_id: str,
+        *,
+        since: datetime | None = None,
+        limit: int = HISTORY_LIMIT,
+        image_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Recent messages of a chat, as tolerant dicts (newest or oldest first: not relied on).
+
+        Live endpoint (OpenWA 0.24.0 spec): ``GET /sessions/{sid}/messages/{chatId}/history``
+        with ``limit`` (100 max, 2000 with ``deep=true``), ``includeMedia`` (default false, so
+        media is fetched per message with :meth:`get_media`) and no cursor: the whole window
+        arrives in one response. ``since`` (naive UTC) and ``image_only`` filter client-side.
+        """
+        path = self._p(f"messages/{quote(chat_id, safe='@')}/history")
+        params: dict[str, Any] = {"limit": limit, "includeMedia": "false"}
+        if limit > 100:
+            params["deep"] = "true"
+        res = await self._json("GET", path, params=params)
+        if isinstance(res, dict):
+            res = res.get("messages") or res.get("data") or []
+        if not isinstance(res, list):
+            failure = OpenWAError("unexpected history response", None, mask_path(path))
+            raise failure
+        floor = since.replace(tzinfo=UTC).timestamp() if since is not None else None
+        out: list[dict[str, Any]] = []
+        for m in res:
+            if not isinstance(m, dict):
+                continue
+            if image_only and m.get("type") != "image":
+                continue
+            ts = m.get("timestamp")
+            if floor is not None and (not isinstance(ts, int | float) or ts < floor):
+                continue
+            out.append(m)
+        return out
 
     def _message_id(self, res: Any, what: str) -> str:
         try:

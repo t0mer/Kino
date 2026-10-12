@@ -33,7 +33,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from kino import metrics
+from kino import jobs, metrics
 from kino.config import Settings, get_settings
 from kino.db.models import Face, Group, Image, Kid, Match, ReferenceFace, SavedPhoto, Setting
 from kino.db.session import embedding_to_blob, get_session
@@ -149,6 +149,10 @@ def get_pipeline() -> Pipeline:
 
 @huey.on_startup()  # type: ignore[untyped-decorator]
 def _warm_pipeline() -> None:
+    try:
+        jobs.fail_interrupted_jobs()
+    except Exception as e:
+        logger.error("interrupted-job cleanup failed: {}", type(e).__name__)
     try:
         get_pipeline()
     except Exception as e:  # first job retries the load and fails that image cleanly
@@ -762,3 +766,72 @@ def purge_temp_faces_task() -> None:
         purge_expired_temp_faces()
     except Exception as e:
         logger.error("temp face purge failed: {}", type(e).__name__)
+
+
+def cluster_unknown_faces() -> None:
+    """Rebuild the unlabeled "Who is this?" clusters (CLAUDE.md §10)."""
+    from kino.services.clusters import run_clustering
+
+    run_clustering()
+
+
+@huey.task()  # type: ignore[untyped-decorator]
+def cluster_unknown_faces_task() -> None:
+    """On-demand run (POST /api/clusters/run); never raises into huey."""
+    try:
+        cluster_unknown_faces()
+    except Exception as e:
+        logger.error("clustering failed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(hour="3", minute="30"))  # type: ignore[untyped-decorator]
+def nightly_cluster_unknown_faces() -> None:
+    try:
+        cluster_unknown_faces()
+    except Exception as e:
+        logger.error("nightly clustering failed: {}", type(e).__name__)
+
+
+@huey.task()  # type: ignore[untyped-decorator]
+def backfill_group_task(job_id: int) -> None:
+    """Group backfill (POST /api/groups/{id}/backfill); the job row carries the outcome."""
+    from kino.backfill import backfill_group
+
+    try:
+        backfill_group(job_id)
+    except Exception as e:
+        logger.error("backfill task crashed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(minute="17"))  # type: ignore[untyped-decorator]
+def retention_cleanup() -> None:
+    """Hourly retention sweep (CLAUDE.md section 10); never raises into huey."""
+    from kino.retention import run_retention
+
+    try:
+        run_retention()
+    except Exception as e:
+        logger.error("retention cleanup failed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(minute="*"))  # type: ignore[untyped-decorator]
+def review_digest() -> None:
+    """Per-minute tick; sends the review digest when the configured cron expression matches
+    (see kino.digest). Never raises into huey."""
+    from kino.digest import run_digest_if_due
+
+    try:
+        run_digest_if_due()
+    except Exception as e:
+        logger.error("review digest failed: {}", type(e).__name__)
+
+
+@huey.periodic_task(crontab(hour="4", minute="10"))  # type: ignore[untyped-decorator]
+def gallery_health() -> None:
+    """Nightly outlier flagging of reference faces (CLAUDE.md section 10)."""
+    from kino.health import run_gallery_health
+
+    try:
+        run_gallery_health()
+    except Exception as e:
+        logger.error("gallery health failed: {}", type(e).__name__)
