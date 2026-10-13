@@ -1,0 +1,169 @@
+1
+00:00:00,400 --> 00:00:01,156
+Hi, I'm Kino.
+
+2
+00:00:01,156 --> 00:00:04,764
+I watch your WhatsApp group
+photos and find your kids in them,
+
+3
+00:00:04,764 --> 00:00:06,963
+all on your own machine.
+
+4
+00:00:06,971 --> 00:00:12,311
+Faces are detected with SCRFD and matched
+with AuraFace, locally on the CPU.
+
+5
+00:00:12,311 --> 00:00:17,822
+Nothing leaves your machine except
+the photo you ask me to forward.
+
+6
+00:00:18,662 --> 00:00:21,164
+On first run, choose the admin password.
+
+7
+00:00:21,164 --> 00:00:26,896
+Do this from your local network,
+before exposing Kino anywhere.
+
+8
+00:00:26,903 --> 00:00:28,479
+Next, connect OpenWA.
+
+9
+00:00:28,479 --> 00:00:30,431
+Enter its URL and API key,
+
+10
+00:00:30,431 --> 00:00:37,021
+then use Generate for the webhook
+secret, and pick the session.
+
+11
+00:00:37,026 --> 00:00:40,844
+The phone number is masked, and
+I register the webhook for you.
+
+12
+00:00:40,844 --> 00:00:44,400
+Now I can receive group photos.
+
+13
+00:00:44,406 --> 00:00:48,286
+On the Kids page, add each kid
+and watch the coverage meter.
+
+14
+00:00:48,286 --> 00:00:58,043
+Auto-save is off by default, so
+nothing is saved until you decide.
+
+15
+00:00:58,524 --> 00:01:01,679
+Matches I am not sure about
+wait in the Review queue.
+
+16
+00:01:01,679 --> 00:01:07,007
+Confirm, reject, or tell me it's someone
+else, and I learn from each answer.
+
+17
+00:01:07,013 --> 00:01:09,663
+References are the
+faces I compare against.
+
+18
+00:01:09,663 --> 00:01:14,754
+Outliers are flagged, so you can
+retire the ones that look wrong.
+
+19
+00:01:14,765 --> 00:01:18,608
+The Gallery shows the photos I
+identified, grouped by month.
+
+20
+00:01:18,608 --> 00:01:23,550
+Open one to see its kids and
+group, or remove it from a kid.
+
+21
+00:01:23,557 --> 00:01:27,677
+On Groups, choose which chats to
+watch and map each one to its kids.
+
+22
+00:01:27,677 --> 00:01:33,459
+You can also backfill recent history, so
+I can start with photos you already have.
+
+23
+00:01:33,467 --> 00:01:36,276
+Activity shows how each
+image was processed,
+
+24
+00:01:36,276 --> 00:01:39,531
+including every face it
+found and the score it got.
+
+25
+00:01:39,531 --> 00:01:43,590
+It is the place to look
+when a photo was not saved.
+
+26
+00:01:43,597 --> 00:01:46,626
+The Test page lets you
+move the threshold sliders
+
+27
+00:01:46,626 --> 00:01:51,844
+and preview the result
+before enabling auto-save.
+
+28
+00:01:51,850 --> 00:01:54,473
+Who is this? groups
+unknown faces together.
+
+29
+00:01:54,473 --> 00:01:59,848
+Pick a group, choose the kid, and
+those faces become references.
+
+30
+00:01:59,856 --> 00:02:02,827
+In Settings, set where
+saved photos are forwarded,
+
+31
+00:02:02,827 --> 00:02:05,205
+and turn on sending them with a caption.
+
+32
+00:02:05,205 --> 00:02:10,028
+You can also choose the chat and
+schedule for the review digest.
+
+33
+00:02:10,033 --> 00:02:12,825
+Use the toggle to switch
+between light and dark.
+
+34
+00:02:12,825 --> 00:02:20,157
+The layout also fits a phone screen.
+
+35
+00:02:20,162 --> 00:02:21,075
+That's the tour.
+
+36
+00:02:21,075 --> 00:02:26,716
+Thanks for watching!

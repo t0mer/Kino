@@ -1,0 +1,82 @@
+[
+  {
+    "id": "intro",
+    "caption": "Hi, I'm Kino. I watch your WhatsApp group photos and find your kids in them, all on your own machine.",
+    "say": "Hi, I'm Kino. I watch your WhatsApp group photos and find your kids in them, all on your own machine."
+  },
+  {
+    "id": "local",
+    "caption": "Faces are detected with SCRFD and matched with AuraFace, locally on the CPU. Nothing leaves your machine except the photo you ask me to forward.",
+    "say": "Faces are detected with SCRFD and matched with AuraFace, locally on the CPU. Nothing leaves your machine except the photo you ask me to forward."
+  },
+  {
+    "id": "setup",
+    "caption": "On first run, choose the admin password. Do this from your local network, before exposing Kino anywhere.",
+    "say": "On first run, choose the admin password. Do this from your local network, before exposing Kino anywhere."
+  },
+  {
+    "id": "openwa",
+    "caption": "Next, connect OpenWA. Enter its URL and API key, then use Generate for the webhook secret, and pick the session.",
+    "say": "Next, connect OpenWA. Enter its URL and API key, then use Generate for the webhook secret, and pick the session."
+  },
+  {
+    "id": "webhook",
+    "caption": "The phone number is masked, and I register the webhook for you. Now I can receive group photos.",
+    "say": "The phone number is masked, and I register the webhook for you. Now I can receive group photos."
+  },
+  {
+    "id": "kids",
+    "caption": "On the Kids page, add each kid and watch the coverage meter. Auto-save is off by default, so nothing is saved until you decide.",
+    "say": "On the Kids page, add each kid and watch the coverage meter. Auto-save is off by default, so nothing is saved until you decide."
+  },
+  {
+    "id": "review",
+    "caption": "Matches I am not sure about wait in the Review queue. Confirm, reject, or tell me it's someone else, and I learn from each answer.",
+    "say": "Matches I am not sure about wait in the Review queue. Confirm, reject, or tell me it's someone else, and I learn from each answer."
+  },
+  {
+    "id": "references",
+    "caption": "References are the faces I compare against. Outliers are flagged, so you can retire the ones that look wrong.",
+    "say": "References are the faces I compare against. Outliers are flagged, so you can retire the ones that look wrong."
+  },
+  {
+    "id": "gallery",
+    "caption": "The Gallery shows the photos I identified, grouped by month. Open one to see its kids and group, or remove it from a kid.",
+    "say": "The Gallery shows the photos I identified, grouped by month. Open one to see its kids and group, or remove it from a kid."
+  },
+  {
+    "id": "groups",
+    "caption": "On Groups, choose which chats to watch and map each one to its kids. You can also backfill recent history, so I can start with photos you already have.",
+    "say": "On Groups, choose which chats to watch and map each one to its kids. You can also backfill recent history, so I can start with photos you already have."
+  },
+  {
+    "id": "activity",
+    "caption": "Activity shows how each image was processed, including every face it found and the score it got. It is the place to look when a photo was not saved.",
+    "say": "Activity shows how each image was processed, including every face it found and the score it got. It is the place to look when a photo was not saved."
+  },
+  {
+    "id": "test",
+    "caption": "The Test page lets you move the threshold sliders and preview the result before enabling auto-save.",
+    "say": "The Test page lets you move the threshold sliders and preview the result before enabling auto-save."
+  },
+  {
+    "id": "clusters",
+    "caption": "Who is this? groups unknown faces together. Pick a group, choose the kid, and those faces become references.",
+    "say": "Who is this? groups unknown faces together. Pick a group, choose the kid, and those faces become references."
+  },
+  {
+    "id": "settings",
+    "caption": "In Settings, set where saved photos are forwarded, and turn on sending them with a caption. You can also choose the chat and schedule for the review digest.",
+    "say": "In Settings, set where saved photos are forwarded, and turn on sending them with a caption. You can also choose the chat and schedule for the review digest."
+  },
+  {
+    "id": "theme",
+    "caption": "Use the toggle to switch between light and dark. The layout also fits a phone screen.",
+    "say": "Use the toggle to switch between light and dark. The layout also fits a phone screen."
+  },
+  {
+    "id": "outro",
+    "caption": "That's the tour. Thanks for watching!",
+    "say": "That's the tour. Thanks for watching!"
+  }
+]

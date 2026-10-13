@@ -4,12 +4,13 @@ Kino is a self-hosted service that listens to WhatsApp group messages through [O
 
 Named after the floating recording drones of Stargate Universe.
 
-<!-- TODO: re-record demo to cover enroll, review, references, gallery -->
-<video src="https://raw.githubusercontent.com/t0mer/Kino/main/assets/demo/demo.mp4" controls muted width="100%"></video>
+<video src="https://raw.githubusercontent.com/t0mer/Kino/main/assets/demo/demo.mp4" controls width="100%"></video>
 
 [![Demo](assets/demo/demo-poster.png)](https://github.com/t0mer/Kino/blob/main/assets/demo/demo.mp4)
 
-[Watch the demo video (MP4, 1 min 28 s)](https://github.com/t0mer/Kino/blob/main/assets/demo/demo.mp4)
+[Watch the demo video (MP4, 2 min 27 s)](https://github.com/t0mer/Kino/blob/main/assets/demo/demo.mp4)
+
+The demo is a narrated walkthrough (turn the sound on): Kino, the amber-ring eye, explains each step from first run and the OpenWA setup wizard through kids, review, references, gallery, groups, activity, test, clusters and settings to the light and dark themes. Captions are burned in, and a sidecar file with the same text is at [`assets/demo/demo.srt`](assets/demo/demo.srt). It was recorded against a throwaway instance with fake data only.
 
 ## Contents
 
@@ -491,6 +492,23 @@ npm run build      # type-check and build into web/dist
 ```
 
 `web/e2e/smoke.mjs` runs a real-backend smoke test and `web/e2e/screenshots.mjs` regenerates the README screenshots with every `/api` call mocked (both need Playwright, resolved through `PLAYWRIGHT_REQUIRE_FROM`; see the header of each script).
+
+### Re-recording the demo
+
+The narrated demo (`assets/demo/demo.mp4`, `demo-poster.png`, `demo.srt`) is produced by scripts in `demo/`. It needs Python 3.12, Node 22, the repo `.venv` from the install step below, Playwright with Chromium (resolved through `PLAYWRIGHT_REQUIRE_FROM`, see the header of `demo/record.mjs`), `ffmpeg` and `ffprobe`. The narration and captions come from `demo/script.json`. The recorder starts a throwaway Kino instance on a free local port with a temporary data directory and a fake local OpenWA, so it never contacts a real OpenWA or sends a message.
+
+```bash
+uv venv && uv pip install -e ".[dev]"   # repo .venv: record.mjs runs .venv/bin/kino for the throwaway instance
+python3.12 -m venv demo/.venv && demo/.venv/bin/pip install -r demo/requirements.txt
+# download the Kokoro model files into demo/models/ (URLs and checksums: demo/MODELS.md)
+W=/path/to/scratch-dir            # work files; default is $DEMO_WORK, then demo/work (gitignored)
+demo/.venv/bin/python demo/tts.py --out $W/clips        # voice clips and mouth envelopes
+(cd web && npm ci && npm run build)
+node demo/record.mjs --work $W                           # raw.webm, timeline.json
+demo/.venv/bin/python demo/build.py --work $W            # music, mix, encode, SRT, poster
+```
+
+`build.py` writes `demo.mp4`, `demo-poster.png` and `demo.srt` to `assets/demo/` and fails if the MP4 exceeds 5 MB, trying CRF 20 to 28 first. See `demo/MUSIC.md` for the in-house music bed.
 
 Releases: run the "Docker Build" workflow (manual); it publishes `techblog/kino:latest` and `techblog/kino:<YYYY.M.PATCH>` for linux/amd64 and linux/arm64, then tags the commit.
 
