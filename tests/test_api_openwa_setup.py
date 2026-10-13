@@ -55,6 +55,8 @@ class FakeOpenWA:
             return httpx.Response(200, json={"id": path.rsplit("/", 1)[1]})
         if path.endswith("/chats"):
             return httpx.Response(200, json=[])
+        if path.endswith("/messages/send-image"):
+            return httpx.Response(201, json={"messageId": "true_x_ID"})
         return httpx.Response(404)
 
 
@@ -94,6 +96,9 @@ def test_status_when_nothing_is_set(api, owa):
         "webhook_secret_pending": False,
         "webhook_url": HOOK,
         "env_overrides": [],
+        "outgoing_session_id": None,
+        "outgoing_session_name": None,
+        "same_as_incoming": True,
     }
 
 
@@ -257,11 +262,15 @@ def test_reconnect_drops_the_cached_client(api, owa):
 def test_setup_routes_need_auth_and_csrf(api, owa):
     del api.headers["X-CSRF-Token"]
     assert api.post("/api/openwa/setup/connect", json={}).status_code == 403
+    r = api.put("/api/openwa/setup/outgoing-session", json={"session_id": None})
+    assert r.status_code == 403
     api.cookies.delete("kino_session")
     for method, path in [
         ("GET", "/api/openwa/setup/status"),
         ("POST", "/api/openwa/setup/connect"),
         ("POST", "/api/openwa/setup/session"),
+        ("GET", "/api/openwa/setup/sessions"),
+        ("PUT", "/api/openwa/setup/outgoing-session"),
     ]:
         assert api.request(method, path, json={}).status_code == 401
 
@@ -494,3 +503,136 @@ def test_webhook_cfg_loaded_before_a_reset_is_not_cached(api, owa):
     asyncio.run(deps.reset_openwa(app))
     client = deps.current_openwa(app, stale, generation=generation)
     assert client is not None and "openwa-new" in str(client._http.base_url)
+
+
+# --- separate outgoing session ----------------------------------------------------------------
+
+DEST = "972500000001@c.us"
+OUTGOING = "/api/openwa/setup/outgoing-session"
+
+
+def sent_paths(owa) -> list[str]:
+    return [p for _, p, _ in owa.calls if "/sessions/" in p]
+
+
+def test_sessions_list_needs_a_connection(api, owa):
+    r = api.get("/api/openwa/setup/sessions")
+    assert r.status_code == 409 and "Connect to OpenWA first" in r.json()["detail"]
+    assert owa.calls == []
+
+
+def test_sessions_list_masks_phone_and_hides_secrets(api, owa):
+    configured(api, owa)
+    r = api.get("/api/openwa/setup/sessions")
+    assert r.status_code == 200, r.text
+    assert r.json() == [
+        {"id": "main", "name": "Main phone", "status": "ready", "phone_masked": "9725****567"},
+        {"id": "spare", "name": "טלפון", "status": "qr", "phone_masked": None},
+    ]
+    assert PHONE not in r.text and API_KEY not in r.text and SECRET not in r.text
+
+
+def test_sessions_list_openwa_down(api, owa):
+    configured(api, owa)
+    owa.down = True
+    assert api.get("/api/openwa/setup/sessions").status_code == 502
+
+
+def test_outgoing_session_saved_and_reported(api, owa):
+    configured(api, owa)
+    calls = len(owa.calls)
+    r = api.put(OUTGOING, json={"session_id": "spare"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "outgoing_session_id": "spare",
+        "outgoing_session_name": "טלפון",
+        "same_as_incoming": False,
+    }
+    s = status(api)
+    assert (s["session_id"], s["session_name"]) == ("main", "Main phone")  # incoming untouched
+    assert (s["outgoing_session_id"], s["outgoing_session_name"]) == ("spare", "טלפון")
+    assert s["same_as_incoming"] is False
+    # only the session list was fetched: no webhook registered or changed
+    assert [(m, p) for m, p, _ in owa.calls[calls:]] == [("GET", "/api/sessions")]
+    assert API_KEY not in r.text and SECRET not in r.text
+
+
+@pytest.mark.parametrize(
+    "body", [{"session_id": None}, {"session_id": ""}, {"session_id": "  "}, {}]
+)
+def test_outgoing_session_cleared(api, owa, body):
+    configured(api, owa)
+    api.put(OUTGOING, json={"session_id": "spare"})
+    calls = len(owa.calls)
+    r = api.put(OUTGOING, json=body)
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "outgoing_session_id": "main",
+        "outgoing_session_name": "Main phone",
+        "same_as_incoming": True,
+    }
+    assert status(api)["same_as_incoming"] is True
+    assert owa.calls[calls:] == []  # clearing needs no OpenWA call
+
+
+def test_outgoing_session_unknown_id_rejected(api, owa):
+    configured(api, owa)
+    r = api.put(OUTGOING, json={"session_id": "gone"})
+    assert r.status_code == 404 and "no longer exists" in r.json()["detail"]
+    assert status(api)["same_as_incoming"] is True
+
+
+def test_outgoing_session_needs_a_connection(api, owa):
+    r = api.put(OUTGOING, json={"session_id": "spare"})
+    assert r.status_code == 409
+
+
+def test_outgoing_session_invalid_body_does_not_echo(api, owa):
+    r = api.put(OUTGOING, json={"session_id": "has space"})
+    assert r.status_code == 422 and "has space" not in r.text
+
+
+def test_pick_session_does_not_touch_outgoing(api, owa):
+    configured(api, owa)
+    api.put(OUTGOING, json={"session_id": "spare"})
+    api.post("/api/openwa/setup/session", json={"session_id": "main"})
+    assert status(api)["outgoing_session_id"] == "spare"
+
+
+def test_reconnecting_to_another_url_drops_the_outgoing_session(api, owa):
+    configured(api, owa)
+    api.put(OUTGOING, json={"session_id": "spare"})
+    connect(api, url="http://openwa-b:2785", api_key=API_KEY)
+    s = status(api)
+    assert s["same_as_incoming"] is True and s["outgoing_session_id"] is None
+
+
+def test_chats_and_test_photo_use_the_outgoing_session(api, owa):
+    configured(api, owa)
+    assert api.get("/api/openwa/chats").status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/main/chats"  # unchanged without an outgoing one
+    assert api.post("/api/forward/test", json={"chat_id": DEST}).status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/main/messages/send-image"
+
+    api.put(OUTGOING, json={"session_id": "spare"})
+    assert api.get("/api/openwa/chats").status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/spare/chats"
+    api.app.state.forward_test_at = None
+    assert api.post("/api/forward/test", json={"chat_id": DEST}).status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/spare/messages/send-image"
+
+    api.put(OUTGOING, json={"session_id": None})  # back to the incoming session
+    assert api.get("/api/openwa/chats").status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/main/chats"
+
+
+def test_incoming_users_stay_on_the_incoming_session(api, owa):
+    configured(api, owa)
+    api.put(OUTGOING, json={"session_id": "spare"})
+    r = api.get("/api/openwa/webhook")
+    assert r.status_code == 200
+    assert owa.calls[-1][1] == "/api/sessions/main/webhooks"
+    assert r.status_code == 200 and "spare" not in str([p for _, p, _ in owa.calls[-1:]])
+    api.post("/api/openwa/webhook/register", json={})
+    assert all("/spare/" not in p for _, p, _ in owa.calls[-4:])
+    assert owa.calls[-1][1].startswith("/api/sessions/main/webhooks")

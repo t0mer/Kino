@@ -17,6 +17,8 @@ from kino.api.deps import current_openwa, protected_router, reset_openwa
 from kino.api.schemas import (
     OpenWAConnectIn,
     OpenWAConnectOut,
+    OpenWAOutgoingIn,
+    OpenWAOutgoingResult,
     OpenWASessionIn,
     OpenWASessionOut,
     OpenWASessionResult,
@@ -28,14 +30,17 @@ from kino.openwa.client import OpenWAError, list_sessions
 from kino.openwa.register import RegisterError, register_webhook
 from kino.services import ConflictError, InvalidError, NotFoundError, settings_svc
 from kino.services.openwa_cfg import (
+    OpenWAConfig,
     OpenWANotConfiguredError,
     clear_openwa_session,
+    clear_outgoing_session,
     ensure_unlocked,
     env_overrides,
     get_openwa_config,
     load_openwa_config,
     promote_webhook_secret,
     save_openwa_config,
+    save_outgoing_session,
     save_webhook_secret,
     url_changed,
 )
@@ -100,6 +105,9 @@ def setup_status(request: Request) -> OpenWASetupStatus:
         webhook_secret_pending=cfg.pending_webhook_secret is not None,
         webhook_url=webhook_url,
         env_overrides=list(env_overrides(env)),
+        outgoing_session_id=cfg.outgoing_session_id,
+        outgoing_session_name=cfg.outgoing_session_name,
+        same_as_incoming=cfg.same_as_incoming,
     )
 
 
@@ -216,4 +224,57 @@ async def pick_session(request: Request, body: OpenWASessionIn) -> OpenWASession
         action=action,
         webhook_id=hook_id,
         webhook_url=hook_url,
+    )
+
+
+@router.get("/sessions", response_model=list[OpenWASessionOut])
+async def sessions(request: Request) -> list[OpenWASessionOut]:
+    """The live OpenWA session list (to pick the outgoing session), via the saved URL and key."""
+    cfg = await run_in_threadpool(load_openwa_config, _env(request))
+    if not cfg.url or not cfg.api_key:
+        raise ConflictError("Connect to OpenWA first (URL and API key).")
+    try:
+        found = await list_sessions(cfg.url, cfg.api_key)
+    except OpenWAError as e:
+        raise _connect_error(e) from None
+    return [OpenWASessionOut.model_validate(x) for x in found]
+
+
+@router.put("/outgoing-session", response_model=OpenWAOutgoingResult)
+async def set_outgoing_session(request: Request, body: OpenWAOutgoingIn) -> OpenWAOutgoingResult:
+    """Send forwards, the test photo and the digest with another session (null = the incoming
+    one). Registers no webhook and leaves the incoming session alone."""
+    env = _env(request)
+    name: str | None = None
+    if body.session_id is not None:
+        cfg = await run_in_threadpool(load_openwa_config, env)
+        if not cfg.url or not cfg.api_key:
+            raise ConflictError("Connect to OpenWA first (URL and API key).")
+        try:
+            found = await list_sessions(cfg.url, cfg.api_key)
+        except OpenWAError as e:
+            raise _connect_error(e) from None
+        picked = next((x for x in found if x["id"] == body.session_id), None)
+        if picked is None:
+            raise NotFoundError(
+                "That session no longer exists in OpenWA. Reload the list and pick again."
+            )
+        name = str(picked["name"]) if picked["name"] else ""
+    session_id = body.session_id
+
+    def save() -> OpenWAConfig:
+        with get_session() as s:
+            if session_id is None:
+                clear_outgoing_session(s)
+            else:
+                save_outgoing_session(s, session_id, name)
+            s.flush()
+            return get_openwa_config(s, env)
+
+    cfg = await run_in_threadpool(save)
+    await reset_openwa(request.app)
+    return OpenWAOutgoingResult(
+        outgoing_session_id=cfg.outgoing_session_id,
+        outgoing_session_name=cfg.outgoing_session_name,
+        same_as_incoming=cfg.same_as_incoming,
     )

@@ -303,6 +303,28 @@ class OpenWASetupStatus(BaseModel):
     webhook_secret_pending: bool  # a new secret is saved but OpenWA does not have it yet
     webhook_url: str
     env_overrides: list[str]
+    outgoing_session_id: str | None = None  # sends use this session (the incoming one if unset)
+    outgoing_session_name: str | None = None
+    same_as_incoming: bool = True
+
+
+class OpenWAOutgoingResult(BaseModel):
+    outgoing_session_id: str | None
+    outgoing_session_name: str | None
+    same_as_incoming: bool
+
+
+class OpenWAOutgoingIn(In):
+    # null or blank = send with the incoming session
+    session_id: Annotated[str, Field(max_length=200)] | None = None
+
+    @field_validator("session_id")
+    @classmethod
+    def _blank_is_none(cls, v: str | None) -> str | None:
+        v = v.strip() if v else None
+        if v and any(c.isspace() for c in v):
+            raise ValueError("the session id must not contain whitespace")
+        return v or None
 
 
 class OpenWAConnectIn(In):

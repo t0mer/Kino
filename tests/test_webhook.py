@@ -713,3 +713,27 @@ def test_heic_webhook_stored_as_heic(client, enqueued):
     assert r.json()["result"] == "queued"
     (img,) = images()
     assert img.raw_path.endswith(".heic") and len(enqueued) == 1
+
+
+def test_outgoing_session_echo_ignored_and_its_events_rejected(client, enqueued):
+    from kino.db.models import Forward
+    from kino.services.openwa_cfg import save_outgoing_session
+
+    watch()
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out-session", "Spare")
+        img = ImageRow(message_id="orig", status="done")
+        s.add(img)
+        s.flush()
+        s.add(Forward(image_id=img.id, dest_chat_id="d@c.us", openwa_message_id="3EB0ABC123"))
+    # the photo sent by the outgoing session shows up on the incoming one: still an echo
+    echo_id = "true_120363021234567890@g.us_3EB0ABC123_9725@c.us"
+    p = with_media(payload(fromMe=True, id=echo_id), jpeg())
+    assert post(client, p).json() == {"result": "ignored"}
+    assert enqueued == []
+    # an event of the outgoing session itself is not accepted as the incoming one
+    p = with_media(payload(id="OTHER"), jpeg())
+    p["sessionId"] = "out-session"
+    r = post(client, p)
+    assert r.status_code == 403 and r.json() == {"result": "bad_session"}
+    assert enqueued == []
