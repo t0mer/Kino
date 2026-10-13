@@ -632,7 +632,8 @@ def test_incoming_users_stay_on_the_incoming_session(api, owa):
     r = api.get("/api/openwa/webhook")
     assert r.status_code == 200
     assert owa.calls[-1][1] == "/api/sessions/main/webhooks"
-    assert r.status_code == 200 and "spare" not in str([p for _, p, _ in owa.calls[-1:]])
-    api.post("/api/openwa/webhook/register", json={})
-    assert all("/spare/" not in p for _, p, _ in owa.calls[-4:])
+    before = len(owa.calls)
+    assert api.post("/api/openwa/webhook/register", json={}).status_code == 200
+    assert len(owa.calls) > before
+    assert all("/spare/" not in p for _, p, _ in owa.calls[before:])
     assert owa.calls[-1][1].startswith("/api/sessions/main/webhooks")
