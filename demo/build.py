@@ -9,6 +9,7 @@ files in <work>/build/).
 
 Usage: demo/.venv/bin/python demo/build.py --work <work dir>
 """
+
 import argparse
 import json
 import os
@@ -26,8 +27,8 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 import music  # noqa: E402
 
-HOLD_S = 3.0      # frozen last frame after the final sentence ends
-FADE_S = 1.5      # video + audio fade-out at the very end
+HOLD_S = 3.0  # frozen last frame after the final sentence ends
+FADE_S = 1.5  # video + audio fade-out at the very end
 FPS = 30
 CRFS = [20, 22, 24, 26, 28]
 # Mono AAC-LC at 64k: 128k alone would take ~2.4 MB of the 5 MB budget for a
@@ -35,15 +36,19 @@ CRFS = [20, 22, 24, 26, 28]
 AUDIO_BITRATE = "64k"
 MAX_BYTES = 5 * 1024 * 1024
 LINE_CHARS = 42
-LEAD_S = 0.4      # keep this much of the recording before the first caption
+LEAD_S = 0.4  # keep this much of the recording before the first caption
 DUCK = "sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400"
 LOUD = "I=-23:TP=-1.5:LRA=11"
 
 
 def run(cmd: list, capture: bool = False) -> str:
-    res = subprocess.run(cmd, check=True, text=True,
-                         stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                         stderr=subprocess.PIPE)
+    res = subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
     return (res.stdout or "") + res.stderr
 
 
@@ -64,8 +69,19 @@ def write_wav(path: Path, x: np.ndarray, sr: int) -> None:
 
 
 def probe_duration(path: Path) -> float:
-    out = run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-               "-of", "default=nw=1:nk=1", str(path)], capture=True)
+    out = run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(path),
+        ],
+        capture=True,
+    )
     return float(out.split()[0])
 
 
@@ -83,48 +99,106 @@ def voice_track(timeline: list, clips: dict, sr: int, total: float, out: Path) -
     buf = np.zeros(int(round(total * sr)), dtype=np.float32)
     for step in timeline:
         x, i = clips[step["id"]], int(round(step["start"] * sr))
-        buf[i:i + len(x)] += x[:len(buf) - i]
+        buf[i : i + len(x)] += x[: len(buf) - i]
     write_wav(out, buf, sr)
 
 
 def mix(voice: Path, bed: Path, fade_at: float, out: Path) -> dict:
     """Duck the bed under the voice, sum, then two-pass loudnorm + fade-out."""
     pre = out.with_name("mix-pre.wav")
-    graph = (f"[0:a]aresample=48000,asplit=2[vk][vm];[1:a]aresample=48000[m];"
-             f"[m][vk]{DUCK}[duck];[vm][duck]amix=inputs=2:normalize=0:duration=first[out]")
-    run(["ffmpeg", "-y", "-i", str(voice), "-i", str(bed), "-filter_complex", graph,
-         "-map", "[out]", "-ac", "1", str(pre)])
-    log = run(["ffmpeg", "-i", str(pre), "-af", f"loudnorm={LOUD}:print_format=json",
-               "-f", "null", "-"])
-    m = json.loads(log[log.rindex("{"):log.rindex("}") + 1])
-    norm = (f"loudnorm={LOUD}:measured_I={m['input_i']}:measured_TP={m['input_tp']}"
-            f":measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}"
-            f":offset={m['target_offset']}:linear=true,aresample=48000,"
-            f"afade=t=out:st={fade_at:.3f}:d={FADE_S}")
+    graph = (
+        f"[0:a]aresample=48000,asplit=2[vk][vm];[1:a]aresample=48000[m];"
+        f"[m][vk]{DUCK}[duck];[vm][duck]amix=inputs=2:normalize=0:duration=first[out]"
+    )
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(voice),
+            "-i",
+            str(bed),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[out]",
+            "-ac",
+            "1",
+            str(pre),
+        ]
+    )
+    log = run(
+        ["ffmpeg", "-i", str(pre), "-af", f"loudnorm={LOUD}:print_format=json", "-f", "null", "-"]
+    )
+    m = json.loads(log[log.rindex("{") : log.rindex("}") + 1])
+    norm = (
+        f"loudnorm={LOUD}:measured_I={m['input_i']}:measured_TP={m['input_tp']}"
+        f":measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}"
+        f":offset={m['target_offset']}:linear=true,aresample=48000,"
+        f"afade=t=out:st={fade_at:.3f}:d={FADE_S}"
+    )
     run(["ffmpeg", "-y", "-i", str(pre), "-af", norm, "-ac", "1", str(out)])
     return m
 
 
-def encode(raw: Path, head: float, audio: Path, total: float, fade_at: float,
-           out: Path) -> int:
+def encode(raw: Path, head: float, audio: Path, total: float, fade_at: float, out: Path) -> int:
     """Encode raw.webm from `head` seconds on (output t=0) with the mix."""
     pad = max(0.0, total - (probe_duration(raw) - head)) + 1.0
-    vf = (f"fps={FPS},tpad=stop_mode=clone:stop_duration={pad:.3f},"
-          f"fade=t=out:st={fade_at:.3f}:d={FADE_S},format=yuv420p")
+    vf = (
+        f"fps={FPS},tpad=stop_mode=clone:stop_duration={pad:.3f},"
+        f"fade=t=out:st={fade_at:.3f}:d={FADE_S},format=yuv420p"
+    )
     tmp = out.with_suffix(".tmp.mp4")
     for crf in CRFS:
-        run(["ffmpeg", "-y", "-ss", f"{head:.3f}", "-i", str(raw), "-i", str(audio), "-map", "0:v", "-map", "1:a",
-             "-vf", vf, "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
-             "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ac", "1",
-             "-t", f"{total:.3f}", "-movflags", "+faststart", str(tmp)])
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{head:.3f}",
+                "-i",
+                str(raw),
+                "-i",
+                str(audio),
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-vf",
+                vf,
+                "-c:v",
+                "libx264",
+                "-crf",
+                str(crf),
+                "-preset",
+                "slow",
+                "-pix_fmt",
+                "yuv420p",
+                "-r",
+                str(FPS),
+                "-c:a",
+                "aac",
+                "-b:a",
+                AUDIO_BITRATE,
+                "-ac",
+                "1",
+                "-t",
+                f"{total:.3f}",
+                "-movflags",
+                "+faststart",
+                str(tmp),
+            ]
+        )
         size = tmp.stat().st_size
         print(f"build: CRF {crf} -> {size} bytes")
         if size <= MAX_BYTES:
             tmp.replace(out)
             return crf
     tmp.unlink()
-    sys.exit(f"build: FAILED, video is {size} bytes at CRF {CRFS[-1]}, over the "
-             f"{MAX_BYTES}-byte limit. Shorten the recording.")
+    sys.exit(
+        f"build: FAILED, video is {size} bytes at CRF {CRFS[-1]}, over the "
+        f"{MAX_BYTES}-byte limit. Shorten the recording."
+    )
 
 
 def faststart_ok(path: Path) -> bool:
@@ -132,10 +206,10 @@ def faststart_ok(path: Path) -> bool:
     order, data = [], path.read_bytes()
     i = 0
     while i + 8 <= len(data):
-        size = int.from_bytes(data[i:i + 4], "big")
-        kind = data[i + 4:i + 8].decode("latin-1")
+        size = int.from_bytes(data[i : i + 4], "big")
+        kind = data[i + 4 : i + 8].decode("latin-1")
         if size == 1:
-            size = int.from_bytes(data[i + 8:i + 16], "big")
+            size = int.from_bytes(data[i + 8 : i + 16], "big")
         order.append(kind)
         if size < 8:
             break
@@ -156,8 +230,11 @@ def wrap(text: str) -> list:
     lines.append(cur)
     if len(lines) == 2:
         pairs = [(" ".join(words[:i]), " ".join(words[i:])) for i in range(1, len(words))]
-        lines = list(min((p for p in pairs if max(map(len, p)) <= LINE_CHARS),
-                         key=lambda p: max(map(len, p))))
+        lines = list(
+            min(
+                (p for p in pairs if max(map(len, p)) <= LINE_CHARS), key=lambda p: max(map(len, p))
+            )
+        )
     return lines
 
 
@@ -177,8 +254,11 @@ def split_text(text: str) -> list:
 
 def cue_texts(caption: str) -> list:
     """Split a caption into cues of at most two lines of ~LINE_CHARS each."""
-    return [c for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z])", caption.strip())
-            for c in split_text(sentence)]
+    return [
+        c
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z])", caption.strip())
+        for c in split_text(sentence)
+    ]
 
 
 def ts(t: float) -> str:
@@ -208,11 +288,13 @@ def srt(timeline: list, captions: dict, speech: dict, total: float) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build assets/demo from the recording.")
-    ap.add_argument("--work", type=Path,
-                    default=Path(os.environ.get("DEMO_WORK", HERE / "work")))
+    ap.add_argument("--work", type=Path, default=Path(os.environ.get("DEMO_WORK", HERE / "work")))
     ap.add_argument("--out", type=Path, default=ROOT / "assets" / "demo")
-    ap.add_argument("--poster", default="gallery:1.7",
-                    help="<step id>:<seconds into the step> for the poster frame")
+    ap.add_argument(
+        "--poster",
+        default="gallery:1.7",
+        help="<step id>:<seconds into the step> for the poster frame",
+    )
     args = ap.parse_args()
 
     work, outdir = args.work.resolve(), args.out.resolve()
@@ -238,7 +320,10 @@ def main() -> None:
     total = max(voice_end + HOLD_S, probe_duration(raw) - head) + FADE_S
     fade_at = total - FADE_S
     voice_track(timeline, clips, sr, total, build / "voice.wav")
-    print(f"build: trimmed {head:.3f} s of lead-in, last line ends {voice_end:.2f} s, fade {fade_at:.2f}-{total:.2f} s")
+    print(
+        f"build: trimmed {head:.3f} s of lead-in, last line ends {voice_end:.2f} s, "
+        f"fade {fade_at:.2f}-{total:.2f} s"
+    )
 
     music.write_wav(build / "music.wav", music.make(total))
     m = mix(build / "voice.wav", build / "music.wav", fade_at, build / "mix.wav")
@@ -253,10 +338,23 @@ def main() -> None:
 
     sid, off = args.poster.split(":")
     at = next(s["start"] for s in timeline if s["id"] == sid) + float(off)
-    run(["ffmpeg", "-y", "-ss", f"{at:.3f}", "-i", str(mp4), "-frames:v", "1",
-         str(outdir / "demo-poster.png")])
-    print(f"build: done, {mp4} ({mp4.stat().st_size} bytes, CRF {crf}, {total:.2f} s), "
-          f"poster at {at:.2f} s")
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{at:.3f}",
+            "-i",
+            str(mp4),
+            "-frames:v",
+            "1",
+            str(outdir / "demo-poster.png"),
+        ]
+    )
+    print(
+        f"build: done, {mp4} ({mp4.stat().st_size} bytes, CRF {crf}, {total:.2f} s), "
+        f"poster at {at:.2f} s"
+    )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 Outputs in --out: <id>.wav (mono 24 kHz), <id>.env.json (mouth envelope, 20 fps,
 0..1) and manifest.json. A clip is regenerated only when its text changed.
 """
+
 import argparse
 import hashlib
 import json
@@ -23,13 +24,20 @@ def trim(x: np.ndarray, sr: int) -> np.ndarray:
     if idx.size == 0:
         return x
     keep = int(KEEP_S * sr)
-    return x[max(0, idx[0] - keep): min(len(x), idx[-1] + 1 + keep)]
+    return x[max(0, idx[0] - keep) : min(len(x), idx[-1] + 1 + keep)]
 
 
 def envelope(x: np.ndarray, sr: int) -> list:
     hop = sr // FPS
     n = max(1, int(np.ceil(len(x) / hop)))
-    rms = np.array([np.sqrt(np.mean(x[i * hop:(i + 1) * hop] ** 2)) if len(x[i * hop:(i + 1) * hop]) else 0.0 for i in range(n)])
+    rms = np.array(
+        [
+            np.sqrt(np.mean(x[i * hop : (i + 1) * hop] ** 2))
+            if len(x[i * hop : (i + 1) * hop])
+            else 0.0
+            for i in range(n)
+        ]
+    )
     rms = np.convolve(rms, [0.25, 0.5, 0.25], mode="same")
     peak = rms.max()
     if peak > 0:
@@ -50,7 +58,9 @@ def main() -> None:
     ap.add_argument("--script", default=str(HERE / "script.json"))
     ap.add_argument("--out", default=str(HERE / "work" / "clips"))
     ap.add_argument("--models", default=str(HERE / "models"))
-    ap.add_argument("--check", action="store_true", help="print durations from the manifest and exit")
+    ap.add_argument(
+        "--check", action="store_true", help="print durations from the manifest and exit"
+    )
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -67,13 +77,22 @@ def main() -> None:
                 continue
             if kokoro is None:
                 from kokoro_onnx import Kokoro
-                kokoro = Kokoro(str(Path(a.models) / "kokoro-v1.0.onnx"), str(Path(a.models) / "voices-v1.0.bin"))
+
+                kokoro = Kokoro(
+                    str(Path(a.models) / "kokoro-v1.0.onnx"),
+                    str(Path(a.models) / "voices-v1.0.bin"),
+                )
             x, sr = kokoro.create(s["say"], voice=VOICE, speed=SPEED, lang=LANG)
             x = trim(np.asarray(x, dtype=np.float32), sr)
             wav, env = out / f"{s['id']}.wav", out / f"{s['id']}.env.json"
             write_wav(wav, x, sr)
             env.write_text(json.dumps(envelope(x, sr)))
-            manifest[s["id"]] = {"duration": round(len(x) / sr, 3), "wav": str(wav), "env": str(env), "hash": h}
+            manifest[s["id"]] = {
+                "duration": round(len(x) / sr, 3),
+                "wav": str(wav),
+                "env": str(env),
+                "hash": h,
+            }
             print(f"generated {s['id']}: {len(x) / sr:.2f}s")
         manifest = {s["id"]: manifest[s["id"]] for s in steps}
         mpath.write_text(json.dumps(manifest, indent=2))

@@ -9,6 +9,7 @@ seamless; it is then tiled and trimmed to the requested length.
 
 Usage: python demo/music.py --seconds 147.8 --out music.wav
 """
+
 import argparse
 import wave
 from pathlib import Path
@@ -43,9 +44,11 @@ def pluck(freq: float, dur: float, vel: float) -> np.ndarray:
     t = np.arange(int(dur * SR)) / SR
     env = (1 - np.exp(-t / 0.004)) * np.exp(-t / 0.35)
     # Few soft harmonics, upper ones decaying faster: a muted, plucked tone.
-    tone = (np.sin(2 * np.pi * freq * t)
-            + 0.35 * np.exp(-t / 0.15) * np.sin(2 * np.pi * 2 * freq * t)
-            + 0.12 * np.exp(-t / 0.08) * np.sin(2 * np.pi * 3 * freq * t))
+    tone = (
+        np.sin(2 * np.pi * freq * t)
+        + 0.35 * np.exp(-t / 0.15) * np.sin(2 * np.pi * 2 * freq * t)
+        + 0.12 * np.exp(-t / 0.08) * np.sin(2 * np.pi * 3 * freq * t)
+    )
     return vel * env * tone
 
 
@@ -72,9 +75,9 @@ def add(buf: np.ndarray, x: np.ndarray, at: float) -> None:
     i = int(round(at * SR)) % len(buf)
     n = len(x)
     first = min(n, len(buf) - i)
-    buf[i:i + first] += x[:first]
+    buf[i : i + first] += x[:first]
     if n > first:
-        buf[:n - first] += x[first:]
+        buf[: n - first] += x[first:]
 
 
 def render_loop() -> np.ndarray:
@@ -111,7 +114,7 @@ def make(seconds: float) -> np.ndarray:
     loop = render_loop()
     n = int(round(seconds * SR))
     out = np.tile(loop, n // len(loop) + 1)[:n]
-    rms = np.sqrt(np.mean(out ** 2))
+    rms = np.sqrt(np.mean(out**2))
     out *= 10 ** (TARGET_RMS_DB / 20) / rms
     fade = min(n, int(1.0 * SR))  # soft start
     out[:fade] *= np.linspace(0, 1, fade)
