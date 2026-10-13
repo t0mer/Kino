@@ -131,7 +131,7 @@ def render_message(p: Pending, base_url: str | None) -> str:
 
 def _default_client(st: Settings) -> OpenWAClient:
     # raises OpenWANotConfiguredError (a RuntimeError), logged by run_digest
-    return OpenWAClient(*load_openwa_config(st).client_args())
+    return OpenWAClient(*load_openwa_config(st).outgoing_client_args())
 
 
 def run_digest(

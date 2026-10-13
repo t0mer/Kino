@@ -48,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.openwa = None  # built on first use from env or the setup wizard (deps)
+    app.state.openwa_out = None  # only when a separate outgoing session is set (deps)
     app.state.secret_key = auth.load_secret_key(settings)
     if not load_openwa_config(settings).configured:
         logger.warning(
