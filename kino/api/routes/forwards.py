@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 
-from kino.api.deps import openwa_client, protected_router
+from kino.api.deps import openwa_out_client, protected_router
 from kino.api.schemas import ForwardOut, ForwardTestIn, ForwardTestOut
 from kino.db.models import Forward
 from kino.db.session import get_session
@@ -66,7 +66,7 @@ def _check_destination(chat_id: str) -> None:
 async def send_test(
     request: Request,
     body: ForwardTestIn,
-    client: Annotated[OpenWAClient, Depends(openwa_client)],
+    client: Annotated[OpenWAClient, Depends(openwa_out_client)],
 ) -> ForwardTestOut:
     """Send a generated test photo to a candidate destination (watched groups refused).
 

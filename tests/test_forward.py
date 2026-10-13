@@ -489,3 +489,20 @@ def test_default_client_reads_wizard_config(tmp_path, monkeypatch):
         assert client._http.base_url.host == "wizard-owa" and client._session == "wiz-sess"
     finally:
         eng.dispose()
+
+
+def test_default_client_sends_with_the_outgoing_session(s, tmp_path, monkeypatch):
+    from kino.config import Settings
+    from kino.services.openwa_cfg import save_openwa_config, save_outgoing_session
+
+    for k in ("KINO_OPENWA_URL", "KINO_OPENWA_API_KEY", "KINO_OPENWA_SESSION_ID"):
+        monkeypatch.delenv(k, raising=False)
+    st = Settings(data_dir=tmp_path)
+    monkeypatch.setattr(fw, "get_settings", lambda: st)
+    save_openwa_config(s, st, url="http://owa", api_key="k" * 10, session_id="in-sess")
+    s.commit()
+    assert "/in-sess/" in fw._default_client()._p("messages/send-image")  # unchanged
+    save_outgoing_session(s, "out-sess", "Spare")
+    s.commit()
+    path = fw._default_client()._p("messages/send-image")
+    assert "/out-sess/" in path and "in-sess" not in path

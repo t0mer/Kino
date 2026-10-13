@@ -343,7 +343,7 @@ def _read_saved_file(path: str | None) -> bytes:
 
 def _default_client() -> OpenWAClient:
     try:
-        return OpenWAClient(*load_openwa_config(get_settings()).client_args())
+        return OpenWAClient(*load_openwa_config(get_settings()).outgoing_client_args())
     except OpenWANotConfiguredError:
         raise ForwardError("OpenWA is not configured") from None
 

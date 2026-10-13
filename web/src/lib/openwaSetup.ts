@@ -18,6 +18,10 @@ export interface OpenWASetupStatus {
   url: string | null;
   session_id: string | null;
   session_name: string | null;
+  /** Resolved sending session (equals the incoming id when same_as_incoming); null only when nothing is configured. */
+  outgoing_session_id: string | null;
+  outgoing_session_name: string | null;
+  same_as_incoming: boolean;
   has_api_key: boolean;
   has_webhook_secret: boolean;
   /** A new webhook secret is saved but not registered with OpenWA yet (finish the wizard). */
@@ -32,6 +36,12 @@ export interface OpenWASession {
   status: string;
   /** Masked by the API, e.g. 9725****123. */
   phone_masked: string | null;
+}
+
+export interface OutgoingSessionResult {
+  outgoing_session_id: string | null;
+  outgoing_session_name: string | null;
+  same_as_incoming: boolean;
 }
 
 export interface ConnectBody {
@@ -60,13 +70,19 @@ export interface ConnectForm {
   webhookSecret: string;
 }
 
-export const openwaSetupKeys = { status: ["openwa", "setup", "status"] as const };
+export const openwaSetupKeys = {
+  status: ["openwa", "setup", "status"] as const,
+  sessions: ["openwa", "setup", "sessions"] as const,
+};
 
 export const openwaSetupApi = {
   status: () => api.get<OpenWASetupStatus>("/api/openwa/setup/status"),
   connect: (b: ConnectBody) => api.post<ConnectResult>("/api/openwa/setup/connect", b),
   pickSession: (session_id: string, webhook_url?: string) =>
     api.post<SessionResult>("/api/openwa/setup/session", webhook_url ? { session_id, webhook_url } : { session_id }),
+  sessions: () => api.get<OpenWASession[]>("/api/openwa/setup/sessions"),
+  setOutgoingSession: (session_id: string | null) =>
+    api.put<OutgoingSessionResult>("/api/openwa/setup/outgoing-session", { session_id }),
   registerWebhook: (url: string) => api.post<WebhookRegistered>("/api/openwa/webhook/register", { url }),
 };
 

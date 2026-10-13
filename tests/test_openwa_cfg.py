@@ -10,9 +10,12 @@ from kino.services.openwa_cfg import (
     EnvLockedError,
     OpenWAConfig,
     OpenWANotConfiguredError,
+    clear_openwa_session,
+    clear_outgoing_session,
     env_overrides,
     load_openwa_config,
     save_openwa_config,
+    save_outgoing_session,
 )
 
 OPENWA_ENV = (
@@ -149,3 +152,55 @@ def test_normalize_url(a, b, same):
     from kino.services.openwa_cfg import normalize_url
 
     assert (normalize_url(a) == normalize_url(b)) is same
+
+
+def test_outgoing_session_falls_back_to_incoming(db):
+    st = env(db)
+    save(st, url="http://owa", api_key="k" * 10, session_id="in", session_name="Main")
+    cfg = load_openwa_config(st)
+    assert cfg.outgoing_session_id == "in" and cfg.same_as_incoming
+    assert cfg.outgoing_client_args() == cfg.client_args() == ("http://owa", "k" * 10, "in")
+    assert cfg.outgoing_session_name == "Main"
+
+
+def test_outgoing_session_stored_and_cleared(db):
+    st = env(db)
+    save(st, url="http://owa", api_key="k" * 10, session_id="in")
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out", "Spare")
+    cfg = load_openwa_config(st)
+    assert (cfg.outgoing_session_id, cfg.outgoing_session_name) == ("out", "Spare")
+    assert not cfg.same_as_incoming
+    assert cfg.outgoing_client_args() == ("http://owa", "k" * 10, "out")
+    assert cfg.client_args()[2] == "in"
+    with dbs.get_session() as s:
+        clear_outgoing_session(s)
+    cfg = load_openwa_config(st)
+    assert cfg.outgoing_session_id == "in" and cfg.same_as_incoming
+
+
+def test_outgoing_session_with_env_incoming_session(db):
+    st = env(db, openwa_session_id="env-in")  # type: ignore[arg-type]
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out", "Spare")
+    assert load_openwa_config(st).outgoing_session_id == "out"
+    assert load_openwa_config(env(db, openwa_session_id="env-in")).session_id == "env-in"  # type: ignore[arg-type]
+
+
+def test_clear_openwa_session_also_clears_outgoing(db):
+    st = env(db)
+    save(st, url="http://owa", api_key="k" * 10, session_id="in", session_name="Main")
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out", "Spare")
+        clear_openwa_session(s, st)
+    cfg = load_openwa_config(st)
+    assert cfg.session_id is None and cfg.outgoing_session_id is None
+
+
+def test_clear_openwa_session_clears_outgoing_even_when_env_pins_incoming(db):
+    st = env(db, openwa_session_id="env-in")  # type: ignore[arg-type]
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out", "Spare")
+        clear_openwa_session(s, st)
+    cfg = load_openwa_config(st)
+    assert cfg.session_id == "env-in" and cfg.outgoing_session_id == "env-in"

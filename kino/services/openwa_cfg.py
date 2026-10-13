@@ -42,6 +42,10 @@ _LABELS: dict[Field, str] = {
 K_URL = "openwa.url"
 K_SESSION_ID = "openwa.session_id"
 K_SESSION_NAME = "openwa.session_name"
+# Optional separate session for outgoing sends (forwards, test photo, digest, chat pickers).
+# Plain, database only; absent = send with the incoming session.
+K_OUTGOING_SESSION_ID = "openwa.outgoing_session_id"
+K_OUTGOING_SESSION_NAME = "openwa.outgoing_session_name"
 K_API_KEY = "openwa.api_key_enc"
 K_WEBHOOK_SECRET = "openwa.webhook_secret_enc"
 # A replacement secret the wizard accepted but OpenWA has not been told yet. The webhook check
@@ -77,6 +81,17 @@ class OpenWAConfig:
     webhook_secret: str | None
     session_name: str | None = None
     pending_webhook_secret: str | None = None
+    # resolved: the stored outgoing session, else the incoming one
+    outgoing_session_id: str | None = None
+    outgoing_session_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outgoing_session_id is None:
+            object.__setattr__(self, "outgoing_session_id", self.session_id)
+
+    @property
+    def same_as_incoming(self) -> bool:
+        return self.outgoing_session_id == self.session_id
 
     @property
     def configured(self) -> bool:
@@ -91,6 +106,12 @@ class OpenWAConfig:
         if not (self.url and self.api_key and self.session_id):
             raise OpenWANotConfiguredError(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
         return self.url, self.api_key, self.session_id
+
+    def outgoing_client_args(self) -> tuple[str, str, str]:
+        """(url, api_key, session_id) for sending; the outgoing session, else the incoming one."""
+        if not (self.url and self.api_key and self.outgoing_session_id):
+            raise OpenWANotConfiguredError(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
+        return self.url, self.api_key, self.outgoing_session_id
 
     def require_webhook_secret(self) -> str:
         if not self.webhook_secret:
@@ -196,6 +217,7 @@ def get_openwa_config(session: Session, env: Settings) -> OpenWAConfig:
         stored = _get(session, _KEYS[f])
         values[f] = _decrypt(stored, env) if stored and f in _ENCRYPTED else stored
     pending_token = None if from_env["webhook_secret"] else _get(session, K_WEBHOOK_SECRET_PENDING)
+    out_id = _get(session, K_OUTGOING_SESSION_ID)
     return OpenWAConfig(
         url=values["url"],
         api_key=values["api_key"],
@@ -203,6 +225,12 @@ def get_openwa_config(session: Session, env: Settings) -> OpenWAConfig:
         webhook_secret=values["webhook_secret"],
         session_name=None if from_env["session_id"] else _get(session, K_SESSION_NAME),
         pending_webhook_secret=_decrypt(pending_token, env) if pending_token else None,
+        outgoing_session_id=out_id or values["session_id"],
+        outgoing_session_name=(
+            _get(session, K_OUTGOING_SESSION_NAME)
+            if out_id
+            else (None if from_env["session_id"] else _get(session, K_SESSION_NAME))
+        ),
     )
 
 
@@ -293,11 +321,26 @@ def url_changed(cfg: OpenWAConfig, new_url: str | None) -> bool:
 
 
 def clear_openwa_session(session: Session, env: Settings) -> None:
-    """Forget the stored session (it belongs to another OpenWA); an env-set one stays."""
+    """Forget the stored sessions (they belong to another OpenWA); an env-set one stays."""
+    clear_outgoing_session(session)  # also belongs to the old OpenWA, even if the env pins the rest
     if "session_id" in env_overrides(env):
         return
     _delete(session, K_SESSION_ID)
     _delete(session, K_SESSION_NAME)
+    session.flush()
+
+
+def save_outgoing_session(session: Session, session_id: str, name: str | None) -> None:
+    """Send with this session instead of the incoming one."""
+    _put(session, K_OUTGOING_SESSION_ID, session_id)
+    _put(session, K_OUTGOING_SESSION_NAME, name or "")
+    session.flush()
+
+
+def clear_outgoing_session(session: Session) -> None:
+    """Back to sending with the incoming session."""
+    _delete(session, K_OUTGOING_SESSION_ID)
+    _delete(session, K_OUTGOING_SESSION_NAME)
     session.flush()
 
 

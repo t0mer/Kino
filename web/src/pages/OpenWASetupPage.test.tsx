@@ -18,7 +18,7 @@ const json = (code: number, body: unknown) =>
   new Response(JSON.stringify(body), { status: code, headers: { "Content-Type": "application/json" } });
 const HOOK = "http://kino-api:8080/api/webhook/openwa";
 const emptyStatus = (): OpenWASetupStatus => ({
-  configured: false, url: null, session_id: null, session_name: null, has_api_key: false,
+  configured: false, url: null, session_id: null, session_name: null, outgoing_session_id: null, outgoing_session_name: null, same_as_incoming: true, has_api_key: false,
   has_webhook_secret: false, webhook_secret_pending: false, webhook_url: HOOK, env_overrides: [],
 });
 const SESSIONS = [

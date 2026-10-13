@@ -22,8 +22,10 @@ from kino.services.openwa_cfg import NOT_CONFIGURED_HINT, OpenWAConfig, load_ope
 __all__ = [
     "AuthInfo",
     "current_openwa",
+    "current_openwa_out",
     "get_auth",
     "openwa_client",
+    "openwa_out_client",
     "openwa_generation",
     "protected_router",
     "reset_openwa",
@@ -151,19 +153,58 @@ def current_openwa(
     return OpenWAClient(*load_openwa_config(app.state.settings).client_args())
 
 
+def current_openwa_out(app: FastAPI) -> OpenWAClient | None:
+    """The client for outgoing sends (chat pickers, test photo).
+
+    Without a separate outgoing session this is the shared incoming client, so nothing changes.
+    Otherwise a second client is cached on ``app.state.openwa_out`` with the same generation
+    guard as :func:`current_openwa`. Blocking (reads the database): call it from a threadpool."""
+    for _ in range(_MAX_REBUILDS):
+        cached: OpenWAClient | None = getattr(app.state, "openwa_out", None)
+        if cached is not None:
+            return cached
+        gen = openwa_generation(app)
+        cfg = load_openwa_config(app.state.settings)
+        if cfg.same_as_incoming:
+            return current_openwa(app, cfg, generation=gen)
+        if not cfg.client_ready:
+            return None
+        with _client_lock:
+            raced: OpenWAClient | None = getattr(app.state, "openwa_out", None)
+            if raced is not None:
+                return raced
+            if openwa_generation(app) == gen:
+                built = OpenWAClient(*cfg.outgoing_client_args())
+                app.state.openwa_out = built
+                return built
+    logger.warning("OpenWA settings keep changing; using an uncached client")
+    return OpenWAClient(*load_openwa_config(app.state.settings).outgoing_client_args())
+
+
 async def reset_openwa(app: FastAPI) -> None:
-    """Forget the cached client so the next call rebuilds it from the saved config."""
+    """Forget the cached clients so the next call rebuilds them from the saved config."""
     with _client_lock:
         old: OpenWAClient | None = app.state.openwa
+        old_out: OpenWAClient | None = getattr(app.state, "openwa_out", None)
         app.state.openwa = None
+        app.state.openwa_out = None
         app.state.openwa_generation = openwa_generation(app) + 1
-    if old is not None:
-        await old.aclose()
+    for client in (old, old_out):
+        if client is not None:
+            await client.aclose()
 
 
 def openwa_client(request: Request) -> OpenWAClient:
     """The app's shared OpenWA client; 503 when OpenWA is not configured."""
     client = current_openwa(request.app)
+    if client is None:
+        raise OpenWANotConfigured(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
+    return client
+
+
+def openwa_out_client(request: Request) -> OpenWAClient:
+    """The client for outgoing sends; 503 when OpenWA is not configured."""
+    client = current_openwa_out(request.app)
     if client is None:
         raise OpenWANotConfigured(f"OpenWA is not configured: {NOT_CONFIGURED_HINT}")
     return client

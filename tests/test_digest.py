@@ -177,3 +177,19 @@ def test_default_client_reads_wizard_config(env):
         )
     client = digest._default_client(env)
     assert isinstance(client, OpenWAClient) and client._http.base_url.host == "wizard-owa"
+
+
+def test_default_client_sends_with_the_outgoing_session(env, monkeypatch):
+    from kino.services.openwa_cfg import save_openwa_config, save_outgoing_session
+
+    for k in ("KINO_OPENWA_URL", "KINO_OPENWA_API_KEY", "KINO_OPENWA_SESSION_ID"):
+        monkeypatch.delenv(k, raising=False)
+    with dbs.get_session() as s:
+        save_openwa_config(s, env, url="http://owa", api_key="k" * 10, session_id="in-sess")
+    c = digest._default_client(env)
+    assert "/in-sess/" in c._p("messages/send-text")  # unchanged without an outgoing session
+    with dbs.get_session() as s:
+        save_outgoing_session(s, "out-sess", "Spare")
+    c = digest._default_client(env)
+    assert "/out-sess/" in c._p("messages/send-text")
+    assert "in-sess" not in c._p("messages/send-text")

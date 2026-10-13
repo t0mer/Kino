@@ -83,7 +83,7 @@ export function refsFor(kid) {
 }
 export const NAMES = { 1: 'Noa', 2: 'Itai', 3: 'Maya' };
 export const OWA_STATUS = {
-  configured: true, url: 'http://openwa:2785', session_id: 'main', session_name: 'Home phone',
+  configured: true, url: 'http://openwa:2785', session_id: 'main', session_name: 'Home phone', outgoing_session_id: null, outgoing_session_name: null, same_as_incoming: true,
   has_api_key: true, has_webhook_secret: true, webhook_secret_pending: false, webhook_url: 'http://kino-api:8080/api/webhook/openwa', env_overrides: [],
 };
 export const OWA_SESSIONS = [

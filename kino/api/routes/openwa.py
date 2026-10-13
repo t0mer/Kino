@@ -9,7 +9,7 @@ from fastapi import Depends, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 
-from kino.api.deps import openwa_client, protected_router
+from kino.api.deps import openwa_client, openwa_out_client, protected_router
 from kino.api.schemas import ChatOut, WebhookRegistered, WebhookRegisterIn, WebhookStatus
 from kino.config import Settings
 from kino.db.models import Group
@@ -30,9 +30,11 @@ def _watched_chat_ids() -> set[str]:
 
 @router.get("/chats", response_model=list[ChatOut])
 async def list_chats(
-    client: Client, q: Annotated[str | None, Query(max_length=100)] = None
+    client: Annotated[OpenWAClient, Depends(openwa_out_client)],
+    q: Annotated[str | None, Query(max_length=100)] = None,
 ) -> list[ChatOut]:
-    """Contacts and groups for the destination pickers; watched groups are not selectable."""
+    """Contacts and groups of the sending (outgoing) session, for the destination pickers;
+    watched groups are not selectable."""
     chats = await client.list_chats(q.strip() if q else None)
     watched = await run_in_threadpool(_watched_chat_ids)
     out = []
