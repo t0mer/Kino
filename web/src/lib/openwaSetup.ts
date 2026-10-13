@@ -18,7 +18,7 @@ export interface OpenWASetupStatus {
   url: string | null;
   session_id: string | null;
   session_name: string | null;
-  /** Session used for sending; null means the incoming session. */
+  /** Resolved sending session (equals the incoming id when same_as_incoming); null only when nothing is configured. */
   outgoing_session_id: string | null;
   outgoing_session_name: string | null;
   same_as_incoming: boolean;
