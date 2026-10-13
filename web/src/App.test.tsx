@@ -73,7 +73,7 @@ describe("routes and nav", () => {
 
 describe("OpenWA setup gate", () => {
   const base = {
-    url: null, session_id: null, session_name: null, has_api_key: false, has_webhook_secret: false, webhook_secret_pending: false,
+    url: null, session_id: null, session_name: null, outgoing_session_id: null, outgoing_session_name: null, same_as_incoming: true, has_api_key: false, has_webhook_secret: false, webhook_secret_pending: false,
     webhook_url: "http://kino-api:8080/api/webhook/openwa", env_overrides: [],
   };
 
