@@ -99,6 +99,15 @@ describe("OpenWASection sending session", () => {
     expect(await screen.findByText(/not connected \(qr\)/)).toBeInTheDocument();
   });
 
+  it("warns when the saved session no longer exists in OpenWA", async () => {
+    status = { ...status, outgoing_session_id: "gone", outgoing_session_name: "Old", same_as_incoming: false };
+    const user = userEvent.setup();
+    renderIt();
+    await screen.findByLabelText("Sending session");
+    await user.click(screen.getByRole("button", { name: "Load sessions" }));
+    expect(await screen.findByText(/no longer exists in OpenWA/)).toBeInTheDocument();
+  });
+
   it("shows an error with retry when the list fails", async () => {
     routes["GET /api/openwa/setup/sessions"] = () => json(502, { detail: "OpenWA unreachable" });
     const user = userEvent.setup();

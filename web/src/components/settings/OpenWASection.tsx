@@ -104,6 +104,11 @@ function SendingSession({ s }: { s: OpenWASetupStatus }) {
           This session is not connected ({picked.status}). Sends will fail until it is ready.
         </p>
       )}
+      {sessions.isSuccess && current !== SAME && !picked && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          This session no longer exists in OpenWA. Pick another or switch back to the incoming session.
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
         Photos and the digest are sent from this session. Incoming photos are always received on {incoming}.
       </p>
