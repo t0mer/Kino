@@ -25,6 +25,7 @@ from kino import metrics
 from kino.config import get_settings
 from kino.db.models import Forward, Group, Image, Kid, Setting
 from kino.db.session import get_session
+from kino.delivery import get_channel
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.pipeline.save import to_local
 from kino.services.openwa_cfg import OpenWANotConfiguredError, load_openwa_config
@@ -411,13 +412,11 @@ def deliver_forward(
         return verdict
 
     async def send() -> str:
-        client = client_factory()
+        channel = get_channel("whatsapp", client_factory=client_factory)
         try:
-            return str(await client.send_image(dest, data, mimetype, caption))
+            return (await channel.send_photo(dest, data, mimetype, caption)).id
         finally:
-            close = getattr(client, "aclose", None)
-            if close is not None:
-                await close()
+            await channel.aclose()
 
     try:
         message_id = asyncio.run(send())

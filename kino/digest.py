@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from kino.config import Settings, get_settings
 from kino.db.models import Digest, Face, Image, Kid, Match
 from kino.db.session import get_session
+from kino.delivery import get_channel
 from kino.forward import sanitize_error
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.services.openwa_cfg import load_openwa_config
@@ -158,11 +159,12 @@ def run_digest(
     chat_id = cfg.chat_id
 
     async def send() -> None:
-        client = (client_factory or _default_client)(st)
+        factory = client_factory or _default_client
+        channel = get_channel("whatsapp", settings=st, client_factory=lambda: factory(st))
         try:
-            await client.send_text(chat_id, text)
+            await channel.send_text(chat_id, text)
         finally:
-            await client.aclose()
+            await channel.aclose()
 
     try:
         asyncio.run(send())
