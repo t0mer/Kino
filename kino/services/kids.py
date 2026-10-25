@@ -26,6 +26,7 @@ from kino.db.models import (
 )
 from kino.pipeline.decide import OFFSET_MAX, OFFSET_MIN
 from kino.services import ConflictError, InvalidError, NotFoundError
+from kino.services.sent_cleanup import SentDeletion, collect_sent_deletions
 from kino.slug import MAX_LEN, slugify
 
 _UNSET: Any = object()
@@ -208,6 +209,7 @@ class KidDeletion:
     files: list[Path] = field(default_factory=list)
     saved_photo_ids: list[int] = field(default_factory=list)
     cancelled_forwards: int = 0
+    sent_deletions: list[SentDeletion] = field(default_factory=list)  # after the commit
 
 
 def delete_kid(session: Session, kid_id: int) -> KidDeletion:
@@ -242,8 +244,9 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
             f.status = "cancelled"
             f.last_error = "kid deleted"
             f.next_attempt_at = None
-            metrics.forwards.labels(status="cancelled").inc()
+            metrics.forwards.labels(status="cancelled", channel=f.channel).inc()
             result.cancelled_forwards += 1
+    result.sent_deletions = collect_sent_deletions(session, kid.id)
     per_kid = cfg.per_kid
     if kid.id in per_kid:
         del per_kid[kid.id]

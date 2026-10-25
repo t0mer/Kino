@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from kino import metrics
 from kino.db.models import Face, Forward, Group, Image, Kid, Match, ReferenceFace, SavedPhoto
 from kino.services import NotFoundError
+from kino.services.sent_cleanup import SentDeletion, collect_sent_deletions
 
 
 def _utcnow() -> datetime:
@@ -141,6 +142,7 @@ class PhotoRemoval:
     cancelled_forwards: int = 0
     rejected_matches: int = 0
     retired_references: int = 0
+    sent_deletions: list[SentDeletion] = field(default_factory=list)  # after the commit
 
 
 def remove_photo(
@@ -168,8 +170,9 @@ def remove_photo(
             f.status = "cancelled"
             f.last_error = "photo removed from kid"
             f.next_attempt_at = None
-            metrics.forwards.labels(status="cancelled").inc()
+            metrics.forwards.labels(status="cancelled", channel=f.channel).inc()
             out.cancelled_forwards += 1
+    out.sent_deletions = collect_sent_deletions(session, sp.kid_id, sp.image_id)
     face_ids = select(Face.id).where(Face.image_id == sp.image_id).scalar_subquery()
     res = session.execute(
         update(Match)

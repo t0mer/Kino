@@ -29,6 +29,7 @@ from kino.services import photos as svc
 from kino.services import thumbs
 from kino.services.files import existing_file
 from kino.services.images import display_sender
+from kino.services.sent_cleanup import delete_sent_messages
 
 router = protected_router(prefix="/api/photos", tags=["photos"])
 
@@ -122,6 +123,7 @@ def photo_thumb(
 def remove_photo(request: Request, saved_photo_id: int) -> PhotoRemoved:
     with get_session() as s:
         res = svc.remove_photo(s, saved_photo_id)
+    delete_sent_messages(res.sent_deletions)  # best effort, after the commit
     removed = 0
     for path in res.files:  # only after the commit
         try:
