@@ -563,3 +563,60 @@ def test_forward_out_has_channel(api, tg):
     assert "****" in rows["whatsapp"]["dest_chat_id"]
     detail = api.get(f"/api/images/{image_id}").json()
     assert sorted(f["channel"] for f in detail["forwards"]) == ["telegram", "whatsapp"]
+
+
+NEW_URL = "http://evil.example:8081"
+
+
+def _state(api) -> tuple[bool, str, int]:
+    got = api.get("/api/settings/telegram").json()
+    return got["has_token"], got["api_url"], got["rate_per_min"]
+
+
+def test_url_change_without_token_is_422_and_saves_nothing(api, configured):
+    before = _state(api)
+    n = len(configured.calls)
+    r = api.put("/api/settings/telegram", json={"api_url": NEW_URL, "rate_per_min": 3})
+    assert r.status_code == 422 and "Re-enter the bot token" in r.text
+    assert _state(api) == before == (True, "https://api.telegram.org", 20)
+    assert len(configured.calls) == n and "evil.example" not in configured.hosts
+
+
+def test_url_change_with_token_probes_new_host_and_saves(api, configured):
+    r = api.put("/api/settings/telegram", json={"api_url": NEW_URL, "bot_token": TOKEN})
+    assert r.status_code == 200, r.text
+    assert configured.hosts[-1] == "evil.example"
+    assert _state(api) == (True, NEW_URL, 20)
+
+
+def test_url_change_with_token_probe_failure_saves_nothing(api, configured):
+    configured.me_status = 401
+    r = api.put(
+        "/api/settings/telegram", json={"api_url": NEW_URL, "bot_token": TOKEN, "rate_per_min": 3}
+    )
+    assert r.status_code == 422 and TOKEN not in r.text
+    assert configured.hosts[-1] == "evil.example"
+    assert _state(api) == (True, "https://api.telegram.org", 20)
+
+
+def test_url_change_with_token_clear_is_allowed(api, configured):
+    n = len(configured.calls)
+    r = api.put("/api/settings/telegram", json={"api_url": NEW_URL, "bot_token": None})
+    assert r.status_code == 200, r.text
+    assert _state(api) == (False, NEW_URL, 20)
+    assert len(configured.calls) == n  # no request carried the token anywhere
+
+
+def test_url_change_without_stored_token_is_allowed(api, tg):
+    r = api.put("/api/settings/telegram", json={"api_url": NEW_URL})
+    assert r.status_code == 200, r.text
+    assert _state(api) == (False, NEW_URL, 20) and tg.calls == []
+
+
+def test_same_url_with_other_fields_needs_no_token(api, configured):
+    r = api.put(
+        "/api/settings/telegram",
+        json={"api_url": "https://api.telegram.org/", "rate_per_min": 5, "send_as_file": True},
+    )
+    assert r.status_code == 200, r.text
+    assert _state(api) == (True, "https://api.telegram.org", 5)

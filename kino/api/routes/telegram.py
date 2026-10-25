@@ -132,9 +132,20 @@ async def put_telegram(request: Request, body: TelegramSettingsIn) -> TelegramSe
     token = (body.bot_token or "").strip()
     api_url = tcfg.normalize_api_url(body.api_url) if body.api_url is not None else None
     username: str | None = None
+    current = await run_in_threadpool(_config, env)
+    # Invariant: the stored token never follows an unverified URL. Every other route uses the
+    # saved URL only; this is the single place a URL is accepted from a request. Moving it
+    # while a token is stored needs the token in the same request (so it is probed against the
+    # new host first and nothing is saved on failure) or an explicit clear of the token.
+    if (
+        api_url is not None
+        and api_url != current.api_url
+        and current.has_token
+        and "bot_token" not in fields
+    ):
+        raise InvalidError("Re-enter the bot token to change the Bot API URL")
     if "bot_token" in fields and token:
         tcfg.check_token_format(token)
-        current = await run_in_threadpool(_config, env)
         # probe against the NEW api_url when both are sent; nothing is saved when this fails
         probe = TelegramConfig(bot_token=token, api_url=api_url or current.api_url, rate_per_min=1)
         username = await _get_me(request.app, probe)
