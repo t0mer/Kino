@@ -267,7 +267,7 @@ def test_link_private_chat_and_offset(api, configured):
     api.get(f"/api/telegram/link/{code2}")
     gu = [f for m, f in configured.calls if m == "getUpdates"][0]
     assert gu["offset"] == ["12"] and int(gu["timeout"][0]) <= 10
-    assert json.loads(gu["allowed_updates"][0]) == ["message", "my_chat_member"]
+    assert json.loads(gu["allowed_updates"][0]) == ["message", "channel_post", "my_chat_member"]
     # a linked code keeps answering without polling again
     configured.calls.clear()
     assert api.get(f"/api/telegram/link/{code}").json()["status"] == "linked"
@@ -282,6 +282,17 @@ def test_link_supergroup_with_bot_mention(api, configured):
     assert body["status"] == "linked"
     assert body["chat"]["chat_id"] == "-1001234567890"
     assert body["chat"]["title"] == "Class 3B parents" and body["chat"]["type"] == "supergroup"
+
+
+def test_link_channel_post(api, configured):
+    code = link_code(api)
+    chan = {"id": -1009876543210, "type": "channel", "title": "Announcements"}
+    configured.updates = [
+        {"update_id": 1, "channel_post": {"message_id": 5, "chat": chan, "text": code}}
+    ]
+    body = api.get(f"/api/telegram/link/{code}").json()
+    assert body["status"] == "linked"
+    assert body["chat"]["type"] == "channel" and body["chat"]["title"] == "Announcements"
 
 
 def test_link_two_codes_one_poll_and_relink_updates_title(api, configured):

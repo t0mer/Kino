@@ -133,7 +133,7 @@ def find_links(updates: list[dict[str, Any]], codes: list[str]) -> list[tuple[st
     mention with the code, or the bare code); codes are matched case-insensitively."""
     out: list[tuple[str, dict[str, Any]]] = []
     for update in updates:
-        msg = update.get("message")
+        msg = update.get("message") or update.get("channel_post")
         if not isinstance(msg, dict) or not isinstance(msg.get("chat"), dict):
             continue
         text = str(msg.get("text") or msg.get("caption") or "").upper()

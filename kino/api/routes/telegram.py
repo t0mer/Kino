@@ -265,7 +265,7 @@ async def poll_link(request: Request, code: str) -> TelegramLinkStatus:
         updates: list[dict[str, object]] = []
         try:
             updates = await channel.get_updates(
-                offset, timeout=POLL_TIMEOUT, allowed_updates=("message", "my_chat_member")
+                offset, timeout=POLL_TIMEOUT, allowed_updates=("message", "channel_post", "my_chat_member")
             )
         except DeliveryError as e:
             failure = e

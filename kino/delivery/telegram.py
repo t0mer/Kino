@@ -189,7 +189,7 @@ class TelegramChannel:
         self,
         offset: int | None,
         timeout: int = 0,
-        allowed_updates: Sequence[str] = ("message", "my_chat_member"),
+        allowed_updates: Sequence[str] = ("message", "channel_post", "my_chat_member"),
     ) -> list[dict[str, Any]]:
         data: dict[str, Any] = {
             "timeout": timeout,
