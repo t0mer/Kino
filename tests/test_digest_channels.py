@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import SecretStr
 from sqlalchemy import select
 
 from kino import digest, metrics
@@ -11,6 +10,7 @@ from kino.db import session as dbs
 from kino.db.models import Digest, TelegramChat
 from kino.delivery.base import SentRef
 from kino.services import InvalidError, settings_svc
+from kino.services.telegram_cfg import save_telegram_token
 from tests.test_digest import CHAT, FakeClient, add_pending, env  # noqa: F401
 
 TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
@@ -34,8 +34,9 @@ class FakeChannel:
 
 @pytest.fixture
 def tg_env(env):  # noqa: F811
-    st = env.model_copy(update={"telegram_bot_token": SecretStr(TOKEN)})
+    st = env
     with dbs.get_session() as s:
+        save_telegram_token(s, st, TOKEN, None)
         s.add(TelegramChat(chat_id=TG, title="T", type="group"))
         s.flush()
         settings_svc.update_digest(
@@ -53,7 +54,8 @@ def test_update_digest_validation(env):  # noqa: F811
             settings_svc.update_digest(s, env, chat_id=CHAT, channel="bogus", **kw)
         with pytest.raises(InvalidError, match="token"):
             settings_svc.update_digest(s, env, chat_id=TG, channel="telegram", **kw)
-        st = env.model_copy(update={"telegram_bot_token": SecretStr(TOKEN)})
+        save_telegram_token(s, env, TOKEN, None)
+        st = env
         with pytest.raises(InvalidError, match="not linked"):
             settings_svc.update_digest(s, st, chat_id=TG, channel="telegram", **kw)
         assert settings_svc.get_digest(s, env).channel == "whatsapp"
@@ -92,8 +94,9 @@ def test_changing_channel_resends_same_hash(env):  # noqa: F811
     wa = FakeClient()
     assert digest.run_digest(env, client_factory=lambda _s: wa)
     assert not digest.run_digest(env, client_factory=lambda _s: wa)
-    st = env.model_copy(update={"telegram_bot_token": SecretStr(TOKEN)})
+    st = env
     with dbs.get_session() as s:
+        save_telegram_token(s, st, TOKEN, None)
         s.add(TelegramChat(chat_id=TG, title="T", type="group"))
         s.flush()
         settings_svc.update_digest(

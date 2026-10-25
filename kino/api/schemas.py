@@ -146,6 +146,8 @@ class ForwardSettings(In):
     caption_template: Caption
     include_review_confirmed: bool
     send_caption: bool = True
+    # WhatsApp sends per minute; omitted on input keeps the current value
+    rate_per_min: Annotated[int, Field(ge=1, le=120)] | None = None
 
     def resolved(self) -> tuple[Destination | None, dict[int, Destination]]:
         """(default, per-kid) destinations after merging the legacy fields."""
@@ -276,12 +278,13 @@ class TelegramSettingsOut(BaseModel):
     rate_per_min: int
     send_as_file: bool
     delete_on_remove: bool
-    env_overrides: list[str]
 
 
 class TelegramSettingsIn(In):
     # Omitted keeps the stored token; null or "" clears it.
     bot_token: Annotated[str, Field(max_length=200)] | None = None
+    api_url: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+    rate_per_min: Annotated[int, Field(ge=1, le=600)] | None = None
     send_as_file: bool | None = None
     delete_on_remove: bool | None = None
 

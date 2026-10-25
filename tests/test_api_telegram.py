@@ -25,6 +25,7 @@ PRIVATE = {"id": 4242, "type": "private", "first_name": "Dana", "last_name": "Le
 class FakeTelegram:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, list[str]]]] = []
+        self.hosts: list[str] = []
         self.updates: list[dict] = []
         self.me_status = 200
         self.updates_status = 200
@@ -34,6 +35,7 @@ class FakeTelegram:
         ctype = req.headers.get("content-type", "")
         form = parse_qs(req.content.decode()) if "urlencoded" in ctype else {}
         self.calls.append((method, form))
+        self.hosts.append(req.url.host)
         if method == "getMe":
             if self.me_status != 200:
                 return httpx.Response(
@@ -145,7 +147,7 @@ def test_defaults(api, tg):
     body = api.get("/api/settings/telegram").json()
     assert body["has_token"] is False and body["bot_username"] is None
     assert body["send_as_file"] is False and body["delete_on_remove"] is False
-    assert body["env_overrides"] == [] and body["api_url"].startswith("https://")
+    assert body["api_url"] == "https://api.telegram.org" and body["rate_per_min"] == 20
     assert set(body) == {
         "has_token",
         "bot_username",
@@ -153,7 +155,6 @@ def test_defaults(api, tg):
         "rate_per_min",
         "send_as_file",
         "delete_on_remove",
-        "env_overrides",
     }
     assert api.get("/api/settings").json()["telegram"] == body
 
@@ -206,20 +207,68 @@ def test_clear_token_and_options(api, configured):
     assert api.put("/api/settings/telegram", json={"bot_token": ""}).json()["has_token"] is False
 
 
-def test_env_locked_token(api, tg):
-    from pydantic import SecretStr
-
-    api.app.state.settings = api.app.state.settings.model_copy(
-        update={"telegram_bot_token": SecretStr(TOKEN)}
-    )
-    r = api.put("/api/settings/telegram", json={"bot_token": "999:" + "A" * 30})
-    assert r.status_code == 409 and "KINO_TELEGRAM_BOT_TOKEN" in r.json()["detail"]
-    assert api.put("/api/settings/telegram", json={"bot_token": None}).status_code == 409
-    assert tg.calls == []
+def test_removed_env_names_are_ignored(api, tg, monkeypatch):
+    monkeypatch.setenv("KINO_TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("KINO_TELEGRAM_API_URL", "http://env.example")
+    monkeypatch.setenv("KINO_TELEGRAM_RATE_PER_MIN", "3")
     body = api.get("/api/settings/telegram").json()
-    assert body["env_overrides"] == ["bot_token"] and body["has_token"] is True
-    # options stay editable
-    assert api.put("/api/settings/telegram", json={"send_as_file": True}).status_code == 200
+    assert body["has_token"] is False
+    assert body["api_url"] == "https://api.telegram.org" and body["rate_per_min"] == 20
+
+
+def test_connection_settings_round_trip(api, tg):
+    r = api.put(
+        "/api/settings/telegram", json={"api_url": "http://bot.lan:8081/", "rate_per_min": 9}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["api_url"] == "http://bot.lan:8081" and r.json()["rate_per_min"] == 9
+    assert tg.calls == []  # changing the URL alone does not probe
+    r = api.put("/api/settings/telegram", json={"send_as_file": True})  # omitted = unchanged
+    assert (r.json()["api_url"], r.json()["rate_per_min"]) == ("http://bot.lan:8081", 9)
+    assert api.get("/api/settings").json()["telegram"] == api.get("/api/settings/telegram").json()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"api_url": "ftp://x"},
+        {"api_url": "api.telegram.org"},
+        {"api_url": "https://u:p@host"},
+        {"api_url": "https://host?x=1"},
+        {"api_url": "https://host#f"},
+        {"api_url": ""},
+        {"rate_per_min": 0},
+        {"rate_per_min": 601},
+        {"rate_per_min": "x"},
+    ],
+)
+def test_bad_connection_values_are_422(api, tg, body):
+    r = api.put("/api/settings/telegram", json=body)
+    assert r.status_code == 422, r.text
+    got = api.get("/api/settings/telegram").json()
+    assert (got["api_url"], got["rate_per_min"]) == ("https://api.telegram.org", 20)
+
+
+def test_token_and_url_together_probe_the_new_url(api, tg):
+    r = api.put(
+        "/api/settings/telegram", json={"bot_token": TOKEN, "api_url": "http://bot.lan:8081"}
+    )
+    assert r.status_code == 200, r.text
+    assert tg.hosts == ["bot.lan"]
+    assert r.json()["has_token"] and r.json()["api_url"] == "http://bot.lan:8081"
+
+
+def test_failed_probe_rolls_back_url_and_rate(api, tg):
+    tg.me_status = 401
+    r = api.put(
+        "/api/settings/telegram",
+        json={"bot_token": TOKEN, "api_url": "http://bot.lan:8081", "rate_per_min": 3},
+    )
+    assert r.status_code == 422 and TOKEN not in r.text
+    assert tg.hosts == ["bot.lan"]
+    got = api.get("/api/settings/telegram").json()
+    assert got["has_token"] is False
+    assert (got["api_url"], got["rate_per_min"]) == ("https://api.telegram.org", 20)
 
 
 def test_test_endpoint(api, configured):

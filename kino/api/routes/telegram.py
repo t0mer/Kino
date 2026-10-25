@@ -77,7 +77,6 @@ def telegram_summary(session: Session, env: Settings) -> TelegramSettingsOut:
         rate_per_min=cfg.rate_per_min,
         send_as_file=cfg.send_as_file,
         delete_on_remove=cfg.delete_on_remove,
-        env_overrides=tcfg.env_overrides(env),
     )
 
 
@@ -131,17 +130,18 @@ async def put_telegram(request: Request, body: TelegramSettingsIn) -> TelegramSe
     env = _env(request)
     fields = body.model_fields_set
     token = (body.bot_token or "").strip()
+    api_url = tcfg.normalize_api_url(body.api_url) if body.api_url is not None else None
     username: str | None = None
-    if "bot_token" in fields:
-        tcfg.ensure_unlocked(env)
-        if token:
-            tcfg.check_token_format(token)
-            current = await run_in_threadpool(_config, env)
-            probe = TelegramConfig(bot_token=token, api_url=current.api_url, rate_per_min=1)
-            username = await _get_me(request.app, probe)  # nothing is saved when this fails
+    if "bot_token" in fields and token:
+        tcfg.check_token_format(token)
+        current = await run_in_threadpool(_config, env)
+        # probe against the NEW api_url when both are sent; nothing is saved when this fails
+        probe = TelegramConfig(bot_token=token, api_url=api_url or current.api_url, rate_per_min=1)
+        username = await _get_me(request.app, probe)
 
     def save() -> TelegramSettingsOut:
-        with get_session() as s:
+        with get_session() as s:  # one transaction: any failure rolls back everything
+            tcfg.save_telegram_connection(s, api_url=api_url, rate_per_min=body.rate_per_min)
             if "bot_token" in fields:
                 tcfg.save_telegram_token(s, env, token or None, username)
                 logger.info("Telegram bot token {}", "saved" if token else "cleared")
@@ -162,7 +162,7 @@ async def put_telegram(request: Request, body: TelegramSettingsIn) -> TelegramSe
 
 @router.post("/api/telegram/test", response_model=TelegramTestOut)
 async def test_telegram(request: Request) -> TelegramTestOut:
-    """getMe with the effective configuration (environment or saved)."""
+    """getMe with the effective configuration (saved in Settings)."""
     env = _env(request)
     cfg = await run_in_threadpool(_config, env)
     if not cfg.has_token:
@@ -189,7 +189,7 @@ async def start_link(request: Request) -> TelegramLinkOut:
     cfg = await run_in_threadpool(_config, env)
     if not cfg.has_token:
         raise InvalidError("Configure the Telegram bot token before linking a chat")
-    username = cfg.bot_username  # cache; may be stale (token from env / changed)
+    username = cfg.bot_username  # cache; may be stale (token changed)
     try:
         fresh = await _get_me(request.app, cfg)
     except HTTPException:

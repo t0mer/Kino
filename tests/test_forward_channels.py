@@ -102,7 +102,6 @@ def test_set_default_destination_forces_whatsapp(s):
 
 
 def test_update_forward_validates_telegram(s, monkeypatch):
-    monkeypatch.delenv("KINO_TELEGRAM_BOT_TOKEN", raising=False)
     from kino.config import get_settings
 
     get_settings.cache_clear()
@@ -117,8 +116,9 @@ def test_update_forward_validates_telegram(s, monkeypatch):
         update_forward(s, default_channel="bogus", **kw)
     with pytest.raises(InvalidError, match="token"):
         update_forward(s, default_channel="telegram", **kw)
-    monkeypatch.setenv("KINO_TELEGRAM_BOT_TOKEN", TOKEN)
-    get_settings.cache_clear()
+    from kino.services.telegram_cfg import save_telegram_token
+
+    save_telegram_token(s, get_settings(), TOKEN, None)
     with pytest.raises(InvalidError, match="not linked"):
         update_forward(s, default_channel="telegram", **kw)
     s.add(TelegramChat(chat_id="-100", title="T", type="group"))
@@ -232,7 +232,6 @@ def test_permanent_error_fails_without_retry(tg):
 
 
 def test_missing_token_retries_instead_of_failing(tg, monkeypatch):
-    monkeypatch.delenv("KINO_TELEGRAM_BOT_TOKEN", raising=False)
     res = fw.deliver_forward(tg["telegram"], limiter=lim(), now=lambda: T0)
     r = row(tg["telegram"])
     assert res == "retry" and r.status == "pending" and r.next_attempt_at is not None
@@ -267,22 +266,28 @@ def test_telegram_destination_removed_cancels(tg, s):
     assert res == "cancelled" and ch.calls == []
 
 
-def test_telegram_limiter_follows_rate_change(monkeypatch):
-    from types import SimpleNamespace
-
-    from kino.services import telegram_cfg
-
-    rate = {"v": 20}
+def test_limiters_default_rates_for_fresh_installs(s, monkeypatch):
     monkeypatch.setattr(fw, "_limiters", {})
-    monkeypatch.setattr(
-        telegram_cfg, "load_telegram_config", lambda _s: SimpleNamespace(rate_per_min=rate["v"])
-    )
-    a = fw._default_limiter("telegram")
-    a._last = 123.0
-    assert a.interval == 3.0
-    rate["v"] = 30
-    b = fw._default_limiter("telegram")
-    assert b.interval == 2.0 and b._last == 123.0
+    assert fw._default_limiter("whatsapp").interval == 10.0  # 6 per minute
+    assert fw._default_limiter("telegram").interval == 3.0  # 20 per minute
+
+
+def test_limiters_follow_database_rates(s, monkeypatch):
+    from kino.config import get_settings
+    from kino.services.telegram_cfg import save_telegram_connection
+
+    monkeypatch.setattr(fw, "_limiters", {})
+    monkeypatch.setenv("KINO_FORWARD_RATE_PER_MIN", "1")  # removed setting: ignored
+    get_settings.cache_clear()
+    wa, tg_ = fw._default_limiter("whatsapp"), fw._default_limiter("telegram")
+    wa._last, tg_._last = 123.0, 456.0
+    cfg(s, default_chat_id="d@c.us", per_kid={}, rate_per_min=12)
+    save_telegram_connection(s, rate_per_min=30)
+    s.commit()
+    wa2, tg2 = fw._default_limiter("whatsapp"), fw._default_limiter("telegram")
+    assert wa2 is wa and (wa2.interval, wa2._last) == (5.0, 123.0)
+    assert tg2 is tg_ and (tg2.interval, tg2._last) == (2.0, 456.0)
+    get_settings.cache_clear()
 
 
 def test_per_channel_limiters(tg, monkeypatch):
