@@ -102,6 +102,15 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
   });
 
+  it("renders the Telegram section when settings include it", async () => {
+    settings.telegram = {
+      has_token: false, bot_username: null, api_url: "https://api.telegram.org", rate_per_min: 20,
+      send_as_file: false, delete_on_remove: true, env_overrides: [],
+    };
+    renderPage();
+    expect(await screen.findByTestId("section-telegram")).toBeInTheDocument();
+  });
+
   it("picker searches (debounced) and disables watched groups with the reason", async () => {
     const user = userEvent.setup();
     renderPage();

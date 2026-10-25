@@ -3,6 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { DigestSection } from "@/components/settings/DigestSection";
 import { ForwardingSection } from "@/components/settings/ForwardingSection";
 import { OpenWASection } from "@/components/settings/OpenWASection";
+import { TelegramSection } from "@/components/settings/TelegramSection";
 import { RetentionSection } from "@/components/settings/RetentionSection";
 import { SystemSection } from "@/components/settings/SystemSection";
 import { ThresholdsSection } from "@/components/settings/ThresholdsSection";
@@ -45,6 +46,7 @@ export function SettingsPage() {
     body = (
       <div className="space-y-4">
         <OpenWASection />
+        {s.telegram && <TelegramSection saved={s.telegram} />}
         <ForwardingSection saved={s.forward} kids={kids.data ?? []} />
         <DigestSection saved={s.digest} />
         <ThresholdsSection saved={s.thresholds} />
