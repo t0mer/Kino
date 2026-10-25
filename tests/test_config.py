@@ -24,7 +24,6 @@ def test_defaults():
     assert s.workers == 2
     assert s.det_size == 1024
     assert s.embedder == "auraface"
-    assert s.forward_rate_per_min == 6
 
 
 def test_yaml_used_when_env_absent(tmp_path):
@@ -80,24 +79,15 @@ def test_timezone_unknown_rejected(monkeypatch, bad):
         Settings()
 
 
-def test_telegram_defaults_and_url_normalised(monkeypatch):
+def test_removed_delivery_env_vars_are_ignored(monkeypatch):
+    for name, value in {
+        "KINO_TELEGRAM_BOT_TOKEN": "1:abc",
+        "KINO_TELEGRAM_API_URL": "ftp://bad",
+        "KINO_TELEGRAM_RATE_PER_MIN": "0",
+        "KINO_FORWARD_RATE_PER_MIN": "0",
+    }.items():
+        monkeypatch.setenv(name, value)
     s = Settings()
-    assert s.telegram_bot_token is None
-    assert (s.telegram_api_url, s.telegram_rate_per_min) == ("https://api.telegram.org", 20)
-    monkeypatch.setenv("KINO_TELEGRAM_API_URL", " http://tg.local:8081/ ")
-    monkeypatch.setenv("KINO_TELEGRAM_RATE_PER_MIN", "5")
-    s = Settings()
-    assert (s.telegram_api_url, s.telegram_rate_per_min) == ("http://tg.local:8081", 5)
-
-
-@pytest.mark.parametrize("bad", ["ftp://x", "api.telegram.org", ""])
-def test_telegram_api_url_rejected(monkeypatch, bad):
-    monkeypatch.setenv("KINO_TELEGRAM_API_URL", bad)
-    with pytest.raises(ValueError, match="telegram_api_url"):
-        Settings()
-
-
-def test_telegram_rate_must_be_positive(monkeypatch):
-    monkeypatch.setenv("KINO_TELEGRAM_RATE_PER_MIN", "0")
-    with pytest.raises(ValueError):
-        Settings()
+    for attr in ("telegram_bot_token", "telegram_api_url", "telegram_rate_per_min"):
+        assert not hasattr(s, attr)
+    assert not hasattr(s, "forward_rate_per_min")

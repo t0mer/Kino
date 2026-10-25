@@ -7,10 +7,6 @@ tiling: auto         # off | auto | always
 tile_overlap: 0.2
 raw_retention_days: 7
 face_retention_days: 30
-forward_rate_per_min: 6
-# Telegram delivery (the bot token is better kept in KINO_TELEGRAM_BOT_TOKEN or the web UI)
-# telegram_api_url: https://api.telegram.org
-telegram_rate_per_min: 20
 log_level: INFO
 
 # OpenWA integration notes (doc-derived, see kino/openwa/schemas.py for sources):
