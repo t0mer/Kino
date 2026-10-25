@@ -10,6 +10,8 @@ export interface ForwardSettings {
   caption_template: string;
   include_review_confirmed: boolean;
   send_caption: boolean;
+  /** WhatsApp sends per minute; absent on old payloads (treated as 6). */
+  rate_per_min?: number;
   /** Channel-aware destinations (the legacy WhatsApp-only fields above stay for compatibility). */
   default?: Destination | null;
   per_kid_destinations?: Record<string, Destination>;
@@ -35,9 +37,11 @@ export function forwardPerKid(f: ForwardSettings): Record<string, Destination> {
   return Object.fromEntries(Object.entries(f.per_kid ?? {}).map(([k, v]) => [k, waDest(v)]));
 }
 
+export const FORWARD_DEFAULT_RATE = 6;
+
 export function forwardPayload(f: ForwardSettings): ForwardPut {
   const { default_chat_id: _a, per_kid: _b, default: _c, per_kid_destinations: _d, ...rest } = f;
-  return { ...rest, default: forwardDefault(f), per_kid_destinations: forwardPerKid(f) };
+  return { ...rest, rate_per_min: f.rate_per_min ?? FORWARD_DEFAULT_RATE, default: forwardDefault(f), per_kid_destinations: forwardPerKid(f) };
 }
 
 export interface DigestOut {

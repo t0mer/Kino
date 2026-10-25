@@ -10,6 +10,7 @@ import type { Kid } from "@/lib/kids";
 import {
   CAPTION_MAX,
   CAPTION_PLACEHOLDERS,
+  FORWARD_DEFAULT_RATE,
   type ForwardSettings,
   fieldError,
   forwardDefault,
@@ -27,7 +28,7 @@ import {
 } from "@/lib/settings";
 import { useChatNames } from "./ChatPicker";
 import { DestinationPicker } from "./DestinationPicker";
-import { ConfirmDialog, Field, SectionCard } from "./SectionCard";
+import { ConfirmDialog, Field, NumberField, SectionCard } from "./SectionCard";
 
 export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kids: Kid[] }) {
   const qc = useQueryClient();
@@ -71,6 +72,8 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
   const captionError =
     (errors && fieldError(errors, "caption_template")) ||
     (emptyCaption ? "The caption cannot be empty" : tooLong ? `At most ${CAPTION_MAX} characters` : undefined);
+  const rate = form.rate_per_min ?? FORWARD_DEFAULT_RATE;
+  const rateOk = Number.isInteger(rate) && rate >= 1 && rate <= 120;
   const testTarget = forwardDefault(form);
   const perKid = forwardPerKid(form);
   const sendAsFile = settingsQ.data?.telegram?.send_as_file ?? false;
@@ -83,7 +86,7 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
       description="Send every saved photo to a WhatsApp or Telegram chat. Watched WhatsApp groups cannot be destinations."
       dirty={dirty}
       saving={save.isPending}
-      canSave={!captionError}
+      canSave={!captionError && rateOk}
       errors={errors}
       onSave={() => save.mutate(forwardPayload(form))}
       onReset={() => {
@@ -196,6 +199,24 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
           {form.send_caption ? previewCaption(form.caption_template, sample) : "(photo is sent without a caption)"}
         </p>
       </div>
+
+      <Field
+        id="fwd-rate"
+        label="WhatsApp send rate (messages per minute)"
+        error={errors ? fieldError(errors, "rate_per_min") : undefined}
+        hint="Guards against WhatsApp bans; keep it low. Telegram has its own rate in the Telegram section."
+      >
+        <NumberField
+          id="fwd-rate"
+          className="w-32"
+          min={1}
+          max={120}
+          step={1}
+          value={form.rate_per_min ?? FORWARD_DEFAULT_RATE}
+          error={errors ? fieldError(errors, "rate_per_min") : undefined}
+          onChange={(v) => set({ rate_per_min: v })}
+        />
+      </Field>
 
       <label className="flex items-center justify-between gap-3">
         <span className="text-sm">Also forward photos confirmed from the review queue</span>

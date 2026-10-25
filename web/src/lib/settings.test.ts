@@ -91,8 +91,9 @@ describe("destination helpers", () => {
     const out = forwardPayload({ ...base, default_chat_id: "1@g.us", per_kid: { "2": "1@g.us" } });
     expect(out).toEqual({
       enabled: true, caption_template: "x", include_review_confirmed: true, send_caption: true,
-      default: wa, per_kid_destinations: { "2": wa },
+      rate_per_min: 6, default: wa, per_kid_destinations: { "2": wa },
     });
+    expect(forwardPayload({ ...base, rate_per_min: 12 }).rate_per_min).toBe(12);
   });
   it("digestToForm falls back to legacy chat_id; null destination wins", () => {
     const d = { chat_id: "1@g.us", cron: "", apprise_urls: [], public_base_url: null };

@@ -105,10 +105,36 @@ describe("SettingsPage", () => {
   it("renders the Telegram section when settings include it", async () => {
     settings.telegram = {
       has_token: false, bot_username: null, api_url: "https://api.telegram.org", rate_per_min: 20,
-      send_as_file: false, delete_on_remove: true, env_overrides: [],
+      send_as_file: false, delete_on_remove: true,
     };
     renderPage();
     expect(await screen.findByTestId("section-telegram")).toBeInTheDocument();
+  });
+
+  it("forwarding rate: old payload shows 6, edit round-trips in the PUT", async () => {
+    const user = userEvent.setup();
+    routes["PUT /api/settings/forward"] = (c) => json(200, c.body);
+    renderPage();
+    const fwd = await section("forwarding");
+    const rate = fwd.getByLabelText("WhatsApp send rate (messages per minute)");
+    expect(rate).toHaveValue(6);
+    await user.clear(rate);
+    await user.type(rate, "10");
+    await user.click(fwd.getByRole("button", { name: "Save Forwarding" }));
+    await waitFor(() => expect(puts("/api/settings/forward")).toHaveLength(1));
+    expect(puts("/api/settings/forward")[0]?.body).toMatchObject({ rate_per_min: 10 });
+    await waitFor(() => expect(fwd.getByLabelText("WhatsApp send rate (messages per minute)")).toHaveValue(10));
+  });
+
+  it("forwarding rate: out of range disables save", async () => {
+    const user = userEvent.setup();
+    settings.forward.rate_per_min = 6;
+    renderPage();
+    const fwd = await section("forwarding");
+    const rate = fwd.getByLabelText("WhatsApp send rate (messages per minute)");
+    await user.clear(rate);
+    await user.type(rate, "121");
+    expect(fwd.getByRole("button", { name: "Save Forwarding" })).toBeDisabled();
   });
 
   it("picker searches (debounced) and disables watched groups with the reason", async () => {
@@ -205,7 +231,7 @@ describe("SettingsPage", () => {
   describe("Telegram destinations", () => {
     const tgSettings = (send_as_file = false) => ({
       has_token: true, bot_username: "kino_bot", api_url: "https://api.telegram.org", rate_per_min: 20,
-      send_as_file, delete_on_remove: true, env_overrides: [] as never[],
+      send_as_file, delete_on_remove: true,
     });
     const tgChat = { id: 1, chat_id: "-100500", title: "Family TG", type: "group", linked_at: "2026-10-01T00:00:00" };
     beforeEach(() => {
