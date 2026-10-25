@@ -9,9 +9,11 @@ from sqlalchemy import select
 
 import kino
 from kino.api.deps import protected_router
+from kino.api.routes.telegram import telegram_summary
 from kino.api.schemas import (
     CaptionPreview,
     CaptionPreviewIn,
+    Destination,
     DigestIn,
     DigestOut,
     ForwardSettings,
@@ -38,16 +40,31 @@ def _env(request: Request) -> Settings:
     return settings
 
 
+def _dest(channel: str, chat_id: str) -> Destination:
+    return Destination.model_validate({"channel": channel, "chat_id": chat_id})
+
+
 def _forward(cfg: ForwardConfig) -> ForwardSettings:
-    return ForwardSettings.model_validate(
-        # channel fields are exposed by the API step that adds them to the schema
-        cfg.model_dump(exclude={"default_channel", "per_kid_channel"})
+    default = _dest(cfg.default_channel, cfg.default_chat_id) if cfg.default_chat_id else None
+    per_kid = {k: _dest(cfg.per_kid_channel.get(k, "whatsapp"), c) for k, c in cfg.per_kid.items()}
+    return ForwardSettings(
+        enabled=cfg.enabled,
+        # legacy fields: the WhatsApp destinations only
+        default_chat_id=default.chat_id if default and default.channel == "whatsapp" else None,
+        per_kid={k: d.chat_id for k, d in per_kid.items() if d.channel == "whatsapp"},
+        default=default,
+        per_kid_destinations=per_kid,
+        caption_template=cfg.caption_template,
+        include_review_confirmed=cfg.include_review_confirmed,
+        send_caption=cfg.send_caption,
     )
 
 
 def _digest(cfg: svc.DigestConfig) -> DigestOut:
+    dest = _dest(cfg.channel, cfg.chat_id) if cfg.chat_id else None
     return DigestOut(
-        chat_id=cfg.chat_id,
+        chat_id=cfg.chat_id if dest and dest.channel == "whatsapp" else None,
+        destination=dest,
         cron=cfg.cron,
         apprise_urls=[svc.mask_url(u) for u in cfg.apprise_urls],
         public_base_url=cfg.public_base_url,
@@ -77,6 +94,7 @@ def get_all(request: Request) -> SettingsOut:
         return SettingsOut(
             forward=_forward(svc.get_forward_config(s)),
             digest=_digest(svc.get_digest(s, env)),
+            telegram=telegram_summary(s, env),
             thresholds=ThresholdsOut.model_validate(svc.get_thresholds(s)),
             retention=Retention.model_validate(svc.get_retention(s, env)),
             embedder=env.embedder,
@@ -93,8 +111,21 @@ def get_forward() -> ForwardSettings:
 
 @router.put("/forward", response_model=ForwardSettings)
 def put_forward(body: ForwardSettings) -> ForwardSettings:
+    default, per_kid = body.resolved()
     with get_session() as s:
-        return _forward(svc.update_forward(s, **body.model_dump()))
+        return _forward(
+            svc.update_forward(
+                s,
+                enabled=body.enabled,
+                default_chat_id=default.chat_id if default else None,
+                default_channel=default.channel if default else "whatsapp",
+                per_kid={k: d.chat_id for k, d in per_kid.items()},
+                per_kid_channel={k: d.channel for k, d in per_kid.items()},
+                caption_template=body.caption_template,
+                include_review_confirmed=body.include_review_confirmed,
+                send_caption=body.send_caption,
+            )
+        )
 
 
 @router.post("/forward/preview", response_model=CaptionPreview)
@@ -117,8 +148,22 @@ def get_digest(request: Request) -> DigestOut:
 
 @router.put("/digest", response_model=DigestOut)
 def put_digest(request: Request, body: DigestIn) -> DigestOut:
+    if "destination" in body.model_fields_set:
+        dest = body.destination
+    else:
+        dest = Destination(channel="whatsapp", chat_id=body.chat_id) if body.chat_id else None
     with get_session() as s:
-        return _digest(svc.update_digest(s, _env(request), **body.model_dump()))
+        return _digest(
+            svc.update_digest(
+                s,
+                _env(request),
+                chat_id=dest.chat_id if dest else None,
+                channel=dest.channel if dest else "whatsapp",
+                cron=body.cron,
+                apprise_urls=body.apprise_urls,
+                public_base_url=body.public_base_url,
+            )
+        )
 
 
 @router.get("/thresholds", response_model=ThresholdsOut)

@@ -136,6 +136,7 @@ def image_detail(request: Request, image_id: int) -> ImageDetailOut:
             forwards=[
                 ImageForwardOut(
                     id=f.id,
+                    channel=f.channel,
                     status=f.status,
                     attempts=f.attempts,
                     kid_ids=list(f.kid_ids or []),
