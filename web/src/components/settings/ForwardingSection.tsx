@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,9 @@ import {
   CAPTION_PLACEHOLDERS,
   type ForwardSettings,
   fieldError,
+  forwardDefault,
+  forwardPayload,
+  forwardPerKid,
   isDirty,
   type ParsedErrors,
   parseFieldErrors,
@@ -22,12 +25,14 @@ import {
   type SettingsOut,
   unknownPlaceholders,
 } from "@/lib/settings";
-import { ChatPicker, useChatNames } from "./ChatPicker";
+import { useChatNames } from "./ChatPicker";
+import { DestinationPicker } from "./DestinationPicker";
 import { ConfirmDialog, Field, SectionCard } from "./SectionCard";
 
 export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kids: Kid[] }) {
   const qc = useQueryClient();
   const names = useChatNames();
+  const settingsQ = useQuery({ queryKey: settingsKeys.all, queryFn: settingsApi.get, staleTime: Infinity });
   const [draft, setDraft] = useState<ForwardSettings | null>(null);
   const [errors, setErrors] = useState<ParsedErrors | null>(null);
   const [confirmTest, setConfirmTest] = useState(false);
@@ -66,18 +71,21 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
   const captionError =
     (errors && fieldError(errors, "caption_template")) ||
     (emptyCaption ? "The caption cannot be empty" : tooLong ? `At most ${CAPTION_MAX} characters` : undefined);
-  const testTarget = form.default_chat_id;
+  const testTarget = forwardDefault(form);
+  const perKid = forwardPerKid(form);
+  const sendAsFile = settingsQ.data?.telegram?.send_as_file ?? false;
+  const channelName = testTarget?.channel === "telegram" ? "Telegram" : "WhatsApp";
 
   return (
     <SectionCard
       id="forwarding"
       title="Forwarding"
-      description="Send every saved photo to a WhatsApp chat or group. Watched groups cannot be destinations."
+      description="Send every saved photo to a WhatsApp or Telegram chat. Watched WhatsApp groups cannot be destinations."
       dirty={dirty}
       saving={save.isPending}
       canSave={!captionError}
       errors={errors}
-      onSave={() => save.mutate(form)}
+      onSave={() => save.mutate(forwardPayload(form))}
       onReset={() => {
         setDraft(null);
         setErrors(null);
@@ -91,16 +99,24 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
       <Field
         id="fwd-default"
         label="Default destination"
-        error={errors ? fieldError(errors, "default_chat_id") : undefined}
+        error={errors ? (fieldError(errors, "default") ?? fieldError(errors, "default_chat_id")) : undefined}
         hint="Used for every kid without an override below."
       >
-        <ChatPicker
+        <DestinationPicker
           id="fwd-default"
           label="Default destination"
-          value={form.default_chat_id}
-          names={names}
-          onChange={(v) => set({ default_chat_id: v })}
+          value={testTarget}
+          onChange={(v) => set({ default: v })}
         />
+        {testTarget?.channel === "telegram" && sendAsFile && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="telegram-file-note">
+            Photos are sent as files (original quality) — change in the{" "}
+            <a href="#telegram" className="underline underline-offset-2">
+              Telegram section
+            </a>
+            .
+          </p>
+        )}
       </Field>
 
       <div className="space-y-2">
@@ -117,18 +133,17 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
                     {k.display_name}
                   </span>
                   <div>
-                    <ChatPicker
+                    <DestinationPicker
                       id={`fwd-kid-${k.id}`}
                       label={`Destination for ${k.display_name}`}
-                      value={form.per_kid[String(k.id)] ?? null}
-                      names={names}
+                      value={perKid[String(k.id)] ?? null}
                       emptyLabel="Use default"
                       error={pathErr}
                       onChange={(v) => {
-                        const next = { ...form.per_kid };
+                        const next = { ...perKid };
                         if (v) next[String(k.id)] = v;
                         else delete next[String(k.id)];
-                        set({ per_kid: next });
+                        set({ per_kid_destinations: next });
                       }}
                     />
                     {pathErr && (
@@ -204,8 +219,10 @@ export function ForwardingSection({ saved, kids }: { saved: ForwardSettings; kid
         title="Send a test photo?"
         description={
           <p>
-            A real WhatsApp message with a generated test photo will be sent to{" "}
-            <strong dir="auto">{testTarget ? (names.get(testTarget)?.trim() || testTarget) : ""}</strong>.
+            A real {channelName} message with a generated test photo will be sent to{" "}
+            <strong dir="auto">
+              {testTarget ? (testTarget.channel === "whatsapp" ? names.get(testTarget.chat_id)?.trim() || testTarget.chat_id : testTarget.chat_id) : ""}
+            </strong>.
           </p>
         }
         confirmLabel="Send test photo"

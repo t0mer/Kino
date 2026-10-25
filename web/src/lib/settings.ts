@@ -15,6 +15,31 @@ export interface ForwardSettings {
   per_kid_destinations?: Record<string, Destination>;
 }
 
+/** PUT body: only the channel-aware fields (they win over the legacy WhatsApp-only ones). */
+export type ForwardPut = Omit<ForwardSettings, "default_chat_id" | "per_kid" | "default" | "per_kid_destinations"> & {
+  default: Destination | null;
+  per_kid_destinations: Record<string, Destination>;
+};
+
+const waDest = (chat_id: string): Destination => ({ channel: "whatsapp", chat_id });
+
+/** Default destination, falling back to the legacy WhatsApp-only field. */
+export function forwardDefault(f: ForwardSettings): Destination | null {
+  if (f.default !== undefined) return f.default;
+  return f.default_chat_id ? waDest(f.default_chat_id) : null;
+}
+
+/** Per-kid destinations, falling back to the legacy WhatsApp-only map. */
+export function forwardPerKid(f: ForwardSettings): Record<string, Destination> {
+  if (f.per_kid_destinations) return f.per_kid_destinations;
+  return Object.fromEntries(Object.entries(f.per_kid ?? {}).map(([k, v]) => [k, waDest(v)]));
+}
+
+export function forwardPayload(f: ForwardSettings): ForwardPut {
+  const { default_chat_id: _a, per_kid: _b, default: _c, per_kid_destinations: _d, ...rest } = f;
+  return { ...rest, default: forwardDefault(f), per_kid_destinations: forwardPerKid(f) };
+}
+
 export interface DigestOut {
   chat_id: string | null;
   destination?: Destination | null;
@@ -25,7 +50,7 @@ export interface DigestOut {
 }
 
 export interface DigestForm {
-  chat_id: string | null;
+  destination: Destination | null;
   cron: string;
   apprise_urls: string[];
   public_base_url: string;
@@ -104,9 +129,9 @@ export const settingsKeys = {
 
 export const settingsApi = {
   get: () => api.get<SettingsOut>("/api/settings"),
-  putForward: (b: ForwardSettings) => api.put<ForwardSettings>("/api/settings/forward", b),
+  putForward: (b: ForwardPut) => api.put<ForwardSettings>("/api/settings/forward", b),
   putDigest: (b: {
-    chat_id: string | null;
+    destination: Destination | null;
     cron: string;
     apprise_urls: string[];
     public_base_url: string | null;
@@ -204,9 +229,15 @@ export function parseFieldErrors(detail: string): ParsedErrors {
 
 /** Message for a form field (exact path, or any path below it). */
 export function fieldError(errors: ParsedErrors, path: string): string | undefined {
-  if (errors.fields[path]) return errors.fields[path];
-  const key = Object.keys(errors.fields).find((k) => k.startsWith(`${path}.`));
-  return key ? errors.fields[key] : undefined;
+  const paths = [path];
+  if (path.startsWith("per_kid.")) paths.push(path.replace("per_kid.", "per_kid_destinations."));
+  else if (path === "per_kid") paths.push("per_kid_destinations");
+  for (const p of paths) {
+    if (errors.fields[p]) return errors.fields[p];
+    const key = Object.keys(errors.fields).find((k) => k.startsWith(`${p}.`));
+    if (key) return errors.fields[key];
+  }
+  return undefined;
 }
 
 // --- thresholds ---------------------------------------------------------------------------
@@ -263,12 +294,13 @@ export function chatLabel(id: string, names: Map<string, string | null>): string
 }
 
 export function digestToForm(d: DigestOut): DigestForm {
-  return { chat_id: d.chat_id, cron: d.cron, apprise_urls: d.apprise_urls, public_base_url: d.public_base_url ?? "" };
+  const destination = d.destination !== undefined ? d.destination : d.chat_id ? waDest(d.chat_id) : null;
+  return { destination, cron: d.cron, apprise_urls: d.apprise_urls, public_base_url: d.public_base_url ?? "" };
 }
 
 export function digestPayload(f: DigestForm) {
   return {
-    chat_id: f.chat_id,
+    destination: f.destination,
     cron: f.cron.trim(),
     apprise_urls: f.apprise_urls.map((u) => u.trim()).filter(Boolean),
     public_base_url: f.public_base_url.trim() || null,
