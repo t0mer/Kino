@@ -1,6 +1,7 @@
 /** Settings API (CLAUDE.md §9.9, §11.7, §12) and the pure helpers the Settings page uses. */
 
 import { api } from "./api";
+import type { Destination, TelegramSettings } from "./telegram";
 
 export interface ForwardSettings {
   enabled: boolean;
@@ -9,10 +10,14 @@ export interface ForwardSettings {
   caption_template: string;
   include_review_confirmed: boolean;
   send_caption: boolean;
+  /** Channel-aware destinations (the legacy WhatsApp-only fields above stay for compatibility). */
+  default?: Destination | null;
+  per_kid_destinations?: Record<string, Destination>;
 }
 
 export interface DigestOut {
   chat_id: string | null;
+  destination?: Destination | null;
   cron: string;
   /** Masked by the API (scheme only). */
   apprise_urls: string[];
@@ -62,6 +67,7 @@ export interface SettingsOut {
   digest: DigestOut;
   thresholds: ThresholdsOut;
   retention: Retention;
+  telegram?: TelegramSettings;
   embedder: string;
   models: ModelInfo[];
   version: string;
@@ -108,7 +114,8 @@ export const settingsApi = {
   putThresholds: (b: Thresholds) => api.put<ThresholdsOut>("/api/settings/thresholds", b),
   putRetention: (b: Retention) => api.put<Retention>("/api/settings/retention", b),
   chats: (q: string) => api.get<Chat[]>("/api/openwa/chats", { query: { q } }),
-  testForward: (chat_id: string) => api.post<{ sent: boolean }>("/api/forward/test", { chat_id }),
+  testForward: (dest: string | Destination) =>
+    api.post<{ sent: boolean }>("/api/forward/test", typeof dest === "string" ? { chat_id: dest } : dest),
   webhook: () => api.get<WebhookStatus>("/api/openwa/webhook"),
   registerWebhook: () => api.post<WebhookRegistered>("/api/openwa/webhook/register", {}),
 };
