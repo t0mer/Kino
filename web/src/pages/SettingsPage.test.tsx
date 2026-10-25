@@ -138,7 +138,13 @@ describe("SettingsPage", () => {
     expect(fwd.getByText("Unsaved changes")).toBeInTheDocument();
     await user.click(fwd.getByRole("button", { name: "Save Forwarding" }));
     await waitFor(() => expect(puts("/api/settings/forward")).toHaveLength(1));
-    expect(puts("/api/settings/forward")[0]?.body).toMatchObject({ enabled: true, default_chat_id: "111@g.us", per_kid: { "2": "333@c.us" } });
+    expect(puts("/api/settings/forward")[0]?.body).toMatchObject({
+      enabled: true,
+      default: { channel: "whatsapp", chat_id: "111@g.us" },
+      per_kid_destinations: { "2": { channel: "whatsapp", chat_id: "333@c.us" } },
+    });
+    expect(puts("/api/settings/forward")[0]?.body).not.toHaveProperty("default_chat_id");
+    expect(puts("/api/settings/forward")[0]?.body).not.toHaveProperty("per_kid");
     await waitFor(() => expect(fwd.queryByText("Unsaved changes")).not.toBeInTheDocument());
     await user.click(fwd.getByRole("button", { name: "Clear Destination for איתי" }));
     expect(fwd.getByRole("button", { name: /Destination for איתי: Use default/ })).toBeInTheDocument();
@@ -186,7 +192,7 @@ describe("SettingsPage", () => {
     expect(calls.some((c) => c.url === "/api/forward/test")).toBe(false);
     await user.click(fwd.getByRole("button", { name: /Send test photo/ }));
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Send test photo" }));
-    await waitFor(() => expect(calls.find((c) => c.url === "/api/forward/test")?.body).toEqual({ chat_id: "333@c.us" }));
+    await waitFor(() => expect(calls.find((c) => c.url === "/api/forward/test")?.body).toEqual({ channel: "whatsapp", chat_id: "333@c.us" }));
     expect(await screen.findByText("Test photo sent")).toBeInTheDocument();
   });
 
@@ -194,6 +200,120 @@ describe("SettingsPage", () => {
     renderPage();
     const fwd = await section("forwarding");
     expect(fwd.getByRole("button", { name: /Send test photo/ })).toBeDisabled();
+  });
+
+  describe("Telegram destinations", () => {
+    const tgSettings = (send_as_file = false) => ({
+      has_token: true, bot_username: "kino_bot", api_url: "https://api.telegram.org", rate_per_min: 20,
+      send_as_file, delete_on_remove: true, env_overrides: [] as never[],
+    });
+    const tgChat = { id: 1, chat_id: "-100500", title: "Family TG", type: "group", linked_at: "2026-10-01T00:00:00" };
+    beforeEach(() => {
+      settings.telegram = tgSettings();
+      routes["GET /api/telegram/chats"] = () => json(200, [tgChat]);
+    });
+
+    it("saves a Telegram default and per-kid override", async () => {
+      const user = userEvent.setup();
+      routes["PUT /api/settings/forward"] = (c) => json(200, c.body);
+      renderPage();
+      const fwd = await section("forwarding");
+      await user.click(fwd.getByRole("group", { name: "Default destination channel" }).querySelectorAll("button")[1]!);
+      await user.selectOptions(await fwd.findByRole("combobox", { name: "Default destination" }), "-100500");
+      await user.click(fwd.getByRole("group", { name: "Destination for איתי channel" }).querySelectorAll("button")[1]!);
+      await user.selectOptions(await fwd.findByRole("combobox", { name: "Destination for איתי" }), "-100500");
+      await user.click(fwd.getByRole("button", { name: "Save Forwarding" }));
+      await waitFor(() => expect(puts("/api/settings/forward")).toHaveLength(1));
+      expect(puts("/api/settings/forward")[0]?.body).toMatchObject({
+        default: { channel: "telegram", chat_id: "-100500" },
+        per_kid_destinations: { "2": { channel: "telegram", chat_id: "-100500" } },
+      });
+    });
+
+    it("switching channel clears the chosen chat", async () => {
+      const user = userEvent.setup();
+      settings.forward.default = { channel: "telegram", chat_id: "-100500" };
+      renderPage();
+      const fwd = await section("forwarding");
+      expect(fwd.getByRole("combobox", { name: "Default destination" })).toHaveValue("-100500");
+      await user.click(fwd.getByRole("button", { name: "WhatsApp" , pressed: false }));
+      expect(await fwd.findByRole("button", { name: /Default destination: Not set/ })).toBeInTheDocument();
+      expect(fwd.getByText("Unsaved changes")).toBeInTheDocument();
+    });
+
+    it("renders legacy-only forward settings as WhatsApp destinations", async () => {
+      settings.forward.default_chat_id = "333@c.us";
+      settings.forward.per_kid = { "1": "111@g.us" };
+      renderPage();
+      const fwd = await section("forwarding");
+      expect(await fwd.findByRole("button", { name: /Default destination: Dana/ })).toBeInTheDocument();
+      expect(await fwd.findByRole("button", { name: /Destination for Noa: Family/ })).toBeInTheDocument();
+    });
+
+    it("sends the test photo to the Telegram destination and says so", async () => {
+      const user = userEvent.setup();
+      routes["POST /api/forward/test"] = () => json(200, { sent: true });
+      settings.forward.default = { channel: "telegram", chat_id: "-100500" };
+      renderPage();
+      const fwd = await section("forwarding");
+      await user.click(fwd.getByRole("button", { name: /Send test photo/ }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/real Telegram message/)).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: "Send test photo" }));
+      await waitFor(() =>
+        expect(calls.find((c) => c.url === "/api/forward/test")?.body).toEqual({ channel: "telegram", chat_id: "-100500" }),
+      );
+    });
+
+    it("notes send-as-file only for a Telegram default", async () => {
+      settings.telegram = tgSettings(true);
+      settings.forward.default = { channel: "telegram", chat_id: "-100500" };
+      renderPage();
+      const fwd = await section("forwarding");
+      expect(await fwd.findByTestId("telegram-file-note")).toHaveTextContent("Photos are sent as files (original quality)");
+    });
+
+    it("hides the file note for WhatsApp defaults", async () => {
+      settings.telegram = tgSettings(true);
+      settings.forward.default = { channel: "whatsapp", chat_id: "333@c.us" };
+      renderPage();
+      const fwd = await section("forwarding");
+      await fwd.findByRole("button", { name: /Default destination: Dana/ });
+      expect(fwd.queryByTestId("telegram-file-note")).not.toBeInTheDocument();
+    });
+
+    it("shows the link-a-chat hint when no Telegram chat exists", async () => {
+      routes["GET /api/telegram/chats"] = () => json(200, []);
+      settings.forward.default = { channel: "telegram", chat_id: "-1" };
+      renderPage();
+      const fwd = await section("forwarding");
+      expect(await fwd.findByRole("link", { name: "Telegram section" })).toHaveAttribute("href", "#telegram");
+    });
+
+    it("digest: round-trips a Telegram destination", async () => {
+      const user = userEvent.setup();
+      routes["PUT /api/settings/digest"] = (c) => json(200, c.body);
+      settings.digest.destination = { channel: "telegram", chat_id: "-100500" };
+      renderPage();
+      const d = await section("digest");
+      expect(d.getByRole("combobox", { name: "Digest chat" })).toHaveValue("-100500");
+      await user.type(d.getByLabelText("Public base URL"), "https://k.example.com");
+      await user.click(d.getByRole("button", { name: "Save Review digest" }));
+      await waitFor(() => expect(puts("/api/settings/digest")).toHaveLength(1));
+      expect(puts("/api/settings/digest")[0]?.body).toEqual({
+        destination: { channel: "telegram", chat_id: "-100500" },
+        cron: "0 20 * * *",
+        apprise_urls: ["tgram://****"],
+        public_base_url: "https://k.example.com",
+      });
+    });
+
+    it("digest: legacy chat_id shows as a WhatsApp destination", async () => {
+      settings.digest.chat_id = "333@c.us";
+      renderPage();
+      const d = await section("digest");
+      expect(await d.findByRole("button", { name: /Digest chat: Dana/ })).toBeInTheDocument();
+    });
   });
 
   it("digest: shows the info note, masked URLs, and saves", async () => {
@@ -206,7 +326,7 @@ describe("SettingsPage", () => {
     await user.type(d.getByLabelText("Public base URL"), "https://k.example.com");
     await user.click(d.getByRole("button", { name: "Save Review digest" }));
     await waitFor(() => expect(puts("/api/settings/digest")).toHaveLength(1));
-    expect(puts("/api/settings/digest")[0]?.body).toEqual({ chat_id: null, cron: "0 20 * * *", apprise_urls: ["tgram://****"], public_base_url: "https://k.example.com" });
+    expect(puts("/api/settings/digest")[0]?.body).toEqual({ destination: null, cron: "0 20 * * *", apprise_urls: ["tgram://****"], public_base_url: "https://k.example.com" });
   });
 
   it("digest: shows a cron error from the API", async () => {

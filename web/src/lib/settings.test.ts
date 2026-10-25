@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_THRESHOLDS,
   digestPayload,
+  digestToForm,
+  forwardDefault,
+  forwardPayload,
+  forwardPerKid,
   fieldError,
   isDirty,
   isEqual,
@@ -73,10 +77,38 @@ describe("validation", () => {
   });
 });
 
+describe("destination helpers", () => {
+  const wa = { channel: "whatsapp", chat_id: "1@g.us" } as const;
+  const base = { enabled: true, default_chat_id: null, per_kid: {}, caption_template: "x", include_review_confirmed: true, send_caption: true };
+  it("forward helpers prefer new fields and fall back to legacy", () => {
+    expect(forwardDefault({ ...base, default_chat_id: "1@g.us" })).toEqual(wa);
+    expect(forwardDefault({ ...base, default_chat_id: "1@g.us", default: null })).toBeNull();
+    expect(forwardPerKid({ ...base, per_kid: { "2": "1@g.us" } })).toEqual({ "2": wa });
+    const tg = { channel: "telegram", chat_id: "-5" } as const;
+    expect(forwardPerKid({ ...base, per_kid: { "2": "1@g.us" }, per_kid_destinations: { "3": tg } })).toEqual({ "3": tg });
+  });
+  it("forwardPayload sends only the new fields", () => {
+    const out = forwardPayload({ ...base, default_chat_id: "1@g.us", per_kid: { "2": "1@g.us" } });
+    expect(out).toEqual({
+      enabled: true, caption_template: "x", include_review_confirmed: true, send_caption: true,
+      default: wa, per_kid_destinations: { "2": wa },
+    });
+  });
+  it("digestToForm falls back to legacy chat_id; null destination wins", () => {
+    const d = { chat_id: "1@g.us", cron: "", apprise_urls: [], public_base_url: null };
+    expect(digestToForm(d).destination).toEqual(wa);
+    expect(digestToForm({ ...d, destination: null }).destination).toBeNull();
+  });
+  it("fieldError covers per_kid_destinations paths", () => {
+    const e = parseFieldErrors("per_kid_destinations.3: bad");
+    expect(fieldError(e, "per_kid.3")).toBe("bad");
+  });
+});
+
 describe("digestPayload", () => {
   it("trims, drops blanks and nulls empty base url", () => {
-    expect(digestPayload({ chat_id: null, cron: " 0 20 * * * ", apprise_urls: ["tgram://****", " "], public_base_url: " " })).toEqual({
-      chat_id: null,
+    expect(digestPayload({ destination: null, cron: " 0 20 * * * ", apprise_urls: ["tgram://****", " "], public_base_url: " " })).toEqual({
+      destination: null,
       cron: "0 20 * * *",
       apprise_urls: ["tgram://****"],
       public_base_url: null,
