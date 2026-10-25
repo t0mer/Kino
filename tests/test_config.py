@@ -78,3 +78,26 @@ def test_timezone_unknown_rejected(monkeypatch, bad):
     monkeypatch.setenv("KINO_TIMEZONE", bad)
     with pytest.raises(ValueError, match="timezone"):
         Settings()
+
+
+def test_telegram_defaults_and_url_normalised(monkeypatch):
+    s = Settings()
+    assert s.telegram_bot_token is None
+    assert (s.telegram_api_url, s.telegram_rate_per_min) == ("https://api.telegram.org", 20)
+    monkeypatch.setenv("KINO_TELEGRAM_API_URL", " http://tg.local:8081/ ")
+    monkeypatch.setenv("KINO_TELEGRAM_RATE_PER_MIN", "5")
+    s = Settings()
+    assert (s.telegram_api_url, s.telegram_rate_per_min) == ("http://tg.local:8081", 5)
+
+
+@pytest.mark.parametrize("bad", ["ftp://x", "api.telegram.org", ""])
+def test_telegram_api_url_rejected(monkeypatch, bad):
+    monkeypatch.setenv("KINO_TELEGRAM_API_URL", bad)
+    with pytest.raises(ValueError, match="telegram_api_url"):
+        Settings()
+
+
+def test_telegram_rate_must_be_positive(monkeypatch):
+    monkeypatch.setenv("KINO_TELEGRAM_RATE_PER_MIN", "0")
+    with pytest.raises(ValueError):
+        Settings()

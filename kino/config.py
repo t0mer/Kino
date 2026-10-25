@@ -6,6 +6,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -90,12 +91,24 @@ class Settings(BaseSettings):
             ) from None
         return v
 
+    @field_validator("telegram_api_url")
+    @classmethod
+    def _telegram_api_url(cls, v: str) -> str:
+        v = v.strip().rstrip("/")
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("telegram_api_url must be an http(s) URL")
+        return v
+
     raw_retention_days: int = 7
     face_retention_days: int = 30
     burst_enabled: bool = False
     digest_cron: str = "0 20 * * *"
     apprise_urls: str | None = None
     forward_rate_per_min: int = Field(6, ge=1)
+    telegram_bot_token: SecretStr | None = None
+    telegram_api_url: str = "https://api.telegram.org"
+    telegram_rate_per_min: int = Field(20, ge=1)
     backfill_delay_seconds: float = Field(1.0, ge=0)  # pause after each fetched history photo
     log_level: str = "INFO"
     log_json: bool = False
