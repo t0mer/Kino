@@ -135,6 +135,21 @@ await surface('settings-forwarding', async (p) => {
   await open(p, '/settings', 'text=Forwarding');
   await p.evaluate(() => { const h = [...document.querySelectorAll('h2,h3')].find((e) => e.textContent.trim() === 'Forwarding'); h?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -80); });
 });
+await surface('settings-telegram', async (p) => {
+  await open(p, '/settings', '[data-testid=section-telegram]');
+  await p.waitForSelector('text=Family photos');
+  await p.evaluate(() => { document.querySelector('[data-testid=section-telegram]')?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -24); });
+});
+await surface('telegram-link', async (p) => {
+  await open(p, '/settings', '[data-testid=section-telegram]');
+  await p.getByRole('button', { name: 'Link a chat' }).click();
+  await p.waitForSelector('[data-testid=link-code]');
+  await p.waitForSelector('text=Waiting for message');
+});
+await surface('settings-digest', async (p) => {
+  await open(p, '/settings', '[data-testid=section-digest]');
+  await p.evaluate(() => { document.querySelector('[data-testid=section-digest]')?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -24); });
+});
 await surface('settings-thresholds', async (p) => {
   await open(p, '/settings', 'text=Forwarding');
   await p.getByRole('heading', { name: /Thresholds/ }).first().scrollIntoViewIfNeeded();

@@ -335,7 +335,7 @@ await run('test page: sliders change buckets', async () => {
 
 await run('settings: sections load, thresholds save, chat picker fails gracefully', async () => {
   await nav('Settings');
-  for (const id of ['forwarding', 'digest', 'thresholds', 'retention']) await page.getByTestId(`section-${id}`).waitFor();
+  for (const id of ['forwarding', 'telegram', 'digest', 'thresholds', 'retention']) await page.getByTestId(`section-${id}`).waitFor();
   // thresholds: change the first numeric field, save, confirm through the API
   const before = JSON.stringify(await getJson('/api/settings/thresholds'));
   const field = page.getByTestId('section-thresholds').locator('input').first();
