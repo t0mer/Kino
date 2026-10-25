@@ -12,15 +12,18 @@ import {
   type TelegramChat,
   type TelegramSettings,
   type TelegramSettingsPut,
-  TELEGRAM_ENV_NAMES,
+  TELEGRAM_DEFAULT_API_URL,
+  TELEGRAM_DEFAULT_RATE,
   telegramApi,
   telegramKeys,
 } from "@/lib/telegram";
 import { LinkChatDialog } from "./LinkChatDialog";
-import { ConfirmDialog, Field, SectionCard } from "./SectionCard";
+import { ConfirmDialog, Field, NumberField, SectionCard } from "./SectionCard";
 
 interface Draft {
   token: string;
+  api_url: string;
+  rate_per_min: number;
   send_as_file: boolean;
   delete_on_remove: boolean;
 }
@@ -35,13 +38,22 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
   const [unlinkError, setUnlinkError] = useState<string | null>(null);
   const [testedBot, setTestedBot] = useState<string | null>(null);
 
-  const base: Draft = { token: "", send_as_file: saved.send_as_file, delete_on_remove: saved.delete_on_remove };
+  const savedUrl = saved.api_url ?? TELEGRAM_DEFAULT_API_URL;
+  const savedRate = saved.rate_per_min ?? TELEGRAM_DEFAULT_RATE;
+  const base: Draft = {
+    token: "",
+    api_url: savedUrl,
+    rate_per_min: savedRate,
+    send_as_file: saved.send_as_file,
+    delete_on_remove: saved.delete_on_remove,
+  };
   const form = draft ?? base;
   const set = (patch: Partial<Draft>) => setDraft({ ...form, ...patch });
-  const tokenLocked = saved.env_overrides.includes("bot_token");
   const dirty =
     draft !== null &&
     (draft.token.trim() !== "" ||
+      draft.api_url.trim() !== savedUrl ||
+      draft.rate_per_min !== savedRate ||
       draft.send_as_file !== saved.send_as_file ||
       draft.delete_on_remove !== saved.delete_on_remove);
 
@@ -110,13 +122,17 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
 
   const onSave = () => {
     const body: TelegramSettingsPut = {};
-    if (!tokenLocked && form.token.trim() !== "") body.bot_token = form.token.trim();
+    if (form.token.trim() !== "") body.bot_token = form.token.trim();
+    if (form.api_url.trim() !== savedUrl) body.api_url = form.api_url.trim();
+    if (form.rate_per_min !== savedRate) body.rate_per_min = form.rate_per_min;
     if (form.send_as_file !== saved.send_as_file) body.send_as_file = form.send_as_file;
     if (form.delete_on_remove !== saved.delete_on_remove) body.delete_on_remove = form.delete_on_remove;
     save.mutate(body);
   };
 
   const tokenError = errors ? fieldError(errors, "bot_token") : undefined;
+  const urlError = errors ? fieldError(errors, "api_url") : undefined;
+  const rateError = errors ? fieldError(errors, "rate_per_min") : undefined;
   const linked = chats.data ?? [];
 
   return (
@@ -127,6 +143,7 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
         description="Deliver saved photos to Telegram chats through your own bot."
         dirty={dirty}
         saving={save.isPending}
+        canSave={Number.isInteger(form.rate_per_min) && form.rate_per_min >= 1 && form.rate_per_min <= 600}
         errors={errors}
         onSave={onSave}
         onReset={() => {
@@ -141,43 +158,66 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
           {saved.bot_username && <span className="text-sm text-muted-foreground">@{saved.bot_username}</span>}
         </div>
 
-        {tokenLocked ? (
-          <div className="grid gap-1 sm:grid-cols-[10rem_1fr]">
-            <span className="text-sm text-muted-foreground">Bot token</span>
-            <span className="text-sm">
-              {saved.has_token ? "Saved" : "Not set"}
-              <span className="ms-2 text-xs text-muted-foreground">
-                set by {TELEGRAM_ENV_NAMES.bot_token}, read-only here
-              </span>
-            </span>
+        <Field
+          id="tg-token"
+          label="Bot token"
+          error={tokenError}
+          hint="Create a bot with @BotFather and paste its token. Leave empty to keep the saved token."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="tg-token"
+              type="password"
+              autoComplete="off"
+              className="min-w-0 flex-1"
+              placeholder={saved.has_token ? "•••• saved" : "123456:ABC-DEF…"}
+              aria-invalid={tokenError ? true : undefined}
+              aria-describedby={tokenError ? "tg-token-error" : undefined}
+              value={form.token}
+              onChange={(e) => set({ token: e.target.value })}
+            />
+            {saved.has_token && (
+              <Button type="button" variant="outline" onClick={() => setConfirmClear(true)}>
+                Clear token
+              </Button>
+            )}
           </div>
-        ) : (
-          <Field
-            id="tg-token"
-            label="Bot token"
-            error={tokenError}
-            hint="Create a bot with @BotFather and paste its token. Leave empty to keep the saved token."
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                id="tg-token"
-                type="password"
-                autoComplete="off"
-                className="min-w-0 flex-1"
-                placeholder={saved.has_token ? "•••• saved" : "123456:ABC-DEF…"}
-                aria-invalid={tokenError ? true : undefined}
-                aria-describedby={tokenError ? "tg-token-error" : undefined}
-                value={form.token}
-                onChange={(e) => set({ token: e.target.value })}
-              />
-              {saved.has_token && (
-                <Button type="button" variant="outline" onClick={() => setConfirmClear(true)}>
-                  Clear token
-                </Button>
-              )}
-            </div>
-          </Field>
-        )}
+        </Field>
+
+        <Field
+          id="tg-api-url"
+          label="Bot API URL"
+          error={urlError}
+          hint="Leave as https://api.telegram.org unless you run a self-hosted Bot API server. The bot token is sent to this URL, so only use a server you trust."
+        >
+          <Input
+            id="tg-api-url"
+            type="url"
+            autoComplete="off"
+            aria-invalid={urlError ? true : undefined}
+            aria-describedby={urlError ? "tg-api-url-error" : undefined}
+            value={form.api_url}
+            onChange={(e) => set({ api_url: e.target.value })}
+          />
+        </Field>
+
+        <Field
+          id="tg-rate"
+          label="Send rate (messages per minute)"
+          error={rateError}
+          hint="Telegram limits groups to about 20 messages per minute."
+        >
+          <NumberField
+            id="tg-rate"
+            className="w-32"
+            min={1}
+            max={600}
+            step={1}
+            value={form.rate_per_min}
+            error={rateError}
+            onChange={(v) => set({ rate_per_min: v })}
+          />
+        </Field>
 
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" disabled={!saved.has_token || test.isPending} onClick={() => test.mutate()}>

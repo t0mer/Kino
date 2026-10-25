@@ -16,7 +16,7 @@ const json = (code: number, body: unknown) =>
   new Response(JSON.stringify(body), { status: code, headers: { "Content-Type": "application/json" } });
 const base: TelegramSettings = {
   has_token: true, bot_username: "kino_bot", api_url: "https://api.telegram.org", rate_per_min: 20,
-  send_as_file: false, delete_on_remove: true, env_overrides: [],
+  send_as_file: false, delete_on_remove: true,
 };
 
 beforeEach(() => {
@@ -62,10 +62,63 @@ describe("TelegramSection", () => {
     expect(await screen.findByText("Family")).toBeInTheDocument();
   });
 
-  it("shows the env-locked row instead of the input", () => {
-    renderIt({ env_overrides: ["bot_token"] });
-    expect(screen.queryByLabelText("Bot token")).not.toBeInTheDocument();
-    expect(screen.getByText(/set by KINO_TELEGRAM_BOT_TOKEN, read-only here/)).toBeInTheDocument();
+  it("always renders an editable token input and the new fields", () => {
+    renderIt();
+    expect(screen.getByLabelText("Bot token")).toBeEnabled();
+    expect(screen.queryByText(/KINO_TELEGRAM/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Bot API URL")).toHaveValue("https://api.telegram.org");
+    expect(screen.getByLabelText("Send rate (messages per minute)")).toHaveValue(20);
+    expect(screen.getByText(/bot token is sent to this URL/)).toBeInTheDocument();
+  });
+
+  it("renders defaults when api_url and rate_per_min are missing (old payload)", () => {
+    const old = { ...base } as Partial<TelegramSettings>;
+    delete old.api_url;
+    delete old.rate_per_min;
+    renderIt(old as TelegramSettings);
+    expect(screen.getByLabelText("Bot API URL")).toHaveValue("https://api.telegram.org");
+    expect(screen.getByLabelText("Send rate (messages per minute)")).toHaveValue(20);
+  });
+
+  it("sends only api_url and rate_per_min when those change", async () => {
+    const user = userEvent.setup();
+    renderIt();
+    const url = screen.getByLabelText("Bot API URL");
+    await user.clear(url);
+    await user.type(url, "http://botapi:8081");
+    const rate = screen.getByLabelText("Send rate (messages per minute)");
+    await user.clear(rate);
+    await user.type(rate, "30");
+    await user.click(screen.getByRole("button", { name: "Save Telegram" }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0]?.body).toEqual({ api_url: "http://botapi:8081", rate_per_min: 30 });
+  });
+
+  it("blocks saving an empty or out-of-range rate", async () => {
+    const user = userEvent.setup();
+    renderIt();
+    const rate = screen.getByLabelText("Send rate (messages per minute)");
+    await user.clear(rate);
+    expect(screen.getByRole("button", { name: "Save Telegram" })).toBeDisabled();
+    await user.type(rate, "601");
+    expect(screen.getByRole("button", { name: "Save Telegram" })).toBeDisabled();
+  });
+
+  it("shows server field errors for api_url and rate_per_min", async () => {
+    const user = userEvent.setup();
+    routes["PUT /api/settings/telegram"] = () =>
+      json(422, { detail: [
+        { loc: ["body", "api_url"], msg: "must be http(s)" },
+        { loc: ["body", "rate_per_min"], msg: "too high" },
+      ] });
+    renderIt();
+    const url = screen.getByLabelText("Bot API URL");
+    await user.clear(url);
+    await user.type(url, "ftp://x");
+    await user.click(screen.getByRole("button", { name: "Save Telegram" }));
+    expect((await screen.findAllByText(/must be http\(s\)/)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/too high/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Bot API URL")).toHaveAttribute("aria-invalid", "true");
   });
 
   it("sends only changed fields", async () => {
