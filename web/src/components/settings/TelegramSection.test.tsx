@@ -80,9 +80,36 @@ describe("TelegramSection", () => {
     expect(screen.getByLabelText("Send rate (messages per minute)")).toHaveValue(20);
   });
 
-  it("sends only api_url and rate_per_min when those change", async () => {
+  it("blocks a URL change until the token is re-entered, then sends both", async () => {
     const user = userEvent.setup();
     renderIt();
+    const url = screen.getByLabelText("Bot API URL");
+    await user.clear(url);
+    await user.type(url, "http://botapi:8081");
+    expect(screen.getByText(/Re-enter the bot token to change the URL/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Telegram" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Bot token"), "123456:ABCDEFGHIJKLMNOPQRSTUVWX");
+    await user.click(screen.getByRole("button", { name: "Save Telegram" }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0]?.body).toEqual({
+      bot_token: "123456:ABCDEFGHIJKLMNOPQRSTUVWX",
+      api_url: "http://botapi:8081",
+    });
+  });
+
+  it("does not need the token for an unchanged URL", async () => {
+    const user = userEvent.setup();
+    renderIt();
+    const rate = screen.getByLabelText("Send rate (messages per minute)");
+    await user.clear(rate);
+    await user.type(rate, "30");
+    expect(screen.queryByText(/Re-enter the bot token/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Telegram" })).toBeEnabled();
+  });
+
+  it("sends only api_url and rate_per_min when those change (no saved token)", async () => {
+    const user = userEvent.setup();
+    renderIt({ has_token: false, bot_username: null });
     const url = screen.getByLabelText("Bot API URL");
     await user.clear(url);
     await user.type(url, "http://botapi:8081");
@@ -115,6 +142,7 @@ describe("TelegramSection", () => {
     const url = screen.getByLabelText("Bot API URL");
     await user.clear(url);
     await user.type(url, "ftp://x");
+    await user.type(screen.getByLabelText("Bot token"), "123456:ABCDEFGHIJKLMNOPQRSTUVWX");
     await user.click(screen.getByRole("button", { name: "Save Telegram" }));
     expect((await screen.findAllByText(/must be http\(s\)/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/too high/).length).toBeGreaterThan(0);

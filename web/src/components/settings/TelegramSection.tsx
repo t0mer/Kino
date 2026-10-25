@@ -130,6 +130,10 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
     save.mutate(body);
   };
 
+  // The saved token is sent to the Bot API URL, so moving the URL needs the token re-entered.
+  const urlChanged = form.api_url.trim() !== savedUrl;
+  const needsToken = urlChanged && saved.has_token && form.token.trim() === "";
+
   const tokenError = errors ? fieldError(errors, "bot_token") : undefined;
   const urlError = errors ? fieldError(errors, "api_url") : undefined;
   const rateError = errors ? fieldError(errors, "rate_per_min") : undefined;
@@ -143,7 +147,7 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
         description="Deliver saved photos to Telegram chats through your own bot."
         dirty={dirty}
         saving={save.isPending}
-        canSave={Number.isInteger(form.rate_per_min) && form.rate_per_min >= 1 && form.rate_per_min <= 600}
+        canSave={!needsToken && Number.isInteger(form.rate_per_min) && form.rate_per_min >= 1 && form.rate_per_min <= 600}
         errors={errors}
         onSave={onSave}
         onReset={() => {
@@ -162,7 +166,11 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
           id="tg-token"
           label="Bot token"
           error={tokenError}
-          hint="Create a bot with @BotFather and paste its token. Leave empty to keep the saved token."
+          hint={
+            urlChanged && saved.has_token
+              ? "Re-enter the bot token to change the URL — the token is sent to this address."
+              : "Create a bot with @BotFather and paste its token. Leave empty to keep the saved token."
+          }
         >
           <div className="flex flex-wrap items-center gap-2">
             <Input
