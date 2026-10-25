@@ -28,7 +28,7 @@ def _child(directory: str) -> None:
 
     m.setup(Path(directory))
     m.images.labels(status="done").inc(3)
-    m.forwards.labels(status="sent").inc()
+    m.forwards.labels(status="sent", channel="whatsapp").inc()
     m.set_model_info("scrfd_10g")
 
 
@@ -54,7 +54,7 @@ def test_worker_process_counters_visible_in_api_metrics(env):
     with TestClient(app) as c:
         text = c.get("/metrics").text
     assert 'kino_images_total{status="done"} 3.0' in text
-    assert 'kino_forwards_total{status="sent"} 1.0' in text
+    assert 'kino_forwards_total{channel="whatsapp",status="sent"} 1.0' in text
     assert 'kino_model_info{license="insightface' in text and 'name="scrfd_10g"' in text
 
 
@@ -84,7 +84,8 @@ def test_db_derived_gauges(env):
     assert "kino_queue_depth 1.0" in text
     assert "kino_review_queue_size 1.0" in text
     assert 'kino_gallery_refs{kid="noa",source="upload"} 1.0' in text
-    assert "kino_forward_queue_depth 1.0" in text
+    assert 'kino_forward_queue_depth{channel="whatsapp"} 1.0' in text
+    assert 'kino_forward_queue_depth{channel="telegram"} 0.0' in text
 
 
 def test_metrics_still_gated(env, monkeypatch):

@@ -285,7 +285,7 @@ def cancel_forwards(session: Session, image_id: int, kid_id: int) -> int:
     ):
         if kid_id in (f.kid_ids or []):
             f.status = "cancelled"
-            metrics.forwards.labels(status="cancelled").inc()
+            metrics.forwards.labels(status="cancelled", channel=f.channel).inc()
             n += 1
     return n
 
@@ -380,7 +380,7 @@ def _recheck(forward_id: int, dest: str, channel: str = WHATSAPP) -> str | None:
         f.status = "cancelled"
         f.last_error = reason
         f.next_attempt_at = None
-        metrics.forwards.labels(status="cancelled").inc()
+        metrics.forwards.labels(status="cancelled", channel=f.channel).inc()
         s.flush()
         return "cancelled"
 
@@ -416,7 +416,7 @@ def _fail(forward_id: int, error: str, *, terminal: bool, now: datetime) -> None
         if terminal or f.attempts > len(BACKOFF_SECONDS):
             f.status = "failed"
             f.next_attempt_at = None
-            metrics.forwards.labels(status="failed").inc()
+            metrics.forwards.labels(status="failed", channel=f.channel).inc()
         else:
             f.next_attempt_at = now + timedelta(seconds=BACKOFF_SECONDS[f.attempts - 1])
         s.flush()
@@ -438,6 +438,7 @@ def _claim(forward_id: int, now: datetime) -> bool:
 
 
 MAX_RETRY_AFTER = 3600.0  # a longer provider hint is treated as an ordinary failure
+MAX_RESCHEDULE_AGE = timedelta(hours=24)  # after this, rate-limit waits count as failures
 
 
 def _error_text(e: BaseException, channel: str) -> str:
@@ -450,16 +451,22 @@ def _error_text(e: BaseException, channel: str) -> str:
     return text
 
 
-def _reschedule(forward_id: int, error: str, *, delay: float, now: datetime) -> None:
-    """Wait ``delay`` s without burning an attempt (the claim already counted this one)."""
+def _reschedule(forward_id: int, error: str, *, delay: float, now: datetime) -> bool:
+    """Wait ``delay`` s without burning an attempt (the claim already counted this one).
+
+    Returns False, changing nothing, when the forward is older than MAX_RESCHEDULE_AGE: the
+    caller then does normal failure/backoff accounting so the loop is bounded."""
     with get_session() as s:
         f = s.get(Forward, forward_id)
         if f is None or f.status != "pending":
-            return
+            return True
+        if f.created_at is not None and now - f.created_at > MAX_RESCHEDULE_AGE:
+            return False
         f.attempts = max(f.attempts - 1, 0)
         f.last_error = error
         f.next_attempt_at = now + timedelta(seconds=delay)
         s.flush()
+        return True
 
 
 def deliver_forward(
@@ -521,8 +528,8 @@ def deliver_forward(
             _fail(forward_id, text, terminal=True, now=now())
             return "failed"
         if e.retry_after is not None and 0 <= e.retry_after <= MAX_RETRY_AFTER:
-            _reschedule(forward_id, text, delay=e.retry_after, now=now())
-            return "retry"
+            if _reschedule(forward_id, text, delay=e.retry_after, now=now()):
+                return "retry"
         _fail(forward_id, text, terminal=False, now=now())
         return "retry"
     except Exception as e:  # any send failure is retried/recorded, never crashes the worker
@@ -541,7 +548,7 @@ def deliver_forward(
             f.sent_at = now()
             f.next_attempt_at = None
             f.last_error = None
-            metrics.forwards.labels(status="sent").inc()
+            metrics.forwards.labels(status="sent", channel=channel_name).inc()
             s.flush()
     return "sent"
 

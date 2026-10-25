@@ -283,3 +283,13 @@ def test_per_channel_limiters(tg, monkeypatch):
             )
     assert wc.sleeps == [12.0]  # 60/6 + 2 s jitter
     assert tc.sleeps == [3.0]  # 60/20, no jitter
+
+
+def test_retry_after_stops_rescheduling_after_24h(tg):
+    late = T0 + timedelta(hours=25)
+    with dbs.get_session() as s2:
+        s2.get(Forward, tg["telegram"]).created_at = T0
+    res, _ = run(tg["telegram"], "telegram", DeliveryError("slow", retry_after=30), at=late)
+    r = row(tg["telegram"])
+    assert res == "retry" and r.attempts == 1
+    assert r.next_attempt_at == late + timedelta(seconds=60)
