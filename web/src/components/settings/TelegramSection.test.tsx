@@ -108,6 +108,16 @@ describe("TelegramSection", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Connected as @kino_bot");
   });
 
+  it("shows plain Connected when the bot username is unknown", async () => {
+    routes["POST /api/telegram/test"] = () => json(200, { ok: true, bot_username: null });
+    const user = userEvent.setup();
+    renderIt();
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/^Connected$/);
+    expect(status).not.toHaveTextContent("@");
+  });
+
   it("shows the 409 in-use message when unlinking", async () => {
     routes["DELETE /api/telegram/chats/7"] = () => json(409, { detail: "Chat is used as a forwarding destination" });
     const user = userEvent.setup();

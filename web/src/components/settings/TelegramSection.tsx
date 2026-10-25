@@ -85,8 +85,8 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
   const test = useMutation({
     mutationFn: telegramApi.test,
     onSuccess: (r) => {
-      setTestedBot(r.bot_username);
-      toast.success(`Connected as @${r.bot_username}`);
+      setTestedBot(r.bot_username ?? "");
+      toast.success(r.bot_username ? `Connected as @${r.bot_username}` : "Connected");
     },
     onError: (e) => {
       setTestedBot(null);
@@ -183,9 +183,9 @@ export function TelegramSection({ saved }: { saved: TelegramSettings }) {
           <Button type="button" variant="outline" disabled={!saved.has_token || test.isPending} onClick={() => test.mutate()}>
             {test.isPending ? <Loader2 className="animate-spin" /> : <Send />} Test
           </Button>
-          {testedBot && (
+          {testedBot !== null && (
             <span role="status" className="text-sm text-muted-foreground">
-              Connected as @{testedBot}
+              Connected{testedBot ? ` as @${testedBot}` : ""}
             </span>
           )}
         </div>

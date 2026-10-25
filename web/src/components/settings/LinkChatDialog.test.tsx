@@ -57,6 +57,28 @@ describe("LinkChatDialog", () => {
     expect(screen.getByText("Waiting for message…")).toBeInTheDocument();
   });
 
+  it("shows the server instructions when the bot username is unknown", async () => {
+    const orig = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) =>
+      (init.method ?? "GET").toUpperCase() === "POST" && url === "/api/telegram/link"
+        ? json(200, { code: "ABC123", bot_username: null, expires_in: 600, instructions: "Send /start ABC123 to your bot in a private chat." })
+        : orig(url, init)));
+    renderIt();
+    expect(await screen.findByTestId("link-code")).toHaveTextContent("ABC123");
+    expect(screen.getByText("Send /start ABC123 to your bot in a private chat.")).toBeInTheDocument();
+    expect(screen.queryByText(/@null|^@$/)).toBeNull();
+  });
+
+  it("falls back to 'your bot' with no username and no instructions", async () => {
+    const orig = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) =>
+      (init.method ?? "GET").toUpperCase() === "POST" && url === "/api/telegram/link"
+        ? json(200, { code: "ABC123", bot_username: null, expires_in: 600, instructions: "" })
+        : orig(url, init)));
+    renderIt();
+    expect(await screen.findByText("your bot")).toBeInTheDocument();
+  });
+
   it("polls repeatedly until linked, then closes", async () => {
     queue = [status({ status: "pending", chat: null }), status({ status: "pending", chat: null }), status({ status: "linked", chat })];
     const onClose = vi.fn();

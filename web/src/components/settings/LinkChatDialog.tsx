@@ -139,10 +139,15 @@ export function LinkChatDialog({
                 {copied ? <Check /> : <Copy />}
               </Button>
             </div>
-            <p className="text-sm">
-              Send <code className="font-mono">/start {phase.link.code}</code> to{" "}
-              <strong>@{phase.link.bot_username}</strong> (or add the bot to the group and post the code there).
-            </p>
+            {phase.link.bot_username === null && phase.link.instructions ? (
+              <p className="text-sm">{phase.link.instructions}</p>
+            ) : (
+              <p className="text-sm">
+                Send <code className="font-mono">/start {phase.link.code}</code> to{" "}
+                <strong>{phase.link.bot_username ? `@${phase.link.bot_username}` : "your bot"}</strong> (or add the
+                bot to the group and post the code there).
+              </p>
+            )}
             <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Waiting for message…
             </p>

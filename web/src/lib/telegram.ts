@@ -41,7 +41,7 @@ export interface TelegramChat {
 
 export interface LinkStart {
   code: string;
-  bot_username: string;
+  bot_username: string | null;
   expires_in: number;
   instructions: string;
 }
@@ -63,7 +63,7 @@ export const telegramKeys = {
 export const telegramApi = {
   getSettings: () => api.get<TelegramSettings>("/api/settings/telegram"),
   putSettings: (b: TelegramSettingsPut) => api.put<TelegramSettings>("/api/settings/telegram", b),
-  test: () => api.post<{ ok: boolean; bot_username: string }>("/api/telegram/test", {}),
+  test: () => api.post<{ ok: boolean; bot_username: string | null }>("/api/telegram/test", {}),
   startLink: () => api.post<LinkStart>("/api/telegram/link", {}),
   /** Long-polls on the server for up to ~8 s. */
   pollLink: (code: string, signal?: AbortSignal) =>
