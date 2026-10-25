@@ -134,6 +134,8 @@ await surface('settings-forwarding', async (p) => {
   // the OpenWA card is first on /settings: scroll to the Forwarding card itself
   await open(p, '/settings', 'text=Forwarding');
   await p.evaluate(() => { const h = [...document.querySelectorAll('h2,h3')].find((e) => e.textContent.trim() === 'Forwarding'); h?.scrollIntoView({ block: 'start' }); window.scrollBy(0, -80); });
+  // the card is taller than the viewport: end on the WhatsApp send rate field so it is visible
+  await p.evaluate(() => { document.getElementById('fwd-rate')?.scrollIntoView({ block: 'end' }); window.scrollBy(0, 40); });
 });
 await surface('settings-telegram', async (p) => {
   await open(p, '/settings', '[data-testid=section-telegram]');

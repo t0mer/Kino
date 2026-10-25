@@ -184,10 +184,10 @@ export const clusterDetail = (id) => ({
 export const SETTINGS = {
   // default destination is Telegram, Itai's override stays WhatsApp so both channels show
   forward: {
-    enabled: true, default_chat_id: null, per_kid: { 2: 'chat-grandma' }, caption_template: '📸 {kids} · {group} · {date}', include_review_confirmed: true, send_caption: true,
+    enabled: true, default_chat_id: null, per_kid: { 2: 'chat-grandma' }, caption_template: '📸 {kids} · {group} · {date}', include_review_confirmed: true, send_caption: true, rate_per_min: 6,
     default: { channel: 'telegram', chat_id: '-1001234567890' }, per_kid_destinations: { 2: { channel: 'whatsapp', chat_id: 'chat-grandma' } },
   },
-  telegram: { has_token: true, bot_username: 'kino_family_bot', api_url: 'https://api.telegram.org', rate_per_min: 20, send_as_file: false, delete_on_remove: false, env_overrides: [] },
+  telegram: { has_token: true, bot_username: 'kino_family_bot', api_url: 'https://api.telegram.org', rate_per_min: 20, send_as_file: false, delete_on_remove: false },
   digest: { chat_id: 'chat-me', destination: { channel: 'whatsapp', chat_id: 'chat-me' }, cron: '0 20 * * *', apprise_urls: ['ntfy://'], public_base_url: 'https://kino.example.com' },
   thresholds: { L: { auto: 0.45, review: 0.32 }, M: { auto: 0.5, review: 0.35 }, S: { review: 0.4 }, prior_bonus: 0.03, unmapped_penalty: 0.05, margin_min: 0.08, auto_floor: 0.3 },
   retention: { raw_days: 7, face_days: 30 },
