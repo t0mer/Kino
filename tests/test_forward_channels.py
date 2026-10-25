@@ -231,6 +231,14 @@ def test_permanent_error_fails_without_retry(tg):
     assert r.last_error == "DeliveryError: chat not found"
 
 
+def test_missing_token_retries_instead_of_failing(tg, monkeypatch):
+    monkeypatch.delenv("KINO_TELEGRAM_BOT_TOKEN", raising=False)
+    res = fw.deliver_forward(tg["telegram"], limiter=lim(), now=lambda: T0)
+    r = row(tg["telegram"])
+    assert res == "retry" and r.status == "pending" and r.next_attempt_at is not None
+    assert "not configured" in r.last_error
+
+
 def test_retry_after_does_not_burn_attempt(tg):
     res, _ = run(tg["telegram"], "telegram", DeliveryError("slow down", retry_after=30))
     r = row(tg["telegram"])

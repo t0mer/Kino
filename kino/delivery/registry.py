@@ -36,6 +36,6 @@ def get_channel(
 
             tcfg = load_telegram_config(settings or get_settings())
         if not tcfg.bot_token:
-            raise DeliveryError("Telegram bot token is not configured", permanent=True)
+            raise DeliveryError("Telegram bot token is not configured")
         return TelegramChannel(tcfg.bot_token, tcfg.api_url, send_as_file=tcfg.send_as_file)
     raise ValueError(f"unknown delivery channel: {name!r}")
