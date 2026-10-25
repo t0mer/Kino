@@ -44,6 +44,9 @@ K_REVIEW = "forward.include_review_confirmed"
 K_SEND_CAPTION = "forward.send_caption"
 K_DEFAULT_CHANNEL = "forward.default_channel"
 K_PER_KID_CHANNEL = "forward.per_kid_channel"
+K_RATE = "forward.rate_per_min"
+DEFAULT_RATE_PER_MIN = 6
+MAX_RATE_PER_MIN = 120
 WHATSAPP = "whatsapp"
 
 
@@ -60,6 +63,7 @@ class ForwardConfig(BaseModel):
     send_caption: bool = True
     default_channel: str = WHATSAPP
     per_kid_channel: dict[int, str] = Field(default_factory=dict)
+    rate_per_min: int = DEFAULT_RATE_PER_MIN  # WhatsApp sends per minute
 
     def destination_for(self, kid_id: int) -> tuple[str, str] | None:
         """(channel, chat_id) a kid's photos go to: the per-kid override, else the default."""
@@ -113,6 +117,9 @@ def get_forward_config(session: Session) -> ForwardConfig:
     default_channel = get_setting(session, K_DEFAULT_CHANNEL, WHATSAPP)
     if default_channel not in DELIVERY_CHANNELS:
         default_channel = WHATSAPP
+    rate = get_setting(session, K_RATE, DEFAULT_RATE_PER_MIN)
+    if isinstance(rate, bool) or not isinstance(rate, int) or not 1 <= rate <= MAX_RATE_PER_MIN:
+        rate = DEFAULT_RATE_PER_MIN
     default = get_setting(session, K_DEFAULT, None)
     template = get_setting(session, K_TEMPLATE, DEFAULT_CAPTION)
     return ForwardConfig(
@@ -124,6 +131,7 @@ def get_forward_config(session: Session) -> ForwardConfig:
         send_caption=bool(get_setting(session, K_SEND_CAPTION, True)),
         default_channel=default_channel,
         per_kid_channel=per_kid_channel,
+        rate_per_min=rate,
     )
 
 
@@ -341,17 +349,18 @@ _limiters: dict[str, RateLimiter] = {}
 
 
 def _default_limiter(channel: str = WHATSAPP) -> RateLimiter:
-    """One limiter per channel, shared by the single forward worker."""
+    """One limiter per channel, shared by the single forward worker. The rate is re-read from
+    the database on every call (operator-tunable); the last-send time is kept."""
     if channel == WHATSAPP:
-        if channel not in _limiters:
-            _limiters[channel] = RateLimiter(get_settings().forward_rate_per_min)
-        return _limiters[channel]
-    from kino.services.telegram_cfg import load_telegram_config
+        with get_session() as s:
+            rate, jitter = get_forward_config(s).rate_per_min, (2.0, 5.0)
+    else:
+        from kino.services.telegram_cfg import load_telegram_config
 
-    rate = load_telegram_config(get_settings()).rate_per_min  # re-read: it is operator-tunable
+        rate, jitter = load_telegram_config(get_settings()).rate_per_min, (0.0, 0.0)
     limiter = _limiters.get(channel)
     if limiter is None:
-        limiter = _limiters[channel] = RateLimiter(rate, jitter=(0.0, 0.0))
+        limiter = _limiters[channel] = RateLimiter(rate, jitter=jitter)
     elif limiter.rate_per_min != rate:
         limiter.rate_per_min, limiter.interval = rate, 60.0 / max(rate, 1)  # keeps _last
     return limiter

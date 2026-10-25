@@ -57,6 +57,7 @@ def _forward(cfg: ForwardConfig) -> ForwardSettings:
         caption_template=cfg.caption_template,
         include_review_confirmed=cfg.include_review_confirmed,
         send_caption=cfg.send_caption,
+        rate_per_min=cfg.rate_per_min,
     )
 
 
@@ -124,6 +125,7 @@ def put_forward(body: ForwardSettings) -> ForwardSettings:
                 caption_template=body.caption_template,
                 include_review_confirmed=body.include_review_confirmed,
                 send_caption=body.send_caption,
+                rate_per_min=body.rate_per_min,
             )
         )
 

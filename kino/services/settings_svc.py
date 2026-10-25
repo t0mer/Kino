@@ -28,9 +28,11 @@ from kino.forward import (
     K_ENABLED,
     K_PER_KID,
     K_PER_KID_CHANNEL,
+    K_RATE,
     K_REVIEW,
     K_SEND_CAPTION,
     K_TEMPLATE,
+    MAX_RATE_PER_MIN,
     ForwardConfig,
     get_forward_config,
     get_setting,
@@ -64,10 +66,15 @@ def update_forward(
     send_caption: bool = True,
     default_channel: str = "whatsapp",
     per_kid_channel: dict[int, str] | None = None,
+    rate_per_min: int | None = None,
 ) -> ForwardConfig:
     """Replace the forwarding section. Every destination is checked against watched groups
     (forwarding into a watched group would re-ingest the photos). Telegram destinations need a
     configured bot token and a linked chat instead."""
+    if rate_per_min is not None and (
+        isinstance(rate_per_min, bool) or not 1 <= rate_per_min <= MAX_RATE_PER_MIN
+    ):
+        raise InvalidError(f"rate_per_min must be between 1 and {MAX_RATE_PER_MIN}")
     default = default_chat_id.strip() if default_chat_id else None
     per_kid = {k: v.strip() for k, v in per_kid.items() if v and v.strip()}
     known = set(session.scalars(select(Kid.id).where(Kid.id.in_(per_kid))))
@@ -109,6 +116,8 @@ def update_forward(
     put_setting(session, K_TEMPLATE, caption_template)
     put_setting(session, K_REVIEW, include_review_confirmed)
     put_setting(session, K_SEND_CAPTION, send_caption)
+    if rate_per_min is not None:
+        put_setting(session, K_RATE, rate_per_min)
     session.flush()
     return get_forward_config(session)
 
