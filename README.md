@@ -202,7 +202,7 @@ Unknown faces from the last 60 days are grouped nightly (03:30 server time) and 
 ### Settings
 
 - **OpenWA**: the current connection (URL, session, whether the API key and webhook secret are saved, webhook URL; values from environment variables marked read-only) and a **Reconnect** button that opens the setup wizard.
-- **Forwarding**: switch it on, pick the default destination from a searchable list, optional per-kid destinations, and the caption template with a live preview (`{kids}`, `{group}`, `{sender}`, `{date}`, `{time}`). **Send test photo** sends a real message. Optionally also forward photos you confirm in the review queue.
+- **Forwarding**: switch it on, pick the default destination from a searchable list, optional per-kid destinations, and the caption template with a live preview (`{kids}`, `{group}`, `{sender}`, `{date}`, `{time}`). **Send test photo** sends a real message. Optionally also forward photos you confirm in the review queue. The **WhatsApp send rate** (messages per minute, 1 to 120, default 6) limits forwarded WhatsApp photos, with 2 to 5 s of random delay between sends; keep it low to avoid bans.
 
   Each destination (the default, each per-kid override and the digest) has its own **channel** selector, WhatsApp or Telegram, so one kid's photos can go to a WhatsApp group and another's to a Telegram chat. The WhatsApp picker lists the contacts and groups OpenWA sees and disables watched groups (Kino would ingest its own photos). The Telegram picker lists the chats you linked (see below). A Telegram destination must be a linked chat; the watched-group guard does not apply to it because Kino never ingests from Telegram.
 - **Telegram**: the bot token, options and linked chats (see [Telegram](#telegram)).
@@ -236,7 +236,7 @@ Unknown faces from the last 60 days are grouped nightly (03:30 server time) and 
 Telegram is an alternative delivery channel to WhatsApp for forwarded photos and the review digest. Photos are still received through OpenWA; only the delivery changes.
 
 1. **Create a bot.** In Telegram, talk to [@BotFather](https://t.me/BotFather), run `/newbot` and copy the token (it looks like `123456:ABC-DEF...`).
-2. **Paste the token** under **Settings > Telegram** and save. Kino checks it with Telegram (`getMe`) before saving, and **Test** repeats the check and shows the bot's username. The token is stored encrypted with the same key as the OpenWA secrets (`/data/secret.key`). If `KINO_TELEGRAM_BOT_TOKEN` is set it wins and the field is read-only.
+2. **Paste the token** under **Settings > Telegram** and save. Kino checks it with Telegram (`getMe`) before saving, and **Test** repeats the check and shows the bot's username. The token is stored encrypted with the same key as the OpenWA secrets (`/data/secret.key`); it is managed only here, not through environment variables.
 3. **Link a chat.** Bots cannot list the chats they are in, so each destination is linked once with a one-time code. **Link a chat** shows a code that is valid for 10 minutes:
    - Private chat: open the bot and send `/start CODE`.
    - Group or channel: add the bot to it first, then post a message containing the code. Telegram's *privacy mode* hides ordinary group messages from bots, so post the code in a form the bot can see: `/start@yourbotname CODE`, a message that mentions the bot, or make the bot an admin of the group.
@@ -246,10 +246,12 @@ Telegram is an alternative delivery channel to WhatsApp for forwarded photos and
 
 Options under **Settings > Telegram**:
 
+- **Bot API URL** (default `https://api.telegram.org`): change it only to use a self-hosted Bot API server. It is an admin-only setting and the bot token is sent to this URL, so point it only at a server you trust.
+- **Send rate** (messages per minute, 1 to 600, default 20): the Telegram send limit, separate from the WhatsApp rate.
 - **Send as file (original quality)**: send every photo with `sendDocument` instead of `sendPhoto`, so Telegram does not recompress it. Kino switches to a file by itself when a photo is larger than 10 MiB, when width plus height exceed 10000 px, or when the aspect ratio is above 20. Files over 50 MB cannot be sent.
 - **Delete Telegram message when a photo is removed from a kid** (off by default): removing a photo from a kid in the Gallery also deletes the Telegram message that was sent for that kid alone. This is best effort: Telegram lets bots delete only recent messages, so older ones, and failures, are skipped and logged. Messages that carry several kids are left alone. WhatsApp messages are never deleted.
 
-Telegram captions are sent as plain text and cut to Telegram's 1024-character limit. Telegram sends are paced separately from WhatsApp (see `KINO_TELEGRAM_RATE_PER_MIN`), without the random delay used for WhatsApp, and when Telegram answers *429 Too Many Requests* Kino waits for the time Telegram asks (`retry_after`) and retries without using up one of the forward's attempts.
+Telegram captions are sent as plain text and cut to Telegram's 1024-character limit. Telegram sends are paced separately from WhatsApp (see the Telegram send rate in Settings), without the random delay used for WhatsApp, and when Telegram answers *429 Too Many Requests* Kino waits for the time Telegram asks (`retry_after`) and retries without using up one of the forward's attempts.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/telegram-link-dark.png">
@@ -283,7 +285,7 @@ flowchart LR
 
 - Docker with Compose (amd64 or arm64), or Python 3.12 for a local install
 - A running OpenWA with a connected WhatsApp session, its URL, API key and session id (needed to receive photos even when you deliver through Telegram)
-- Optional, for Telegram delivery: a bot token from @BotFather and outbound HTTPS access to `api.telegram.org` (or a self-hosted Bot API server, see `KINO_TELEGRAM_API_URL`)
+- Optional, for Telegram delivery: a bot token from @BotFather and outbound HTTPS access to `api.telegram.org` (or a self-hosted Bot API server, set as the Bot API URL in Settings > Telegram)
 - About 3 GB of RAM for the worker and a few hundred MB of disk for models (downloaded on first use)
 
 ## Installation
@@ -340,7 +342,7 @@ Precedence: environment variables (`KINO_*`) > `/data/config.yaml` (in `KINO_DAT
 
 Settings you edit in the web UI (forwarding, digest, Telegram options, thresholds, retention) are stored in the database and take precedence over the matching `KINO_*` defaults below.
 
-OpenWA settings saved by the setup wizard live in the database too, but here the environment wins: a set `KINO_OPENWA_*` or `KINO_WEBHOOK_SECRET` overrides the wizard field by field. The Telegram bot token works the same way: a set `KINO_TELEGRAM_BOT_TOKEN` wins over the token saved in Settings (which is stored encrypted) and is shown read-only. `KINO_TELEGRAM_API_URL` and `KINO_TELEGRAM_RATE_PER_MIN` are read from the environment or `config.yaml` only.
+OpenWA settings saved by the setup wizard live in the database too, but here the environment wins: a set `KINO_OPENWA_*` or `KINO_WEBHOOK_SECRET` overrides the wizard field by field. The delivery settings are not read from the environment or `config.yaml` at all: the Telegram bot token (stored encrypted), the Telegram Bot API URL, the Telegram send rate and the WhatsApp send rate are managed only in **Settings** in the web UI and stored in the database.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -368,10 +370,6 @@ OpenWA settings saved by the setup wizard live in the database too, but here the
 | `KINO_TILE_OVERLAP` | `0.2` | Tile overlap, from 0 up to but excluding 1 |
 | `KINO_WORKERS` | `2` | Worker processes for `kino worker` (at least 1) |
 | `KINO_ORT_THREADS` | `2` | onnxruntime threads per process (at least 1) |
-| `KINO_FORWARD_RATE_PER_MIN` | `6` | Maximum forwarded WhatsApp photos per minute (at least 1), with 2 to 5 s of random delay between sends. Telegram has its own limit, `KINO_TELEGRAM_RATE_PER_MIN` |
-| `KINO_TELEGRAM_BOT_TOKEN` | unset | Telegram bot token. Optional: or save it in Settings > Telegram (stored encrypted); when set here it wins and is read-only in the UI |
-| `KINO_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram Bot API base URL (`http(s)://`); point it at a self-hosted Bot API server if you run one |
-| `KINO_TELEGRAM_RATE_PER_MIN` | `20` | Maximum Telegram sends per minute (at least 1), with no random delay between sends |
 | `KINO_BACKFILL_DELAY_SECONDS` | `1.0` | Pause after each photo fetched during a group backfill (0 or more) |
 | `KINO_RAW_RETENTION_DAYS` | `7` | Days to keep raw images that matched no kid. Default only: the value saved in Settings wins |
 | `KINO_FACE_RETENTION_DAYS` | `30` | Days to keep embeddings and crops of faces not matched to a kid. Default only: the value saved in Settings wins |
@@ -454,8 +452,8 @@ Interactive docs are not served; this table is the reference. All routes need a 
 | `POST /api/test/flag` | Flag a dry-run face as wrong (send to review or add as negative) |
 | `POST /api/rescore` | Re-score stored faces of the last N days |
 | `GET /api/settings` | All settings, model info and version |
-| `GET/PUT /api/settings/forward`, `/digest`, `/thresholds`, `/retention` | Read or replace one settings section. Forward settings take `default` and `per_kid_destinations` as `{channel, chat_id}` objects (the older `default_chat_id` and `per_kid` still work and mean WhatsApp); the digest takes `destination: {channel, chat_id}` (the older `chat_id` still means WhatsApp) |
-| `GET/PUT /api/settings/telegram` | Read or change the Telegram settings: `bot_token` (checked against Telegram before it is saved; `null` or `""` clears it, omitted keeps it), `send_as_file`, `delete_on_remove`. The token is never returned: the response has `has_token`, `bot_username`, `api_url`, `rate_per_min` and `env_overrides` |
+| `GET/PUT /api/settings/forward`, `/digest`, `/thresholds`, `/retention` | Read or replace one settings section. Forward settings take `rate_per_min` (WhatsApp send rate, 1 to 120, default 6), `default` and `per_kid_destinations` as `{channel, chat_id}` objects (the older `default_chat_id` and `per_kid` still work and mean WhatsApp); the digest takes `destination: {channel, chat_id}` (the older `chat_id` still means WhatsApp) |
+| `GET/PUT /api/settings/telegram` | Read or change the Telegram settings: `bot_token` (checked against Telegram before it is saved; `null` or `""` clears it, omitted keeps it), `api_url` (Bot API base URL, admin-only), `rate_per_min` (1 to 600), `send_as_file`, `delete_on_remove`. The token is never returned: the response has `has_token`, `bot_username`, `api_url`, `rate_per_min`, `send_as_file` and `delete_on_remove` |
 | `POST /api/telegram/test` | Check the effective bot token with `getMe`; returns `{ok, bot_username}` |
 | `POST /api/telegram/link`, `GET /api/telegram/link/{code}` | Start linking a chat (returns a one-time `code` valid for 600 s, the bot username and instructions); poll the code (each poll waits up to 8 s for a Telegram message) until its status is `linked`, with the `chat`, or `expired`. Answers 409 when a webhook or another consumer holds the bot's updates |
 | `GET /api/telegram/chats`, `DELETE /api/telegram/chats/{id}` | List linked Telegram chats; unlink one (refused while it is a forwarding or digest destination) |
@@ -476,7 +474,7 @@ Interactive docs are not served; this table is the reference. All routes need a 
 - Folder names and dates use `KINO_TIMEZONE`.
 - Face crops, embeddings and the raw (unsaved) images never leave your host, whichever delivery channel you use. The only things sent out are the saved (metadata-stripped) photo and its caption to the chat you chose, and the review digest text.
 - **WhatsApp** delivery goes through your OpenWA and WhatsApp's own servers, unchanged from before.
-- **Telegram** delivery goes through Telegram's servers (`api.telegram.org`, or your own Bot API server if you set `KINO_TELEGRAM_API_URL`). Bot chats are not end-to-end encrypted, so Telegram can see the forwarded photos and digest text. Only choose Telegram if you accept that. The bot token is stored encrypted at rest and is redacted from logs and stored error messages.
+- **Telegram** delivery goes through Telegram's servers (`api.telegram.org`, or your own Bot API server if you set a Bot API URL in Settings; the bot token is sent to that URL, so only an admin should change it). Bot chats are not end-to-end encrypted, so Telegram can see the forwarded photos and digest text. Only choose Telegram if you accept that. The bot token is stored encrypted at rest and is redacted from logs and stored error messages.
 - Logs do not include image bytes or embeddings.
 
 ## Security notes
@@ -513,8 +511,8 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 - **Telegram: invalid bot token**: Telegram rejected the token (401 or 404). Create a new one with @BotFather and save it again.
 - **Linking a Telegram group never completes**: the bot is not in the group, or privacy mode hides your message. Post `/start@yourbotname CODE`, mention the bot in the message, or make the bot an admin, and do it within 10 minutes of generating the code.
 - **Telegram link says 409 conflict**: a webhook or another program is already reading this bot's updates. Remove the webhook (`deleteWebhook`) or stop the other consumer, or use a separate bot for Kino.
-- **Telegram 429 Too Many Requests**: Kino waits for the `retry_after` Telegram asks for (up to an hour per wait, for up to 24 hours since the forward was created) without counting an attempt. If it happens often, lower `KINO_TELEGRAM_RATE_PER_MIN`.
-- **Telegram is unreachable**: Kino needs outbound HTTPS to `api.telegram.org`, or to your own Bot API server set with `KINO_TELEGRAM_API_URL`.
+- **Telegram 429 Too Many Requests**: Kino waits for the `retry_after` Telegram asks for (up to an hour per wait, for up to 24 hours since the forward was created) without counting an attempt. If it happens often, lower the send rate in Settings > Telegram.
+- **Telegram is unreachable**: Kino needs outbound HTTPS to `api.telegram.org`, or to your own Bot API server set as the Bot API URL in Settings > Telegram.
 - **The setup page says setup is only allowed from the local network**: the request came through a proxy or tunnel. Open Kino on its LAN or loopback address to set the password.
 - **Login says too many failed attempts (HTTP 429)**: five failed logins from one IP lock that IP for up to 15 minutes. Wait for the time given in the response.
 - **The UI shows a blank page or only the API**: `KINO_WEB_DIR` does not point to a built UI (the Docker image sets it up; for a local install run `npm run build` in `web/` and set the variable to `web/dist`).
@@ -525,7 +523,7 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 
 ## Upgrading
 
-Existing installs keep working unchanged as WhatsApp: the database migration `0010_delivery_channel` runs when the api or a worker starts (or with `kino migrate`) and marks every existing forward and digest as `whatsapp`; destinations without a channel mean WhatsApp. No setting needs to change. Rolling back to an older version runs the migration's downgrade, which **deletes the Telegram forwards** (WhatsApp forwards are kept) and drops the linked Telegram chats.
+Existing installs keep working unchanged as WhatsApp: the database migration `0010_delivery_channel` runs when the api or a worker starts (or with `kino migrate`) and marks every existing forward and digest as `whatsapp`; destinations without a channel mean WhatsApp. No setting needs to change for WhatsApp, with one exception: `KINO_TELEGRAM_BOT_TOKEN`, `KINO_TELEGRAM_API_URL`, `KINO_TELEGRAM_RATE_PER_MIN` and `KINO_FORWARD_RATE_PER_MIN` are no longer read and are silently ignored, and old values are not imported. Re-enter the Telegram token, Bot API URL and send rate in **Settings > Telegram**, and the WhatsApp send rate in **Settings > Forwarding**; the WhatsApp rate (formerly `KINO_FORWARD_RATE_PER_MIN`) is now a UI setting and falls back to its default of 6 until you set it. The OpenWA connection variables are unchanged. Rolling back to an older version runs the migration's downgrade, which **deletes the Telegram forwards** (WhatsApp forwards are kept) and drops the linked Telegram chats.
 
 ## Development
 
