@@ -9,7 +9,8 @@ export interface Destination {
   chat_id: string;
 }
 
-export type TelegramField = "bot_token";
+export const TELEGRAM_DEFAULT_API_URL = "https://api.telegram.org";
+export const TELEGRAM_DEFAULT_RATE = 20;
 
 export interface TelegramSettings {
   has_token: boolean;
@@ -18,13 +19,13 @@ export interface TelegramSettings {
   rate_per_min: number;
   send_as_file: boolean;
   delete_on_remove: boolean;
-  /** Fields locked because the matching KINO_* env var is set. */
-  env_overrides: TelegramField[];
 }
 
 export interface TelegramSettingsPut {
   /** Omit = unchanged; null or "" = clear. */
   bot_token?: string | null;
+  api_url?: string;
+  rate_per_min?: number;
   send_as_file?: boolean;
   delete_on_remove?: boolean;
 }
@@ -50,10 +51,6 @@ export interface LinkStatus {
   status: "pending" | "linked" | "expired";
   chat: TelegramChat | null;
 }
-
-export const TELEGRAM_ENV_NAMES: Record<TelegramField, string> = {
-  bot_token: "KINO_TELEGRAM_BOT_TOKEN",
-};
 
 export const telegramKeys = {
   chats: ["telegram", "chats"] as const,
