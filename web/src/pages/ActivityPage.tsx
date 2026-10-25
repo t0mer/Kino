@@ -18,6 +18,7 @@ import {
   IMAGE_STATUSES,
   matchSummary,
   statusLabel,
+  channelLabel,
   statusTone,
 } from "@/lib/activity";
 import { formatDateTime, formatRelative } from "@/lib/format";
@@ -210,6 +211,7 @@ function FailedTab({ onOpen }: { onOpen: (id: number) => void }) {
                   <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={() => onOpen(f.image_id)}>
                     Image #{f.image_id}
                   </button>
+                  <Badge variant="outline" className="ml-2" data-testid="forward-channel">{channelLabel(f.channel)}</Badge>
                   <p className="text-xs text-muted-foreground">
                     {f.attempts} attempt{f.attempts === 1 ? "" : "s"} · created {formatDateTime(f.created_at)}
                   </p>
@@ -246,6 +248,7 @@ function FailedTab({ onOpen }: { onOpen: (id: number) => void }) {
                 <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={() => onOpen(f.image_id)}>
                   Image #{f.image_id}
                 </button>
+                <Badge variant="outline" className="ml-2" data-testid="forward-channel">{channelLabel(f.channel)}</Badge>
                 <p className="text-xs text-muted-foreground">
                   {f.attempts} attempt{f.attempts === 1 ? "" : "s"} · created {formatDateTime(f.created_at)}
                   {f.next_attempt_at && <> · next try {formatRelative(f.next_attempt_at)}</>}

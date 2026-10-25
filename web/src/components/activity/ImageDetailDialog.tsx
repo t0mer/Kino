@@ -12,6 +12,7 @@ import {
   formatMs,
   type ImageDetail,
   statusLabel,
+  channelLabel,
   statusTone,
 } from "@/lib/activity";
 import { formatDateTime } from "@/lib/format";
@@ -178,6 +179,7 @@ export function ImageDetailDialog({ imageId, onClose }: { imageId: number | null
                     <li key={f.id} className="rounded-md border p-2 text-sm">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={statusTone(f.status)}>{f.status}</Badge>
+                        <Badge variant="outline" data-testid="forward-channel">{channelLabel(f.channel)}</Badge>
                         <span dir="auto">{f.kid_ids.map(kidName).join(", ")}</span>
                         <span className="text-muted-foreground">
                           {f.attempts} attempt{f.attempts === 1 ? "" : "s"} · {formatDateTime(f.sent_at ?? f.created_at)}

@@ -1,6 +1,7 @@
 /** Activity API (CLAUDE.md §11.7, §9.9, §12) and the pure helpers the Activity page uses. */
 
 import { api } from "./api";
+import type { Channel } from "./telegram";
 
 export const IMAGE_STATUSES = ["queued", "processing", "done", "failed", "skipped"] as const;
 export type ImageStatus = (typeof IMAGE_STATUSES)[number];
@@ -51,6 +52,7 @@ export interface ImageMatch {
 
 export interface ImageForward {
   id: number;
+  channel?: Channel;
   status: string;
   attempts: number;
   kid_ids: number[];
@@ -82,6 +84,7 @@ export interface ImageDetail {
 
 export interface Forward {
   id: number;
+  channel?: Channel;
   image_id: number;
   dest_chat_id: string;
   kid_ids: number[];
@@ -146,6 +149,8 @@ export function flattenPages(pages: ActivityPage[]): ActivityImage[] {
   }
   return out;
 }
+
+export const channelLabel = (c?: Channel): string => (c === "telegram" ? "Telegram" : "WhatsApp");
 
 export type BadgeTone = "default" | "secondary" | "destructive" | "outline";
 
