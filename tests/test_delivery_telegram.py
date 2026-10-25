@@ -198,4 +198,4 @@ def test_registry_telegram():
 
     with pytest.raises(DeliveryError) as ei:
         get_channel("telegram", telegram_config=Empty())
-    assert ei.value.permanent
+    assert not ei.value.permanent  # a missing token is configuration, so forwards retry
