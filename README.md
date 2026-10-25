@@ -246,7 +246,7 @@ Telegram is an alternative delivery channel to WhatsApp for forwarded photos and
 
 Options under **Settings > Telegram**:
 
-- **Bot API URL** (default `https://api.telegram.org`): change it only to use a self-hosted Bot API server. It is an admin-only setting and the bot token is sent to this URL, so point it only at a server you trust.
+- **Bot API URL** (default `https://api.telegram.org`): change it only to use a self-hosted Bot API server. It is an admin-only setting and the bot token is sent to this URL, so point it only at a server you trust. Changing it requires re-entering the bot token in the same save (Kino checks the token against the new address first), or clearing the token.
 - **Send rate** (messages per minute, 1 to 600, default 20): the Telegram send limit, separate from the WhatsApp rate.
 - **Send as file (original quality)**: send every photo with `sendDocument` instead of `sendPhoto`, so Telegram does not recompress it. Kino switches to a file by itself when a photo is larger than 10 MiB, when width plus height exceed 10000 px, or when the aspect ratio is above 20. Files over 50 MB cannot be sent.
 - **Delete Telegram message when a photo is removed from a kid** (off by default): removing a photo from a kid in the Gallery also deletes the Telegram message that was sent for that kid alone. This is best effort: Telegram lets bots delete only recent messages, so older ones, and failures, are skipped and logged. Messages that carry several kids are left alone. WhatsApp messages are never deleted.
