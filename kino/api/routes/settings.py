@@ -39,7 +39,10 @@ def _env(request: Request) -> Settings:
 
 
 def _forward(cfg: ForwardConfig) -> ForwardSettings:
-    return ForwardSettings.model_validate(cfg.model_dump())
+    return ForwardSettings.model_validate(
+        # channel fields are exposed by the API step that adds them to the schema
+        cfg.model_dump(exclude={"default_channel", "per_kid_channel"})
+    )
 
 
 def _digest(cfg: svc.DigestConfig) -> DigestOut:
