@@ -32,7 +32,7 @@ const detail: ImageDetail = {
     { id: 8, bbox: [500, 250, 50, 50], det_score: 0.7, size_px: 30, quality: null, tier: "S", from_tile: true, crop_url: null },
   ],
   matches: [{ id: 3, face_id: 7, kid_id: 1, kid_name: "Noa", score: 0.61, margin: 0.2, method: "face", decision: "auto_saved", decided_by: "system" }],
-  forwards: [{ id: 9, status: "sent", attempts: 1, kid_ids: [1], last_error: null, created_at: "2026-10-11T08:01:00", sent_at: "2026-10-11T08:02:00" }],
+  forwards: [{ id: 9, channel: "telegram", status: "sent", attempts: 1, kid_ids: [1], last_error: null, created_at: "2026-10-11T08:01:00", sent_at: "2026-10-11T08:02:00" }],
 };
 const stats = {
   images: { queued: 1, processing: 0, done: 12, failed: 0, skipped: 3 }, queue_depth: 1, review_count: 4,
@@ -126,7 +126,19 @@ describe("ActivityPage", () => {
     expect(within(dlg).getByText("tier L")).toBeInTheDocument();
     expect(within(dlg).getByText("no match")).toBeInTheDocument();
     expect(within(dlg).getByText("sent")).toBeInTheDocument();
+    expect(within(dlg).getByTestId("forward-channel")).toHaveTextContent("Telegram");
     expect(within(dlg).getByRole("alert")).toHaveTextContent("boom <script>");
+  });
+
+  it("shows a channel badge on failed and pending forwards", async () => {
+    routes["GET /api/forwards"] = (c) =>
+      json(200, c.url.includes("status=failed") ? [fwd(11, { channel: "telegram" })] : [fwd(12, { channel: "whatsapp", status: "pending", last_error: null })]);
+    renderPage();
+    await userEvent.click(await screen.findByRole("tab", { name: /Forwards/ }));
+    const failed = within(await screen.findByRole("region", { name: "Failed forwards" }));
+    expect(failed.getByTestId("forward-channel")).toHaveTextContent("Telegram");
+    const pending = within(await screen.findByRole("region", { name: "Pending forwards" }));
+    await waitFor(() => expect(pending.getByTestId("forward-channel")).toHaveTextContent("WhatsApp"));
   });
 
   it("retries a failed forward", async () => {

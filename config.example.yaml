@@ -7,7 +7,6 @@ tiling: auto         # off | auto | always
 tile_overlap: 0.2
 raw_retention_days: 7
 face_retention_days: 30
-forward_rate_per_min: 6
 log_level: INFO
 
 # OpenWA integration notes (doc-derived, see kino/openwa/schemas.py for sources):

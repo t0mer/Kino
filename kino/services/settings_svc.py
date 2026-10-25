@@ -20,15 +20,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings
-from kino.db.models import Kid
+from kino.db.models import DELIVERY_CHANNELS, Kid
 from kino.forward import (
     DEFAULT_CAPTION,
     K_DEFAULT,
+    K_DEFAULT_CHANNEL,
     K_ENABLED,
     K_PER_KID,
+    K_PER_KID_CHANNEL,
+    K_RATE,
     K_REVIEW,
     K_SEND_CAPTION,
     K_TEMPLATE,
+    MAX_RATE_PER_MIN,
     ForwardConfig,
     get_forward_config,
     get_setting,
@@ -60,24 +64,60 @@ def update_forward(
     caption_template: str,
     include_review_confirmed: bool,
     send_caption: bool = True,
+    default_channel: str = "whatsapp",
+    per_kid_channel: dict[int, str] | None = None,
+    rate_per_min: int | None = None,
 ) -> ForwardConfig:
     """Replace the forwarding section. Every destination is checked against watched groups
-    (forwarding into a watched group would re-ingest the photos)."""
+    (forwarding into a watched group would re-ingest the photos). Telegram destinations need a
+    configured bot token and a linked chat instead."""
+    if rate_per_min is not None and (
+        isinstance(rate_per_min, bool) or not 1 <= rate_per_min <= MAX_RATE_PER_MIN
+    ):
+        raise InvalidError(f"rate_per_min must be between 1 and {MAX_RATE_PER_MIN}")
     default = default_chat_id.strip() if default_chat_id else None
     per_kid = {k: v.strip() for k, v in per_kid.items() if v and v.strip()}
     known = set(session.scalars(select(Kid.id).where(Kid.id.in_(per_kid))))
     if missing := set(per_kid) - known:
         raise InvalidError(f"unknown kid id(s): {', '.join(map(str, sorted(missing)))}")
-    for dest in {default, *per_kid.values()} - {None}:
-        validate_destination(dest, session)
+    per_kid_channel = {k: v for k, v in (per_kid_channel or {}).items() if k in per_kid}
+    for ch in {default_channel, *per_kid_channel.values()}:
+        if ch not in DELIVERY_CHANNELS:
+            raise InvalidError(f"unknown delivery channel: {ch}")
+    targets: set[tuple[str, str]] = {
+        (per_kid_channel.get(k, "whatsapp"), v) for k, v in per_kid.items()
+    }
+    if default:
+        targets.add((default_channel, default))
+    telegram_targets = {d for ch, d in targets if ch == "telegram"}
+    if telegram_targets:
+        from kino.config import get_settings
+        from kino.db.models import TelegramChat
+        from kino.services.telegram_cfg import get_telegram_config
+
+        if not get_telegram_config(session, get_settings()).has_token:
+            raise InvalidError("configure the Telegram bot token before using Telegram")
+        linked = set(
+            session.scalars(
+                select(TelegramChat.chat_id).where(TelegramChat.chat_id.in_(telegram_targets))
+            )
+        )
+        if unknown := telegram_targets - linked:
+            raise InvalidError("Telegram chat is not linked: " + ", ".join(sorted(unknown)))
+    for ch, dest in targets:
+        validate_destination(dest, session, ch)
     if enabled and not default and not per_kid:
         raise InvalidError("pick a destination chat before enabling forwarding")
     put_setting(session, K_ENABLED, enabled)
     put_setting(session, K_DEFAULT, default)
     put_setting(session, K_PER_KID, {str(k): v for k, v in sorted(per_kid.items())})
+    put_setting(session, K_DEFAULT_CHANNEL, default_channel)
+    put_setting(session, K_PER_KID_CHANNEL, {str(k): v for k, v in sorted(per_kid_channel.items())})
     put_setting(session, K_TEMPLATE, caption_template)
     put_setting(session, K_REVIEW, include_review_confirmed)
     put_setting(session, K_SEND_CAPTION, send_caption)
+    if rate_per_min is not None:
+        put_setting(session, K_RATE, rate_per_min)
     session.flush()
     return get_forward_config(session)
 
@@ -91,6 +131,7 @@ class DigestConfig:
     cron: str  # empty disables the digest
     apprise_urls: list[str] = field(default_factory=list)
     public_base_url: str | None = None
+    channel: str = "whatsapp"  # delivery channel of ``chat_id``
 
 
 def get_digest(session: Session, env: Settings) -> DigestConfig:
@@ -98,7 +139,9 @@ def get_digest(session: Session, env: Settings) -> DigestConfig:
     if not isinstance(stored, dict):
         urls = [u.strip() for u in (env.apprise_urls or "").split(",") if u.strip()]
         return DigestConfig(chat_id=None, cron=env.digest_cron, apprise_urls=urls)
+    channel = stored.get("channel")
     return DigestConfig(
+        channel=channel if channel in DELIVERY_CHANNELS else "whatsapp",
         chat_id=stored.get("chat_id") or None,
         cron=str(stored.get("cron") or ""),
         apprise_urls=[str(u) for u in stored.get("apprise_urls") or []],
@@ -114,9 +157,22 @@ def update_digest(
     cron: str,
     apprise_urls: list[str] | None,
     public_base_url: str | None,
+    channel: str = "whatsapp",
 ) -> DigestConfig:
     """Replace the digest section; ``apprise_urls=None`` keeps the stored URLs (they hold
-    tokens and are never sent back to the browser)."""
+    tokens and are never sent back to the browser). A Telegram destination needs the bot
+    token configured and a linked chat."""
+    if channel not in DELIVERY_CHANNELS:
+        raise InvalidError(f"unknown delivery channel: {channel}")
+    chat_id = chat_id.strip() if chat_id else None
+    if channel == "telegram" and chat_id:
+        from kino.db.models import TelegramChat
+        from kino.services.telegram_cfg import get_telegram_config
+
+        if not get_telegram_config(session, env).has_token:
+            raise InvalidError("configure the Telegram bot token before using Telegram")
+        if session.scalar(select(TelegramChat.id).where(TelegramChat.chat_id == chat_id)) is None:
+            raise InvalidError(f"Telegram chat is not linked: {chat_id}")
     current = get_digest(session, env)
     urls = (
         current.apprise_urls
@@ -124,7 +180,8 @@ def update_digest(
         else _resolve_masked(apprise_urls, current.apprise_urls)
     )
     cfg = DigestConfig(
-        chat_id=chat_id.strip() if chat_id else None,
+        channel=channel,
+        chat_id=chat_id,
         cron=cron.strip(),
         apprise_urls=urls,
         public_base_url=public_base_url.rstrip("/") if public_base_url else None,

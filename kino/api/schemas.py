@@ -23,6 +23,17 @@ BirthYear = Annotated[int, Field(ge=1900, le=2100)]
 Name = Annotated[str, Field(min_length=1, max_length=100)]
 SlugIn = Annotated[str, Field(min_length=1, max_length=40)]
 ChatId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^\S+$")]
+Channel = Literal["whatsapp", "telegram"]
+
+
+class Destination(BaseModel):
+    """Where photos or the digest go: a chat on a delivery channel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Channel = "whatsapp"
+    chat_id: ChatId
+
 
 # --- kids ---------------------------------------------------------------------------------
 
@@ -121,12 +132,31 @@ Caption = Annotated[str, Field(min_length=1, max_length=MAX_CAPTION)]
 
 
 class ForwardSettings(In):
+    """Forwarding settings.
+
+    Destinations are ``default`` and ``per_kid_destinations`` (channel + chat id). The legacy
+    ``default_chat_id`` / ``per_kid`` (WhatsApp chat ids) are still accepted on input and merged
+    in (the new fields win); on output they show only the WhatsApp destinations."""
+
     enabled: bool
-    default_chat_id: ChatId | None
+    default_chat_id: ChatId | None = None
     per_kid: dict[int, ChatId] = Field(default_factory=dict, max_length=500)
+    default: Destination | None = None
+    per_kid_destinations: dict[int, Destination] = Field(default_factory=dict, max_length=500)
     caption_template: Caption
     include_review_confirmed: bool
     send_caption: bool = True
+    # WhatsApp sends per minute; omitted on input keeps the current value
+    rate_per_min: Annotated[int, Field(ge=1, le=120)] | None = None
+
+    def resolved(self) -> tuple[Destination | None, dict[int, Destination]]:
+        """(default, per-kid) destinations after merging the legacy fields."""
+        default = self.default
+        if default is None and "default" not in self.model_fields_set and self.default_chat_id:
+            default = Destination(channel="whatsapp", chat_id=self.default_chat_id)
+        per_kid = {k: Destination(channel="whatsapp", chat_id=v) for k, v in self.per_kid.items()}
+        per_kid.update(self.per_kid_destinations)
+        return default, per_kid
 
 
 class CaptionPreviewIn(In):
@@ -145,7 +175,8 @@ def _check_url(value: str, schemes: tuple[str, ...]) -> str:
 
 
 class DigestIn(In):
-    chat_id: ChatId | None = None
+    chat_id: ChatId | None = None  # legacy: a WhatsApp chat; ``destination`` wins when sent
+    destination: Destination | None = None
     cron: Annotated[str, Field(max_length=100)] = ""
     # None keeps the stored URLs (the UI never sees them in clear text).
     apprise_urls: list[Annotated[str, Field(min_length=3, max_length=2000)]] | None = Field(
@@ -184,7 +215,8 @@ class DigestIn(In):
 
 
 class DigestOut(BaseModel):
-    chat_id: str | None
+    chat_id: str | None  # legacy view: the destination when it is a WhatsApp chat
+    destination: Destination | None = None
     cron: str
     apprise_urls: list[str]  # masked: scheme only
     public_base_url: str | None
@@ -239,9 +271,53 @@ class ModelInfo(BaseModel):
     present: bool
 
 
+class TelegramSettingsOut(BaseModel):
+    has_token: bool
+    bot_username: str | None
+    api_url: str
+    rate_per_min: int
+    send_as_file: bool
+    delete_on_remove: bool
+
+
+class TelegramSettingsIn(In):
+    # Omitted keeps the stored token; null or "" clears it.
+    bot_token: Annotated[str, Field(max_length=200)] | None = None
+    api_url: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+    rate_per_min: Annotated[int, Field(ge=1, le=600)] | None = None
+    send_as_file: bool | None = None
+    delete_on_remove: bool | None = None
+
+
+class TelegramTestOut(BaseModel):
+    ok: bool
+    bot_username: str | None
+
+
+class TelegramLinkOut(BaseModel):
+    code: str
+    bot_username: str | None
+    expires_in: int
+    instructions: str
+
+
+class TelegramChatOut(BaseModel):
+    id: int
+    chat_id: str
+    title: str
+    type: str
+    linked_at: datetime
+
+
+class TelegramLinkStatus(BaseModel):
+    status: Literal["pending", "linked", "expired"]
+    chat: TelegramChatOut | None = None
+
+
 class SettingsOut(BaseModel):
     forward: ForwardSettings
     digest: DigestOut
+    telegram: TelegramSettingsOut
     thresholds: ThresholdsOut
     retention: Retention
     embedder: str
@@ -383,6 +459,7 @@ class OpenWASessionResult(BaseModel):
 
 class ForwardTestIn(In):
     chat_id: ChatId
+    channel: Channel = "whatsapp"
 
 
 class ForwardTestOut(BaseModel):
@@ -392,6 +469,7 @@ class ForwardTestOut(BaseModel):
 class ForwardOut(BaseModel):
     id: int
     image_id: int
+    channel: str = "whatsapp"
     dest_chat_id: str
     kid_ids: list[int]
     caption: str | None
@@ -688,6 +766,7 @@ class ImageMatchOut(BaseModel):
 
 class ImageForwardOut(BaseModel):
     id: int
+    channel: str = "whatsapp"
     status: str
     attempts: int
     kid_ids: list[int]

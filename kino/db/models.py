@@ -40,6 +40,8 @@ REF_STATUS = ("active", "retired")
 CLUSTER_LABEL = ("unlabeled", "labeled", "ignored")
 JOB_STATUS = ("queued", "running", "done", "failed")
 FORWARD_STATUS = ("pending", "sent", "failed", "cancelled")
+DELIVERY_CHANNELS = ("whatsapp", "telegram")
+TELEGRAM_CHAT_TYPES = ("private", "group", "supergroup", "channel")
 
 
 class Base(DeclarativeBase):
@@ -242,10 +244,17 @@ class SavedPhoto(Base):
 
 class Forward(Base):
     __tablename__ = "forwards"
-    __table_args__ = (UniqueConstraint("image_id", "dest_chat_id", name="uq_forwards_image_dest"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "image_id", "channel", "dest_chat_id", name="uq_forwards_image_channel_dest"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     image_id: Mapped[int] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"))
+    channel: Mapped[str] = mapped_column(
+        String, default="whatsapp", server_default="whatsapp", nullable=False
+    )
     dest_chat_id: Mapped[str] = mapped_column(String, nullable=False)
     kid_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     caption: Mapped[str | None] = mapped_column(Text)
@@ -255,6 +264,8 @@ class Forward(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     openwa_message_id: Mapped[str | None] = mapped_column(String, index=True)
+    # Provider-generic sent message id (Telegram message_id, or the OpenWA id).
+    sent_ref: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -267,9 +278,24 @@ class Digest(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     pending_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(
+        String, default="whatsapp", server_default="whatsapp", nullable=False
+    )
     dest_chat_id: Mapped[str | None] = mapped_column(String)
     # sha256 of the pending review match ids this digest reported (change detection).
     pending_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class TelegramChat(Base):
+    """A Telegram chat the bot has been linked to (a delivery destination)."""
+
+    __tablename__ = "telegram_chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String, default="", server_default="", nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)  # TELEGRAM_CHAT_TYPES
+    linked_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
 class Setting(Base):

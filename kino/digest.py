@@ -25,19 +25,23 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from kino import metrics
 from kino.config import Settings, get_settings
 from kino.db.models import Digest, Face, Image, Kid, Match
 from kino.db.session import get_session
+from kino.delivery import get_channel
 from kino.forward import sanitize_error
 from kino.openwa.client import OpenWAClient, mask_path
 from kino.services.openwa_cfg import load_openwa_config
 from kino.services.settings_svc import DigestConfig, get_digest
+from kino.services.telegram_cfg import redact_token
 
 _RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 _apprise_warned = False
@@ -138,36 +142,54 @@ def run_digest(
     settings: Settings | None = None,
     *,
     client_factory: Callable[[Settings], OpenWAClient] | None = None,
+    channel_factory: Callable[[str], Any] | None = None,
 ) -> bool:
-    """Send a digest now if one is warranted; returns True when one was sent."""
+    """Send a digest now if one is warranted; returns True when one was sent.
+
+    ``client_factory`` is the WhatsApp client seam; ``channel_factory(name)`` replaces channel
+    construction altogether (tests)."""
     global _apprise_warned
     st = settings or get_settings()
     with get_session() as s:
         cfg: DigestConfig = get_digest(s, st)
         pending = pending_review(s)
-        last = s.scalar(select(Digest.pending_hash).order_by(Digest.id.desc()).limit(1))
-        count = s.scalar(select(func.count()).select_from(Digest)) or 0
+        last_row = s.execute(
+            select(Digest.pending_hash, Digest.channel, Digest.dest_chat_id)
+            .order_by(Digest.id.desc())
+            .limit(1)
+        ).first()
     if cfg.apprise_urls and not _apprise_warned:
         _apprise_warned = True
         logger.warning("digest: apprise is not installed; notification URLs are ignored")
     if not cfg.chat_id or pending.photos == 0:
         return False
-    if count and last == pending.fingerprint:
+    # Dedupe only against the last digest if it went to the same channel AND destination;
+    # switching either resends even when the pending set is unchanged.
+    if last_row and last_row == (pending.fingerprint, cfg.channel, cfg.chat_id):
         return False
     text = render_message(pending, cfg.public_base_url)
     chat_id = cfg.chat_id
 
     async def send() -> None:
-        client = (client_factory or _default_client)(st)
+        if channel_factory is not None:
+            channel = channel_factory(cfg.channel)
+        elif cfg.channel == "whatsapp":
+            factory = client_factory or _default_client
+            channel = get_channel("whatsapp", settings=st, client_factory=lambda: factory(st))
+        else:
+            channel = get_channel(cfg.channel, settings=st)
         try:
-            await client.send_text(chat_id, text)
+            await channel.send_text(chat_id, text)
         finally:
-            await client.aclose()
+            await channel.aclose()
 
     try:
         asyncio.run(send())
     except Exception as e:
-        logger.warning("digest to {} failed: {}", mask_path(cfg.chat_id), sanitize_error(e))
+        err = sanitize_error(e)
+        if cfg.channel == "telegram":
+            err = redact_token(err)
+        logger.warning("digest to {} ({}) failed: {}", mask_path(chat_id), cfg.channel, err)
         return False
     with get_session() as s:
         s.add(
@@ -175,9 +197,11 @@ def run_digest(
                 sent_at=_utcnow(),
                 pending_count=pending.photos,
                 dest_chat_id=cfg.chat_id,
+                channel=cfg.channel,
                 pending_hash=pending.fingerprint,
             )
         )
+    metrics.digests_sent.labels(channel=cfg.channel).inc()
     logger.info("digest sent to {}: {} photo(s) pending", mask_path(cfg.chat_id), pending.photos)
     return True
 
@@ -189,6 +213,7 @@ def run_digest_on_drain(
     settings: Settings | None = None,
     *,
     client_factory: Callable[[Settings], OpenWAClient] | None = None,
+    channel_factory: Callable[[str], Any] | None = None,
 ) -> bool:
     """Send a digest once the processing queue has drained and review items are pending.
 
@@ -207,7 +232,7 @@ def run_digest_on_drain(
         return False
     if last_sent and _utcnow() - last_sent < DRAIN_MIN_GAP:
         return False
-    return run_digest(settings, client_factory=client_factory)
+    return run_digest(settings, client_factory=client_factory, channel_factory=channel_factory)
 
 
 def run_digest_if_due(
@@ -215,6 +240,7 @@ def run_digest_if_due(
     settings: Settings | None = None,
     *,
     client_factory: Callable[[Settings], OpenWAClient] | None = None,
+    channel_factory: Callable[[str], Any] | None = None,
 ) -> bool:
     st = settings or get_settings()
     with get_session() as s:
@@ -224,4 +250,4 @@ def run_digest_if_due(
     local = (now or datetime.now(UTC)).astimezone(ZoneInfo(st.timezone)).replace(tzinfo=None)
     if not cron_matches(cron, local):
         return False
-    return run_digest(st, client_factory=client_factory)
+    return run_digest(st, client_factory=client_factory, channel_factory=channel_factory)

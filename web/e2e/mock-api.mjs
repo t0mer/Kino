@@ -125,8 +125,9 @@ export const detail = (id) => ({
   ],
   forwards: [{ id: 12, status: 'sent', attempts: 1, kid_ids: [1], last_error: null, created_at: iso(29), sent_at: iso(28) }],
 });
-export const FWD = (id, img, status, extra = {}) => ({ id, image_id: img, dest_chat_id: 'chat-family', kid_ids: [1], caption: null, status, attempts: 4, last_error: null, created_at: iso(240), sent_at: null, next_attempt_at: null, ...extra });
+export const FWD = (id, img, status, extra = {}) => ({ id, image_id: img, channel: 'whatsapp', dest_chat_id: 'chat-family', kid_ids: [1], caption: null, status, attempts: 4, last_error: null, created_at: iso(240), sent_at: null, next_attempt_at: null, ...extra });
 export const FAILED = [
+  FWD(23, 34, 'failed', { channel: 'telegram', dest_chat_id: '-1001234567890', last_error: 'Telegram: bot was blocked or kicked' }),
   FWD(21, 33, 'failed', { last_error: 'OpenWA returned HTTP 503: session is reconnecting' }),
   FWD(20, 31, 'failed', { attempts: 4, last_error: 'timed out waiting for OpenWA' }),
 ];
@@ -181,8 +182,13 @@ export const clusterDetail = (id) => ({
   faces: Array.from({ length: 34 }, (_, n) => ({ face_id: 3000 + n, crop_url: `/api/crops/c${id - 60}-${n % 6}`, quality: 0.5 + (n % 5) * 0.08, size_px: 70 + n * 3, group_name: GROUPS[n % 4].name, sent_at: iso(500 + n * 300) })),
 });
 export const SETTINGS = {
-  forward: { enabled: true, default_chat_id: 'chat-family', per_kid: { 2: 'chat-grandma' }, caption_template: '📸 {kids} · {group} · {date}', include_review_confirmed: true },
-  digest: { chat_id: 'chat-me', cron: '0 20 * * *', apprise_urls: ['ntfy://'], public_base_url: 'https://kino.example.com' },
+  // default destination is Telegram, Itai's override stays WhatsApp so both channels show
+  forward: {
+    enabled: true, default_chat_id: null, per_kid: { 2: 'chat-grandma' }, caption_template: '📸 {kids} · {group} · {date}', include_review_confirmed: true, send_caption: true, rate_per_min: 6,
+    default: { channel: 'telegram', chat_id: '-1001234567890' }, per_kid_destinations: { 2: { channel: 'whatsapp', chat_id: 'chat-grandma' } },
+  },
+  telegram: { has_token: true, bot_username: 'kino_family_bot', api_url: 'https://api.telegram.org', rate_per_min: 20, send_as_file: false, delete_on_remove: false },
+  digest: { chat_id: 'chat-me', destination: { channel: 'whatsapp', chat_id: 'chat-me' }, cron: '0 20 * * *', apprise_urls: ['ntfy://'], public_base_url: 'https://kino.example.com' },
   thresholds: { L: { auto: 0.45, review: 0.32 }, M: { auto: 0.5, review: 0.35 }, S: { review: 0.4 }, prior_bonus: 0.03, unmapped_penalty: 0.05, margin_min: 0.08, auto_floor: 0.3 },
   retention: { raw_days: 7, face_days: 30 },
   embedder: 'auraface',
@@ -199,6 +205,12 @@ export const CHATS = [
   { id: 'group-1', name: 'Class 3B parents', is_group: true, watched: true, selectable: false },
   { id: 'group-2', name: 'Football Saturday', is_group: true, watched: true, selectable: false },
 ];
+// Telegram fixtures (fake bot, fake chat ids; a token is never part of any response)
+export const TG_CHATS = [
+  { id: 1, chat_id: '-1001234567890', title: 'Family photos', type: 'supergroup', linked_at: day(12) },
+  { id: 2, chat_id: '123456789', title: "Noa's mom", type: 'private', linked_at: day(5) },
+];
+export const TG_LINK = { code: 'KINO-7Q4M', bot_username: 'kino_family_bot', expires_in: 600, instructions: 'Send the code to the bot.' };
 export const job = (o) => ({ id: 7, kind: 'backfill', status: 'running', group_id: 2, params: { days: 30 }, total: 48, processed: 21, skipped: 6, errors: 1, error: null, created_at: iso(3), started_at: iso(3), finished_at: null, ...o });
 // two upload results for the Enroll page
 export const UPLOADS = [
@@ -256,6 +268,12 @@ export function mockApi(state) {
     if (p === '/api/photos') return json({ items: photosFor(Number(u.searchParams.get('kid_id')) || 0), next_cursor: null });
     if ((r = p.match(/^\/api\/photos\/(\d+)\/thumb$/))) return img(photoThumbSvg(Number(r[1])));
     if (p === '/api/settings') return json(SETTINGS);
+    if (p === '/api/settings/telegram') return json(SETTINGS.telegram);
+    if (p === '/api/telegram/test') return json({ ok: true, bot_username: 'kino_family_bot' });
+    if (p === '/api/telegram/chats') return json(TG_CHATS);
+    if (p === '/api/telegram/link' && m === 'POST') return json(TG_LINK);
+    if (p.startsWith('/api/telegram/link/')) return json({ status: 'pending', chat: null });
+    if ((r = p.match(/^\/api\/telegram\/chats\/(\d+)$/)) && m === 'DELETE') return json({}, 200);
     if (p === '/api/openwa/chats') { const q = (u.searchParams.get('q') || '').toLowerCase(); return json(CHATS.filter((c) => (c.name || '').toLowerCase().includes(q))); }
     if (p === '/api/openwa/webhook') return json({ registered: true, active: true, id: 'wh-1', url: 'http://kino-api:8080/api/webhook/openwa', events: ['message.received'] });
     if (p === '/api/test/score') return json(SCORE);

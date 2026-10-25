@@ -247,3 +247,6 @@ web/dist/
 demo/models/
 demo/.venv/
 demo/work/
+
+# Local task spec
+telegram.md

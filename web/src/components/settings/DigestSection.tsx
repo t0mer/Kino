@@ -17,12 +17,11 @@ import {
   settingsKeys,
   type SettingsOut,
 } from "@/lib/settings";
-import { ChatPicker, useChatNames } from "./ChatPicker";
+import { DestinationPicker } from "./DestinationPicker";
 import { Field, SectionCard } from "./SectionCard";
 
 export function DigestSection({ saved }: { saved: DigestOut }) {
   const qc = useQueryClient();
-  const names = useChatNames();
   const savedForm = digestToForm(saved);
   const [draft, setDraft] = useState<DigestForm | null>(null);
   const [errors, setErrors] = useState<ParsedErrors | null>(null);
@@ -65,8 +64,8 @@ export function DigestSection({ saved }: { saved: DigestOut }) {
         setErrors(null);
       }}
     >
-      <Field id="digest-chat" label="Digest chat" error={err("chat_id")}>
-        <ChatPicker id="digest-chat" label="Digest chat" value={form.chat_id} names={names} onChange={(v) => set({ chat_id: v })} />
+      <Field id="digest-chat" label="Digest chat" error={(err("destination") ?? err("chat_id"))}>
+        <DestinationPicker id="digest-chat" label="Digest chat" value={form.destination} onChange={(v) => set({ destination: v })} />
       </Field>
       <Field
         id="digest-cron"

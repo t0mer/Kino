@@ -67,8 +67,12 @@ def _define(registry: CollectorRegistry | None) -> None:
         "kino_faces_detected_total", "Faces detected", ["tier", "source"], registry=r
     )
     matches = Counter("kino_matches_total", "Matches", ["kid", "decision", "method"], registry=r)
-    forwards = Counter("kino_forwards_total", "Forwards by status", ["status"], registry=r)
-    digests_sent = Counter("kino_digests_sent_total", "Review digests sent", registry=r)
+    forwards = Counter(
+        "kino_forwards_total", "Forwards by status and channel", ["status", "channel"], registry=r
+    )
+    digests_sent = Counter(
+        "kino_digests_sent_total", "Review digests sent", ["channel"], registry=r
+    )
     auth = Counter("kino_auth_total", "Auth attempts", ["method", "result"], registry=r)
     model_info = Gauge(
         "kino_model_info",
@@ -145,14 +149,18 @@ class DbStatsCollector(Collector):
     def collect(self) -> Iterator[Metric]:
         from sqlalchemy import func, select
 
-        from kino.db.models import Forward, Image, Kid, Match, ReferenceFace
+        from kino.db.models import DELIVERY_CHANNELS, Forward, Image, Kid, Match, ReferenceFace
         from kino.db.session import get_session
 
         try:
             with get_session() as s:
                 queued = s.scalar(select(func.count()).where(Image.status == "queued"))
                 review = s.scalar(select(func.count()).where(Match.decision == "review"))
-                pending = s.scalar(select(func.count()).where(Forward.status == "pending"))
+                pending_rows = s.execute(
+                    select(Forward.channel, func.count())
+                    .where(Forward.status == "pending")
+                    .group_by(Forward.channel)
+                ).all()
                 refs: list[Any] = list(
                     s.execute(
                         select(Kid.slug, ReferenceFace.source, func.count())
@@ -166,7 +174,15 @@ class DbStatsCollector(Collector):
             return
         yield GaugeMetricFamily("kino_queue_depth", "Pending pipeline jobs", value=queued or 0)
         yield GaugeMetricFamily("kino_review_queue_size", "Pending review items", value=review or 0)
-        yield GaugeMetricFamily("kino_forward_queue_depth", "Pending forwards", value=pending or 0)
+        depth = GaugeMetricFamily(
+            "kino_forward_queue_depth", "Pending forwards", labels=["channel"]
+        )
+        by_channel = {str(c): int(n) for c, n in pending_rows}
+        for channel in DELIVERY_CHANNELS:
+            depth.add_metric([channel], by_channel.pop(channel, 0))
+        for channel, n in sorted(by_channel.items()):
+            depth.add_metric([channel], n)
+        yield depth
         g = GaugeMetricFamily("kino_gallery_refs", "Reference faces", labels=["kid", "source"])
         for slug, source, n in refs:
             g.add_metric([slug, source], n)

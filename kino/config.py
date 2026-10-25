@@ -95,7 +95,6 @@ class Settings(BaseSettings):
     burst_enabled: bool = False
     digest_cron: str = "0 20 * * *"
     apprise_urls: str | None = None
-    forward_rate_per_min: int = Field(6, ge=1)
     backfill_delay_seconds: float = Field(1.0, ge=0)  # pause after each fetched history photo
     log_level: str = "INFO"
     log_json: bool = False

@@ -1,6 +1,6 @@
 # Kino
 
-Kino is a self-hosted service that listens to WhatsApp group messages through [OpenWA](https://github.com/rmyndharis/openwa), finds your kids in the incoming photos (including small, far-away faces), saves each photo into a per-kid folder, and forwards the saved photo to a WhatsApp chat you choose. Everything runs locally on CPU; no photo or face embedding leaves your host except the forwarded photo you asked for.
+Kino is a self-hosted service that listens to WhatsApp group messages through [OpenWA](https://github.com/rmyndharis/openwa), finds your kids in the incoming photos (including small, far-away faces), saves each photo into a per-kid folder, and forwards the saved photo to a chat you choose, on WhatsApp (through OpenWA) or on Telegram (through a bot). Everything runs locally on CPU; no photo or face embedding leaves your host except the forwarded photo you asked for.
 
 Named after the floating recording drones of Stargate Universe.
 
@@ -14,7 +14,7 @@ The demo is a narrated walkthrough (turn the sound on): Kino, the amber-ring eye
 
 ## Contents
 
-[Status](#status--known-gaps) · [Features](#features) · [Web UI](#web-ui) · [How it works](#how-it-works) · [Requirements](#requirements) · [Installation](#installation) · [Configuration](#configuration) · [CLI reference](#cli-reference) · [API endpoints](#api-endpoints) · [Privacy and retention](#privacy-and-retention) · [Security notes](#security-notes) · [Model licensing](#model-licensing) · [Troubleshooting](#troubleshooting) · [Development](#development) · [License](#license)
+[Status](#status--known-gaps) · [Features](#features) · [Web UI](#web-ui) · [How it works](#how-it-works) · [Requirements](#requirements) · [Installation](#installation) · [Configuration](#configuration) · [CLI reference](#cli-reference) · [API endpoints](#api-endpoints) · [Privacy and retention](#privacy-and-retention) · [Security notes](#security-notes) · [Model licensing](#model-licensing) · [Troubleshooting](#troubleshooting) · [Upgrading](#upgrading) · [Development](#development) · [License](#license)
 
 ## Status / known gaps
 
@@ -44,13 +44,13 @@ If your OpenWA differs, the first webhook delivery is where it will show up (see
 - Face quality tiers (size, blur, pose) and embedding on CPU with onnxruntime
 - Matching against per-kid reference galleries, with thresholds per size tier, per-kid offset, group prior and a margin check
 - Auto-save per kid (opt-in) to `photos/<kid>/<YYYY>/<MM>/<date>_<group>_<id>.jpg`, with EXIF date, description and artist; siblings in one photo are hardlinked
-- Forwarding of saved photos to a configured WhatsApp chat through a single rate-limited queue, with retries
+- Forwarding of saved photos to a configured chat through a single rate-limited queue, with retries. The delivery channel is selectable: **WhatsApp** (through OpenWA, the default) or **Telegram** (a bot you create with @BotFather), per default destination, per kid and for the review digest. OpenWA is still required for receiving photos, whatever channel delivers them
 - Web UI to teach faces: enroll from photos or received images, a review queue with keyboard shortcuts, "Who is this?" clustering of unknown faces, reference management with outlier detection, a per-kid Gallery of saved photos, and a Test page to dry-run thresholds before enabling auto-save
 - Backfill of the last 1 to 90 days of a group's history through OpenWA
-- Retention cleanup of raw images, crops and embeddings, and a review digest message sent to a WhatsApp chat
+- Retention cleanup of raw images, crops and embeddings, and a review digest message sent to a WhatsApp or Telegram chat
 - Two ways to sign in: a local admin login (LAN) and Cloudflare Access (tunnel)
 - Prometheus metrics at `/metrics`, `/healthz` and `/readyz`
-- CLI for enrolling kids, managing groups and kids, setting the forward destination, registering the webhook and benchmarking the pipeline
+- CLI for enrolling kids, managing groups and kids, setting the (WhatsApp) forward destination, registering the webhook and benchmarking the pipeline
 
 ## Web UI
 
@@ -141,7 +141,7 @@ Groups are discovered when a message arrives, or imported from OpenWA with **Ref
 
 ### Gallery
 
-The photos Kino identified and saved, at `/gallery` (the old `/photos` address redirects here). Tabs for **All** and each kid show how many photos each has; photos are grouped under month headings and shown as thumbnails. In a kid's tab, a photo that was also saved for another kid carries a badge with their name; in the All tab every thumbnail lists all of its kids. Filter by group and date range. Open a photo for the lightbox: the original, the kids, group, sent time and sender (hidden when it would be a phone number), previous/next paging that continues across pages, and a **Remove from kid** button per kid. Removing deletes that kid's file and cancels its unsent forward (already sent WhatsApp messages are not deleted).
+The photos Kino identified and saved, at `/gallery` (the old `/photos` address redirects here). Tabs for **All** and each kid show how many photos each has; photos are grouped under month headings and shown as thumbnails. In a kid's tab, a photo that was also saved for another kid carries a badge with their name; in the All tab every thumbnail lists all of its kids. Filter by group and date range. Open a photo for the lightbox: the original, the kids, group, sent time and sender (hidden when it would be a phone number), previous/next paging that continues across pages, and a **Remove from kid** button per kid. Removing deletes that kid's file and cancels its unsent forward (already sent WhatsApp messages are not deleted; sent Telegram messages are deleted only if you enabled that option, see [Telegram](#telegram)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/gallery-dark.png">
@@ -155,7 +155,7 @@ The photos Kino identified and saved, at `/gallery` (the old `/photos` address r
 
 ### Activity
 
-Stats (processed, queued, review pending, forwards waiting), then the recent images with their pipeline outcome (done, skipped as duplicate, failed, queued). Open an image to see every detected face with its box, size tier, quality, scores and decision, plus its forwards. The **Forwards** tab lists failed forwards with a **Retry** button, and forwards still pending.
+Stats (processed, queued, review pending, forwards waiting), then the recent images with their pipeline outcome (done, skipped as duplicate, failed, queued). Open an image to see every detected face with its box, size tier, quality, scores and decision, plus its forwards. The **Forwards** tab lists failed forwards with a **Retry** button, and forwards still pending; each shows a badge with its delivery channel (WhatsApp or Telegram).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/activity-dark.png">
@@ -202,8 +202,11 @@ Unknown faces from the last 60 days are grouped nightly (03:30 server time) and 
 ### Settings
 
 - **OpenWA**: the current connection (URL, session, whether the API key and webhook secret are saved, webhook URL; values from environment variables marked read-only) and a **Reconnect** button that opens the setup wizard.
-- **Forwarding**: switch it on, pick the default destination chat or group from a searchable list (watched groups are disabled, otherwise Kino would ingest its own photos), optional per-kid destinations, and the caption template with a live preview (`{kids}`, `{group}`, `{sender}`, `{date}`, `{time}`). **Send test photo** sends a real message. Optionally also forward photos you confirm in the review queue.
-- **Digest**: the chat that receives the review digest, the schedule (a 5-field cron expression, empty disables it) and the public base URL used in the message link.
+- **Forwarding**: switch it on, pick the default destination from a searchable list, optional per-kid destinations, and the caption template with a live preview (`{kids}`, `{group}`, `{sender}`, `{date}`, `{time}`). **Send test photo** sends a real message. Optionally also forward photos you confirm in the review queue. The **WhatsApp send rate** (messages per minute, 1 to 120, default 6) limits forwarded WhatsApp photos, with 2 to 5 s of random delay between sends; keep it low to avoid bans.
+
+  Each destination (the default, each per-kid override and the digest) has its own **channel** selector, WhatsApp or Telegram, so one kid's photos can go to a WhatsApp group and another's to a Telegram chat. The WhatsApp picker lists the contacts and groups OpenWA sees and disables watched groups (Kino would ingest its own photos). The Telegram picker lists the chats you linked (see below). A Telegram destination must be a linked chat; the watched-group guard does not apply to it because Kino never ingests from Telegram.
+- **Telegram**: the bot token, options and linked chats (see [Telegram](#telegram)).
+- **Digest**: the channel and chat that receive the review digest, the schedule (a 5-field cron expression, empty disables it) and the public base URL used in the message link.
 - **Thresholds**: auto-save and review values per size tier plus the group bonus, unmapped-group penalty and minimum margin. Auto-save never goes below the floor of 0.30.
 - **Retention**: days to keep unmatched raw images and unmatched faces.
 - **System**: embedder, model files with licence and checksum, the OpenWA webhook status with a **Register webhook** (or **Repair webhook**) button, and the version.
@@ -219,14 +222,46 @@ Unknown faces from the last 60 days are grouped nightly (03:30 server time) and 
 </picture>
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-telegram-dark.png">
+  <img alt="Telegram settings" src="assets/screenshots/settings-telegram-light.png">
+</picture>
+
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-thresholds-dark.png">
   <img alt="Threshold settings" src="assets/screenshots/settings-thresholds-light.png">
+</picture>
+
+### Telegram
+
+Telegram is an alternative delivery channel to WhatsApp for forwarded photos and the review digest. Photos are still received through OpenWA; only the delivery changes.
+
+1. **Create a bot.** In Telegram, talk to [@BotFather](https://t.me/BotFather), run `/newbot` and copy the token (it looks like `123456:ABC-DEF...`).
+2. **Paste the token** under **Settings > Telegram** and save. Kino checks it with Telegram (`getMe`) before saving, and **Test** repeats the check and shows the bot's username. The token is stored encrypted with the same key as the OpenWA secrets (`/data/secret.key`); it is managed only here, not through environment variables.
+3. **Link a chat.** Bots cannot list the chats they are in, so each destination is linked once with a one-time code. **Link a chat** shows a code that is valid for 10 minutes:
+   - Private chat: open the bot and send `/start CODE`.
+   - Group or channel: add the bot to it first, then post a message containing the code. Telegram's *privacy mode* hides ordinary group messages from bots, so post the code in a form the bot can see: `/start@yourbotname CODE`, a message that mentions the bot, or make the bot an admin of the group.
+
+   Kino waits for the message with `getUpdates` and links the chat it came from (private chats, groups, supergroups and channels). Linked chats are listed in Settings and can be unlinked, unless they are still a forwarding or digest destination. Kino never sets a webhook on the bot.
+4. **Choose the channel** to **Telegram** for the default destination, a kid or the digest, pick the linked chat, and use **Send test photo**.
+
+Options under **Settings > Telegram**:
+
+- **Bot API URL** (default `https://api.telegram.org`): change it only to use a self-hosted Bot API server. It is an admin-only setting and the bot token is sent to this URL, so point it only at a server you trust. Changing it requires re-entering the bot token in the same save (Kino checks the token against the new address first), or clearing the token.
+- **Send rate** (messages per minute, 1 to 600, default 20): the Telegram send limit, separate from the WhatsApp rate.
+- **Send as file (original quality)**: send every photo with `sendDocument` instead of `sendPhoto`, so Telegram does not recompress it. Kino switches to a file by itself when a photo is larger than 10 MiB, when width plus height exceed 10000 px, or when the aspect ratio is above 20. Files over 50 MB cannot be sent.
+- **Delete Telegram message when a photo is removed from a kid** (off by default): removing a photo from a kid in the Gallery also deletes the Telegram message that was sent for that kid alone. This is best effort: Telegram lets bots delete only recent messages, so older ones, and failures, are skipped and logged. Messages that carry several kids are left alone. WhatsApp messages are never deleted.
+
+Telegram captions are sent as plain text and cut to Telegram's 1024-character limit. Telegram sends are paced separately from WhatsApp (see the Telegram send rate in Settings), without the random delay used for WhatsApp, and when Telegram answers *429 Too Many Requests* Kino waits for the time Telegram asks (`retry_after`) and retries without using up one of the forward's attempts.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/telegram-link-dark.png">
+  <img alt="Link a Telegram chat with a one-time code" src="assets/screenshots/telegram-link-light.png">
 </picture>
 
 ### Retention and the digest
 
 - **Retention** runs hourly. Raw images that matched no kid are deleted after 7 days (a raw file is kept while a review item or an unfinished forward needs it), and embeddings and crops of faces that are not matched to a kid, nor used as references or negatives, after 30 days. Edit the values under Settings; the `KINO_*_RETENTION_DAYS` variables are the defaults.
-- **Digest**: at the configured time Kino sends one WhatsApp message such as "7 photos waiting for review (Noa 4, Itai 3) · https://your-host/review". Nothing is sent when no photo waits for review, and the same pending set is not announced twice: a new digest goes out only when the set of items waiting for review changed since the previous digest. The schedule is evaluated in `KINO_TIMEZONE`.
+- **Digest**: at the configured time Kino sends one message (WhatsApp or Telegram, as chosen under Settings > Digest) such as "7 photos waiting for review (Noa 4, Itai 3) · https://your-host/review". Nothing is sent when no photo waits for review, and the same pending set is not announced twice: a new digest goes out only when the set of items waiting for review changed since the previous digest. The schedule is evaluated in `KINO_TIMEZONE`.
 
 ## How it works
 
@@ -238,7 +273,8 @@ flowchart LR
     K -- "auto-save" --> P[/photos/kid/YYYY/MM/]
     K -- "enqueue forward" --> F[(forward queue)]
     F --> FW[kino forward-worker<br/>single consumer, rate limited]
-    FW -- "send-image" --> W
+    FW -- "send-image (WhatsApp)" --> W
+    FW -- "sendPhoto (Telegram)" --> T[Telegram Bot API]
     K --- D[(kino.db SQLite)]
     A --- D
 ```
@@ -248,7 +284,8 @@ flowchart LR
 ## Requirements
 
 - Docker with Compose (amd64 or arm64), or Python 3.12 for a local install
-- A running OpenWA with a connected WhatsApp session, its URL, API key and session id
+- A running OpenWA with a connected WhatsApp session, its URL, API key and session id (needed to receive photos even when you deliver through Telegram)
+- Optional, for Telegram delivery: a bot token from @BotFather and outbound HTTPS access to `api.telegram.org` (or a self-hosted Bot API server, set as the Bot API URL in Settings > Telegram)
 - About 3 GB of RAM for the worker and a few hundred MB of disk for models (downloaded on first use)
 
 ## Installation
@@ -290,7 +327,7 @@ docker compose exec kino-api kino kids set-auto-save Noa --on
 docker compose exec kino-api kino forward set 972501234567@c.us
 ```
 
-Until auto-save is on for a kid, matches are not saved (they go to the review queue). Forwarding is off until a destination is chosen with `kino forward set` or in Settings.
+Until auto-save is on for a kid, matches are not saved (they go to the review queue). Forwarding is off until a destination is chosen with `kino forward set` or in Settings. The `kino forward` commands only handle WhatsApp destinations: `kino forward set` always selects the WhatsApp channel, so configure Telegram destinations in the web UI (or the API).
 
 ### Local install
 
@@ -303,9 +340,9 @@ KINO_DATA_DIR=./data KINO_PHOTOS_DIR=./data/photos .venv/bin/kino migrate
 
 Precedence: environment variables (`KINO_*`) > `/data/config.yaml` (in `KINO_DATA_DIR`; keys are the variable names without the prefix, see `config.example.yaml`) > built-in defaults.
 
-Settings you edit in the web UI (forwarding, digest, thresholds, retention) are stored in the database and take precedence over the matching `KINO_*` defaults below.
+Settings you edit in the web UI (forwarding, digest, Telegram options, thresholds, retention) are stored in the database and take precedence over the matching `KINO_*` defaults below.
 
-OpenWA settings saved by the setup wizard live in the database too, but here the environment wins: a set `KINO_OPENWA_*` or `KINO_WEBHOOK_SECRET` overrides the wizard field by field.
+OpenWA settings saved by the setup wizard live in the database too, but here the environment wins: a set `KINO_OPENWA_*` or `KINO_WEBHOOK_SECRET` overrides the wizard field by field. The delivery settings are not read from the environment or `config.yaml` at all: the Telegram bot token (stored encrypted), the Telegram Bot API URL, the Telegram send rate and the WhatsApp send rate are managed only in **Settings** in the web UI and stored in the database.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -333,7 +370,6 @@ OpenWA settings saved by the setup wizard live in the database too, but here the
 | `KINO_TILE_OVERLAP` | `0.2` | Tile overlap, from 0 up to but excluding 1 |
 | `KINO_WORKERS` | `2` | Worker processes for `kino worker` (at least 1) |
 | `KINO_ORT_THREADS` | `2` | onnxruntime threads per process (at least 1) |
-| `KINO_FORWARD_RATE_PER_MIN` | `6` | Maximum forwarded photos per minute (at least 1) |
 | `KINO_BACKFILL_DELAY_SECONDS` | `1.0` | Pause after each photo fetched during a group backfill (0 or more) |
 | `KINO_RAW_RETENTION_DAYS` | `7` | Days to keep raw images that matched no kid. Default only: the value saved in Settings wins |
 | `KINO_FACE_RETENTION_DAYS` | `30` | Days to keep embeddings and crops of faces not matched to a kid. Default only: the value saved in Settings wins |
@@ -365,7 +401,7 @@ Run `kino --help` or `kino <command> --help` for all options. In the container t
 | `kino kids list` | List kids |
 | `kino kids set-auto-save <kid> --on\|--off` | Enable or disable auto-save for a kid |
 | `kino kids set-offset <kid> <offset>` | Shift a kid's thresholds (positive is stricter; allowed range -0.10 to +0.30; use `--` before negative values). Whatever the offset and group prior, the tier L/M auto-save threshold never goes below 0.30 |
-| `kino forward set <chat_id>` | Set the default forward destination and enable forwarding |
+| `kino forward set <chat_id>` | Set the default forward destination (a WhatsApp chat) and enable forwarding |
 | `kino forward show` | Show the forwarding configuration |
 | `kino forward disable` | Disable forwarding (destination kept) |
 | `kino forward list [--status S] [--limit N]` | List forwards, newest first (`pending`, `sent`, `failed`, `cancelled`) |
@@ -410,13 +446,17 @@ Interactive docs are not served; this table is the reference. All routes need a 
 | `DELETE /api/photos/{id}` | Remove a saved photo from one kid |
 | `GET /api/images`, `GET /api/images/{id}` | Processed images and the detail of one (faces, matches, forwards) |
 | `GET /api/images/{id}/file`, `GET /api/crops/{face_id}` | Original image and face crop files |
-| `GET /api/forwards`, `POST /api/forwards/{id}/retry` | List forwards by status; retry a failed one |
-| `POST /api/forward/test` | Send a test photo to a chat |
+| `GET /api/forwards`, `POST /api/forwards/{id}/retry` | List forwards by status; retry a failed one. Each forward has a `channel` (`whatsapp` or `telegram`) next to `dest_chat_id` |
+| `POST /api/forward/test` | Send a test photo to a chat: body `{chat_id, channel}` (`channel` defaults to `whatsapp`; a Telegram `chat_id` must be a linked chat) |
 | `POST /api/test/score` | Dry-run scoring with candidate thresholds |
 | `POST /api/test/flag` | Flag a dry-run face as wrong (send to review or add as negative) |
 | `POST /api/rescore` | Re-score stored faces of the last N days |
 | `GET /api/settings` | All settings, model info and version |
-| `GET/PUT /api/settings/forward`, `/digest`, `/thresholds`, `/retention` | Read or replace one settings section |
+| `GET/PUT /api/settings/forward`, `/digest`, `/thresholds`, `/retention` | Read or replace one settings section. Forward settings take `rate_per_min` (WhatsApp send rate, 1 to 120, default 6), `default` and `per_kid_destinations` as `{channel, chat_id}` objects (the older `default_chat_id` and `per_kid` still work and mean WhatsApp); the digest takes `destination: {channel, chat_id}` (the older `chat_id` still means WhatsApp) |
+| `GET/PUT /api/settings/telegram` | Read or change the Telegram settings: `bot_token` (checked against Telegram before it is saved; `null` or `""` clears it, omitted keeps it), `api_url` (Bot API base URL, admin-only), `rate_per_min` (1 to 600), `send_as_file`, `delete_on_remove`. The token is never returned: the response has `has_token`, `bot_username`, `api_url`, `rate_per_min`, `send_as_file` and `delete_on_remove` |
+| `POST /api/telegram/test` | Check the effective bot token with `getMe`; returns `{ok, bot_username}` |
+| `POST /api/telegram/link`, `GET /api/telegram/link/{code}` | Start linking a chat (returns a one-time `code` valid for 600 s, the bot username and instructions); poll the code (each poll waits up to 8 s for a Telegram message) until its status is `linked`, with the `chat`, or `expired`. Answers 409 when a webhook or another consumer holds the bot's updates |
+| `GET /api/telegram/chats`, `DELETE /api/telegram/chats/{id}` | List linked Telegram chats; unlink one (refused while it is a forwarding or digest destination) |
 | `POST /api/settings/forward/preview` | Render the caption template for a sample |
 | `GET /api/openwa/chats` | Contacts and groups for the destination pickers |
 | `GET /api/openwa/webhook`, `POST /api/openwa/webhook/register` | Webhook status; register or repair it |
@@ -425,14 +465,16 @@ Interactive docs are not served; this table is the reference. All routes need a 
 | `POST /api/openwa/setup/session` | Save the picked session (checked against the live list) and register the webhook; a failed registration is reported in `error` and can be retried |
 | `GET /api/stats` | Counters used by the Activity page |
 
-`/metrics` merges the counters written by all Kino processes (prometheus_client multiprocess mode, files in `KINO_METRICS_DIR`) and adds gauges read from the database at scrape time: `kino_queue_depth`, `kino_review_queue_size`, `kino_gallery_refs{kid,source}` and `kino_forward_queue_depth`. `kino_model_info` is set by each worker process once its models are loaded. Each process deletes the metric files of dead processes from its own container when it starts; after recreating containers you can clear stale files by deleting the directory while all Kino containers are stopped.
+`/metrics` merges the counters written by all Kino processes (prometheus_client multiprocess mode, files in `KINO_METRICS_DIR`) and adds gauges read from the database at scrape time: `kino_queue_depth`, `kino_review_queue_size`, `kino_gallery_refs{kid,source}` and `kino_forward_queue_depth`. `kino_forwards_total` and `kino_digests_sent_total` carry a `channel` label (`whatsapp` or `telegram`), and `kino_forward_queue_depth` is reported per `channel`. `kino_model_info` is set by each worker process once its models are loaded. Each process deletes the metric files of dead processes from its own container when it starts; after recreating containers you can clear stale files by deleting the directory while all Kino containers are stopped.
 
 ## Privacy and retention
 
 - Other children appear in group photos. Kino stores raw images, face crops and embeddings of every detected face in `/data` while it processes them, and an hourly cleanup removes them: raw images that matched no kid after 7 days, and embeddings and crops of faces not matched to a kid (and not used as a reference or negative example) after 30 days. Both values are editable in Settings. Ignoring a cluster in "Who is this?" deletes its crops and embeddings immediately.
 - Saved photos keep the original image bytes; only EXIF is rewritten (date, group name as description, sender as artist). All metadata segments except JFIF, ICC and Adobe colour data (Exif/GPS, XMP, IPTC, MPF, comments and other APPn, including any between scans or after the image end) are removed by default (`KINO_STRIP_GPS`), and forwarded photos are these stripped saved copies.
 - Folder names and dates use `KINO_TIMEZONE`.
-- No photo or embedding is sent anywhere except the saved photo forwarded to your chosen chat through OpenWA.
+- Face crops, embeddings and the raw (unsaved) images never leave your host, whichever delivery channel you use. The only things sent out are the saved (metadata-stripped) photo and its caption to the chat you chose, and the review digest text.
+- **WhatsApp** delivery goes through your OpenWA and WhatsApp's own servers, unchanged from before.
+- **Telegram** delivery goes through Telegram's servers (`api.telegram.org`, or your own Bot API server if you set a Bot API URL in Settings; the bot token is sent to that URL, so only an admin should change it). Bot chats are not end-to-end encrypted, so Telegram can see the forwarded photos and digest text. Only choose Telegram if you accept that. The bot token is stored encrypted at rest and is redacted from logs and stored error messages.
 - Logs do not include image bytes or embeddings.
 
 ## Security notes
@@ -444,7 +486,8 @@ Interactive docs are not served; this table is the reference. All routes need a 
 - The webhook is meant to be reached by OpenWA over the internal Docker network only; do not expose it publicly.
 - The web UI and every `/api` route except the webhook, `/healthz` and `/readyz` require a signed-in session (local login or a validated Cloudflare Access token). State-changing requests need a CSRF token (double-submit cookie). The first-run password setup is refused for requests that came through a proxy or tunnel, so set the password on the LAN before exposing Kino.
 - The example `docker-compose.yml` binds the Kino API and OpenWA to `127.0.0.1`. Expose Kino only through a tunnel or reverse proxy, never the webhook path, and never expose OpenWA.
-- Never choose a watched group as the forward destination (Kino would ingest its own photos).
+- Never choose a watched group as the WhatsApp forward destination (Kino would ingest its own photos).
+- The Telegram bot token is encrypted with AES-256-GCM like the OpenWA secrets and never returned by the API. Kino talks to Telegram by long-polling `getUpdates` only while you link a chat; it never registers a Telegram webhook, so nothing needs to be exposed to Telegram.
 
 ## Model licensing
 
@@ -462,7 +505,14 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 - **Webhook returns 401 or 403**: the HMAC secret differs between OpenWA and `KINO_WEBHOOK_SECRET`, or the payload's session id is not the configured session (env or wizard).
 - **Photos from a group are ignored**: the group is not watched; check `kino groups list` and run `kino groups watch`.
 - **Matches are not saved**: auto-save is off for the kid (`kino kids set-auto-save`), or the face is below the auto-save size tier.
-- **Nothing is forwarded**: run `kino forward show`; forwarding needs a destination, the OpenWA settings, and the `forward-worker` running. Failed sends are listed by `kino forward list --status failed`.
+- **Nothing is forwarded**: run `kino forward show` (WhatsApp destinations); forwarding needs a destination, the settings of its channel (OpenWA, or the Telegram bot token) and the `forward-worker` running. Failed sends are listed by `kino forward list --status failed` and on the Activity page.
+- **Telegram: chat not found**: the bot is not in that chat, the chat was never linked (use **Link a chat**), or a group was upgraded to a supergroup and got a new id: add the bot and link the chat again.
+- **Telegram: bot was blocked or kicked**: the user blocked the bot or the bot was removed from the group. Unblock or re-add it; if the bot cannot post ("no rights"), make it an admin or allow it to send messages.
+- **Telegram: invalid bot token**: Telegram rejected the token (401 or 404). Create a new one with @BotFather and save it again.
+- **Linking a Telegram group never completes**: the bot is not in the group, or privacy mode hides your message. Post `/start@yourbotname CODE`, mention the bot in the message, or make the bot an admin, and do it within 10 minutes of generating the code.
+- **Telegram link says 409 conflict**: a webhook or another program is already reading this bot's updates. Remove the webhook (`deleteWebhook`) or stop the other consumer, or use a separate bot for Kino.
+- **Telegram 429 Too Many Requests**: Kino waits for the `retry_after` Telegram asks for (up to an hour per wait, for up to 24 hours since the forward was created) without counting an attempt. If it happens often, lower the send rate in Settings > Telegram.
+- **Telegram is unreachable**: Kino needs outbound HTTPS to `api.telegram.org`, or to your own Bot API server set as the Bot API URL in Settings > Telegram.
 - **The setup page says setup is only allowed from the local network**: the request came through a proxy or tunnel. Open Kino on its LAN or loopback address to set the password.
 - **Login says too many failed attempts (HTTP 429)**: five failed logins from one IP lock that IP for up to 15 minutes. Wait for the time given in the response.
 - **The UI shows a blank page or only the API**: `KINO_WEB_DIR` does not point to a built UI (the Docker image sets it up; for a local install run `npm run build` in `web/` and set the variable to `web/dist`).
@@ -470,6 +520,10 @@ Models are downloaded into `/data/models` (SHA-256 verified), never baked into t
 - **No digest arrives**: it is only sent when photos wait for review, a destination chat is set in Settings, the schedule matches, and the set of waiting items changed since the last digest.
 - **Permission denied writing photos**: the `./photos` bind mount must be writable by uid 1000.
 - **Model download errors**: check outbound access to GitHub releases, then run `kino models download`.
+
+## Upgrading
+
+Existing installs keep working unchanged as WhatsApp: the database migration `0010_delivery_channel` runs when the api or a worker starts (or with `kino migrate`) and marks every existing forward and digest as `whatsapp`; destinations without a channel mean WhatsApp. No setting needs to change for WhatsApp, with one exception: `KINO_TELEGRAM_BOT_TOKEN`, `KINO_TELEGRAM_API_URL`, `KINO_TELEGRAM_RATE_PER_MIN` and `KINO_FORWARD_RATE_PER_MIN` are no longer read and are silently ignored, and old values are not imported. Re-enter the Telegram token, Bot API URL and send rate in **Settings > Telegram**, and the WhatsApp send rate in **Settings > Forwarding**; the WhatsApp rate (formerly `KINO_FORWARD_RATE_PER_MIN`) is now a UI setting and falls back to its default of 6 until you set it. The OpenWA connection variables are unchanged. Rolling back to an older version runs the migration's downgrade, which **deletes the Telegram forwards** (WhatsApp forwards are kept) and drops the linked Telegram chats.
 
 ## Development
 

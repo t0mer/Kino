@@ -129,14 +129,31 @@ def test_put_forward_roundtrip(api):
         "enabled": True,
         "default_chat_id": DEST,
         "per_kid": {str(noa): "x@c.us"},
+        "default": {"channel": "whatsapp", "chat_id": DEST},
+        "per_kid_destinations": {str(noa): {"channel": "whatsapp", "chat_id": "x@c.us"}},
         "caption_template": "{kids} @ {group}",
         "include_review_confirmed": False,
         "send_caption": True,
+        "rate_per_min": 6,
     }
     # disabling keeps the destination
     api.put("/api/settings/forward", json=forward_body(enabled=False))
     got = api.get("/api/settings/forward").json()
     assert got["enabled"] is False and got["default_chat_id"] == DEST
+
+
+def test_forward_rate_round_trip_and_validation(api):
+    assert api.get("/api/settings/forward").json()["rate_per_min"] == 6
+    assert api.get("/api/settings").json()["forward"]["rate_per_min"] == 6
+    r = api.put("/api/settings/forward", json=forward_body(rate_per_min=12))
+    assert r.status_code == 200 and r.json()["rate_per_min"] == 12
+    r = api.put("/api/settings/forward", json=forward_body())  # omitted keeps the value
+    assert r.json()["rate_per_min"] == 12
+    for bad in (0, 121, "x"):
+        assert (
+            api.put("/api/settings/forward", json=forward_body(rate_per_min=bad)).status_code == 422
+        )
+    assert api.get("/api/settings/forward").json()["rate_per_min"] == 12
 
 
 def test_put_forward_rejects_watched_group_destination(api):

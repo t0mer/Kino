@@ -27,6 +27,7 @@ from kino.api.routes.references import router as references_router
 from kino.api.routes.review import router as review_router
 from kino.api.routes.settings import router as settings_router
 from kino.api.routes.stats import router as stats_router
+from kino.api.routes.telegram import router as telegram_router
 from kino.api.routes.test import rescore_router
 from kino.api.routes.test import router as test_router
 from kino.api.routes.uploads import router as uploads_router
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.openwa = None  # built on first use from env or the setup wizard (deps)
+    app.state.telegram_factory = None  # tests inject (token, api_url, send_as_file) -> channel
     app.state.openwa_out = None  # only when a separate outgoing session is set (deps)
     app.state.secret_key = auth.load_secret_key(settings)
     if not load_openwa_config(settings).configured:
@@ -63,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(settings_router)
     app.include_router(openwa_router)
     app.include_router(openwa_setup_router)
+    app.include_router(telegram_router)
     app.include_router(forwards_router)
     app.include_router(stats_router)
     app.include_router(uploads_router)
