@@ -267,6 +267,24 @@ def test_telegram_destination_removed_cancels(tg, s):
     assert res == "cancelled" and ch.calls == []
 
 
+def test_telegram_limiter_follows_rate_change(monkeypatch):
+    from types import SimpleNamespace
+
+    from kino.services import telegram_cfg
+
+    rate = {"v": 20}
+    monkeypatch.setattr(fw, "_limiters", {})
+    monkeypatch.setattr(
+        telegram_cfg, "load_telegram_config", lambda _s: SimpleNamespace(rate_per_min=rate["v"])
+    )
+    a = fw._default_limiter("telegram")
+    a._last = 123.0
+    assert a.interval == 3.0
+    rate["v"] = 30
+    b = fw._default_limiter("telegram")
+    assert b.interval == 2.0 and b._last == 123.0
+
+
 def test_per_channel_limiters(tg, monkeypatch):
     wc, tc = Clock(), Clock()
     monkeypatch.setattr(

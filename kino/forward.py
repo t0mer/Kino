@@ -321,6 +321,7 @@ class RateLimiter:
         jitter: tuple[float, float] = (2.0, 5.0),
     ) -> None:
         self.jitter = jitter
+        self.rate_per_min = rate_per_min
         self.interval = 60.0 / max(rate_per_min, 1)
         self._clock = clock
         self._sleep = sleeper
@@ -341,15 +342,19 @@ _limiters: dict[str, RateLimiter] = {}
 
 def _default_limiter(channel: str = WHATSAPP) -> RateLimiter:
     """One limiter per channel, shared by the single forward worker."""
-    if channel not in _limiters:
-        if channel == WHATSAPP:
+    if channel == WHATSAPP:
+        if channel not in _limiters:
             _limiters[channel] = RateLimiter(get_settings().forward_rate_per_min)
-        else:
-            from kino.services.telegram_cfg import load_telegram_config
+        return _limiters[channel]
+    from kino.services.telegram_cfg import load_telegram_config
 
-            rate = load_telegram_config(get_settings()).rate_per_min
-            _limiters[channel] = RateLimiter(rate, jitter=(0.0, 0.0))
-    return _limiters[channel]
+    rate = load_telegram_config(get_settings()).rate_per_min  # re-read: it is operator-tunable
+    limiter = _limiters.get(channel)
+    if limiter is None:
+        limiter = _limiters[channel] = RateLimiter(rate, jitter=(0.0, 0.0))
+    elif limiter.rate_per_min != rate:
+        limiter.rate_per_min, limiter.interval = rate, 60.0 / max(rate, 1)  # keeps _last
+    return limiter
 
 
 def _photos_dir() -> Path:
