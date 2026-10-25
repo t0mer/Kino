@@ -20,12 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kino.config import Settings
-from kino.db.models import Kid
+from kino.db.models import DELIVERY_CHANNELS, Kid
 from kino.forward import (
     DEFAULT_CAPTION,
     K_DEFAULT,
+    K_DEFAULT_CHANNEL,
     K_ENABLED,
     K_PER_KID,
+    K_PER_KID_CHANNEL,
     K_REVIEW,
     K_SEND_CAPTION,
     K_TEMPLATE,
@@ -60,21 +62,50 @@ def update_forward(
     caption_template: str,
     include_review_confirmed: bool,
     send_caption: bool = True,
+    default_channel: str = "whatsapp",
+    per_kid_channel: dict[int, str] | None = None,
 ) -> ForwardConfig:
     """Replace the forwarding section. Every destination is checked against watched groups
-    (forwarding into a watched group would re-ingest the photos)."""
+    (forwarding into a watched group would re-ingest the photos). Telegram destinations need a
+    configured bot token and a linked chat instead."""
     default = default_chat_id.strip() if default_chat_id else None
     per_kid = {k: v.strip() for k, v in per_kid.items() if v and v.strip()}
     known = set(session.scalars(select(Kid.id).where(Kid.id.in_(per_kid))))
     if missing := set(per_kid) - known:
         raise InvalidError(f"unknown kid id(s): {', '.join(map(str, sorted(missing)))}")
-    for dest in {default, *per_kid.values()} - {None}:
-        validate_destination(dest, session)
+    per_kid_channel = {k: v for k, v in (per_kid_channel or {}).items() if k in per_kid}
+    for ch in {default_channel, *per_kid_channel.values()}:
+        if ch not in DELIVERY_CHANNELS:
+            raise InvalidError(f"unknown delivery channel: {ch}")
+    targets: set[tuple[str, str]] = {
+        (per_kid_channel.get(k, "whatsapp"), v) for k, v in per_kid.items()
+    }
+    if default:
+        targets.add((default_channel, default))
+    telegram_targets = {d for ch, d in targets if ch == "telegram"}
+    if telegram_targets:
+        from kino.config import get_settings
+        from kino.db.models import TelegramChat
+        from kino.services.telegram_cfg import get_telegram_config
+
+        if not get_telegram_config(session, get_settings()).has_token:
+            raise InvalidError("configure the Telegram bot token before using Telegram")
+        linked = set(
+            session.scalars(
+                select(TelegramChat.chat_id).where(TelegramChat.chat_id.in_(telegram_targets))
+            )
+        )
+        if unknown := telegram_targets - linked:
+            raise InvalidError("Telegram chat is not linked: " + ", ".join(sorted(unknown)))
+    for ch, dest in targets:
+        validate_destination(dest, session, ch)
     if enabled and not default and not per_kid:
         raise InvalidError("pick a destination chat before enabling forwarding")
     put_setting(session, K_ENABLED, enabled)
     put_setting(session, K_DEFAULT, default)
     put_setting(session, K_PER_KID, {str(k): v for k, v in sorted(per_kid.items())})
+    put_setting(session, K_DEFAULT_CHANNEL, default_channel)
+    put_setting(session, K_PER_KID_CHANNEL, {str(k): v for k, v in sorted(per_kid_channel.items())})
     put_setting(session, K_TEMPLATE, caption_template)
     put_setting(session, K_REVIEW, include_review_confirmed)
     put_setting(session, K_SEND_CAPTION, send_caption)

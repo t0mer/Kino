@@ -219,7 +219,7 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     a sibling's copy). The kid's forward destination override is dropped, labelled clusters
     become unlabelled again, and the gallery version is bumped so workers reload.
     """
-    from kino.forward import K_PER_KID, get_forward_config, put_setting
+    from kino.forward import K_PER_KID, K_PER_KID_CHANNEL, get_forward_config, put_setting
     from kino.tasks import bump_gallery_version
 
     kid = get_kid(session, kid_id)
@@ -248,6 +248,8 @@ def delete_kid(session: Session, kid_id: int) -> KidDeletion:
     if kid.id in per_kid:
         del per_kid[kid.id]
         put_setting(session, K_PER_KID, {str(k): v for k, v in per_kid.items()})
+        channels = {k: v for k, v in cfg.per_kid_channel.items() if k != kid.id}
+        put_setting(session, K_PER_KID_CHANNEL, {str(k): v for k, v in channels.items()})
     session.execute(
         update(Cluster)
         .where(Cluster.kid_id == kid.id)
