@@ -122,6 +122,7 @@ class DigestConfig:
     cron: str  # empty disables the digest
     apprise_urls: list[str] = field(default_factory=list)
     public_base_url: str | None = None
+    channel: str = "whatsapp"  # delivery channel of ``chat_id``
 
 
 def get_digest(session: Session, env: Settings) -> DigestConfig:
@@ -129,7 +130,9 @@ def get_digest(session: Session, env: Settings) -> DigestConfig:
     if not isinstance(stored, dict):
         urls = [u.strip() for u in (env.apprise_urls or "").split(",") if u.strip()]
         return DigestConfig(chat_id=None, cron=env.digest_cron, apprise_urls=urls)
+    channel = stored.get("channel")
     return DigestConfig(
+        channel=channel if channel in DELIVERY_CHANNELS else "whatsapp",
         chat_id=stored.get("chat_id") or None,
         cron=str(stored.get("cron") or ""),
         apprise_urls=[str(u) for u in stored.get("apprise_urls") or []],
@@ -145,9 +148,22 @@ def update_digest(
     cron: str,
     apprise_urls: list[str] | None,
     public_base_url: str | None,
+    channel: str = "whatsapp",
 ) -> DigestConfig:
     """Replace the digest section; ``apprise_urls=None`` keeps the stored URLs (they hold
-    tokens and are never sent back to the browser)."""
+    tokens and are never sent back to the browser). A Telegram destination needs the bot
+    token configured and a linked chat."""
+    if channel not in DELIVERY_CHANNELS:
+        raise InvalidError(f"unknown delivery channel: {channel}")
+    chat_id = chat_id.strip() if chat_id else None
+    if channel == "telegram" and chat_id:
+        from kino.db.models import TelegramChat
+        from kino.services.telegram_cfg import get_telegram_config
+
+        if not get_telegram_config(session, env).has_token:
+            raise InvalidError("configure the Telegram bot token before using Telegram")
+        if session.scalar(select(TelegramChat.id).where(TelegramChat.chat_id == chat_id)) is None:
+            raise InvalidError(f"Telegram chat is not linked: {chat_id}")
     current = get_digest(session, env)
     urls = (
         current.apprise_urls
@@ -155,7 +171,8 @@ def update_digest(
         else _resolve_masked(apprise_urls, current.apprise_urls)
     )
     cfg = DigestConfig(
-        chat_id=chat_id.strip() if chat_id else None,
+        channel=channel,
+        chat_id=chat_id,
         cron=cron.strip(),
         apprise_urls=urls,
         public_base_url=public_base_url.rstrip("/") if public_base_url else None,
