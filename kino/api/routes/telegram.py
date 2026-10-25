@@ -189,14 +189,15 @@ async def start_link(request: Request) -> TelegramLinkOut:
     cfg = await run_in_threadpool(_config, env)
     if not cfg.has_token:
         raise InvalidError("Configure the Telegram bot token before linking a chat")
-    username = cfg.bot_username
-    if username is None:
-        try:
-            username = await _get_me(request.app, cfg)
-        except HTTPException:
-            username = None  # the poll will surface the real problem
-        else:
-            await run_in_threadpool(_save_username, username)
+    username = cfg.bot_username  # cache; may be stale (token from env / changed)
+    try:
+        fresh = await _get_me(request.app, cfg)
+    except HTTPException:
+        pass  # keep the cached value; the poll will surface the real problem
+    else:
+        if fresh != username:
+            await run_in_threadpool(_save_username, fresh)
+        username = fresh
     code = _store(request.app).create()
     bot = f"@{username}" if username else "your bot"
     return TelegramLinkOut(

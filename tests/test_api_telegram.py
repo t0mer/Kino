@@ -250,6 +250,16 @@ def test_link_start_shape(api, configured):
     assert body["code"] in body["instructions"]
 
 
+def test_link_start_refreshes_stale_cached_username(api, configured):
+    with dbs.get_session() as s:
+        s.merge(Setting(key="telegram.bot_username", value="old_bot"))
+    body = api.post("/api/telegram/link").json()
+    assert body["bot_username"] == "kino_bot" and "@kino_bot" in body["instructions"]
+    assert "getMe" in configured.names()
+    configured.me_status = 401  # getMe failing falls back to the (refreshed) cache
+    assert api.post("/api/telegram/link").json()["bot_username"] == "kino_bot"
+
+
 def test_link_private_chat_and_offset(api, configured):
     code = link_code(api)
     assert api.get(f"/api/telegram/link/{code}").json() == {"status": "pending", "chat": None}
