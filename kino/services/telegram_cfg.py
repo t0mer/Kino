@@ -37,6 +37,7 @@ __all__ = [
     "EnvLockedError",
     "TelegramConfig",
     "env_overrides",
+    "check_token_format",
     "ensure_unlocked",
     "get_telegram_config",
     "load_telegram_config",
@@ -92,6 +93,11 @@ def ensure_unlocked(env: Settings) -> None:
         )
 
 
+def check_token_format(token: str) -> None:
+    if not _TOKEN_RE.match(token):
+        raise InvalidError("That does not look like a bot token (expected 123456:ABC-DEF...)")
+
+
 def _flag(session: Session, key: str) -> bool:
     row = session.get(Setting, key)
     return row is not None and row.value is True
@@ -140,8 +146,7 @@ def save_telegram_token(
         _delete(session, K_BOT_USERNAME)
         session.flush()
         return
-    if not _TOKEN_RE.match(token):
-        raise InvalidError("That does not look like a bot token (expected 123456:ABC-DEF...)")
+    check_token_format(token)
     _put(session, K_BOT_TOKEN, secrets_store.encrypt(token, _load_key(env)))
     if bot_username:
         _put(session, K_BOT_USERNAME, bot_username.strip())
