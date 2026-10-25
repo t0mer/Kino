@@ -129,6 +129,8 @@ def test_put_forward_roundtrip(api):
         "enabled": True,
         "default_chat_id": DEST,
         "per_kid": {str(noa): "x@c.us"},
+        "default": {"channel": "whatsapp", "chat_id": DEST},
+        "per_kid_destinations": {str(noa): {"channel": "whatsapp", "chat_id": "x@c.us"}},
         "caption_template": "{kids} @ {group}",
         "include_review_confirmed": False,
         "send_caption": True,
