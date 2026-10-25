@@ -93,3 +93,63 @@ def test_factory_failure_swallowed():
     from kino.services.sent_cleanup import SentDeletion
 
     assert delete_sent_messages([SentDeletion("-1", "1")], boom) == 0
+
+
+def _items(n):
+    from kino.services.sent_cleanup import SentDeletion
+
+    return [SentDeletion("-1", str(i)) for i in range(n)]
+
+
+class Sleeps:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, secs):
+        self.calls.append(secs)
+
+
+def test_pacing_between_deletes_only():
+    ch, sl = Chan(), Sleeps()
+    assert delete_sent_messages(_items(3), lambda: ch, pace=0.1, sleeper=sl) == 3
+    assert sl.calls == [0.1, 0.1]
+
+
+def test_retry_after_honoured_once_then_succeeds():
+    class Flaky(Chan):
+        n = 0
+
+        async def delete(self, dest, ref):
+            self.n += 1
+            if self.n == 1:
+                raise DeliveryError("flood", retry_after=500)
+            await super().delete(dest, ref)
+
+    ch, sl = Flaky(), Sleeps()
+    assert delete_sent_messages(_items(1), lambda: ch, pace=0, sleeper=sl) == 1
+    assert sl.calls == [30.0] and ch.n == 2
+
+
+def test_retry_after_second_failure_swallowed():
+    ch, sl = Chan(DeliveryError("flood", retry_after=2)), Sleeps()
+    assert delete_sent_messages(_items(1), lambda: ch, pace=0, sleeper=sl) == 0
+    assert sl.calls == [2] and ch.closed
+
+
+def test_total_work_capped():
+    ch = Chan()
+    assert delete_sent_messages(_items(5), lambda: ch, pace=0, max_items=2) == 2
+    assert len(ch.deleted) == 2
+
+
+def test_collect_filters_in_sql(s):
+    from sqlalchemy import event
+
+    from kino.services.sent_cleanup import collect_sent_deletions
+
+    sp = setup(s)
+    stmts = []
+    event.listen(s.get_bind(), "before_cursor_execute", lambda *a: stmts.append(a[2]))
+    assert len(collect_sent_deletions(s, sp.kid_id, sp.image_id)) == 1
+    sel = next(x for x in stmts if "FROM forwards" in x)
+    assert "channel" in sel and "sent_ref IS NOT NULL" in sel and "image_id" in sel
